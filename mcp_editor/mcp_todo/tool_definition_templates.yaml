@@ -1,0 +1,485 @@
+# =============================================================================
+# MCP Tool Definition Templates - Microsoft To Do (Tasks)
+# =============================================================================
+# Graph API base: https://graph.microsoft.com/v1.0/users/{user_email}/todo
+# Required Azure scope: Tasks.ReadWrite (또는 Tasks.ReadWrite.Shared)
+# =============================================================================
+
+tools:
+- name: todo_lists_view
+  description: 사용자의 모든 Microsoft To Do 태스크 리스트를 조회합니다. 각 리스트의 id, displayName, wellknownListName을 반환합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      top:
+        type: integer
+        description: 최대 결과 수
+        default: 50
+        targetParam: top
+    required: []
+  mcp_service:
+    name: todo_lists_view
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: top
+      type: int
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: 50
+    signature: 'user_email: Optional[str] = None, top: int = 50'
+  mcp_service_factors: {}
+
+- name: todo_list_create
+  description: 새로운 Microsoft To Do 태스크 리스트를 생성합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      display_name:
+        type: string
+        description: 새 태스크 리스트의 표시 이름
+        targetParam: display_name
+    required:
+    - display_name
+  mcp_service:
+    name: todo_list_create
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: display_name
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    signature: 'user_email: Optional[str] = None, display_name: str = ""'
+  mcp_service_factors: {}
+
+- name: todo_list_delete
+  description: 지정된 Microsoft To Do 태스크 리스트를 삭제합니다. list_id 또는 displayName/wellknownListName(예 defaultList)을 받아 해석합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 삭제할 리스트의 ID 또는 displayName/wellknownListName
+        targetParam: list_id_or_name
+    required:
+    - list_id_or_name
+  mcp_service:
+    name: todo_list_delete
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: str = ""'
+  mcp_service_factors: {}
+
+- name: todo_tasks_view
+  description: 지정된 To Do 리스트의 태스크를 조회합니다. list_id_or_name이 비어있으면 기본 리스트(defaultList)를 사용합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 리스트 ID 또는 이름 (생략 시 defaultList 사용)
+        targetParam: list_id_or_name
+      status_filter:
+        type: string
+        description: 'status 필드로 필터링. enum: notStarted | inProgress | completed | waitingOnOthers | deferred'
+        enum:
+        - notStarted
+        - inProgress
+        - completed
+        - waitingOnOthers
+        - deferred
+        targetParam: status_filter
+      top:
+        type: integer
+        description: 최대 결과 수
+        default: 50
+        targetParam: top
+      orderby:
+        type: string
+        description: '정렬 순서 (예: ''createdDateTime desc'', ''dueDateTime/dateTime asc'')'
+        targetParam: orderby
+    required: []
+  mcp_service:
+    name: todo_tasks_view
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: status_filter
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: top
+      type: int
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: 50
+    - name: orderby
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: Optional[str] = None, status_filter: Optional[str] = None, top: int = 50, orderby: Optional[str] = None'
+  mcp_service_factors: {}
+
+- name: todo_task_get
+  description: 단일 To Do 태스크의 상세 정보를 조회합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 리스트 ID 또는 이름 (생략 시 defaultList 사용)
+        targetParam: list_id_or_name
+      task_id:
+        type: string
+        description: 조회할 태스크 ID
+        targetParam: task_id
+    required:
+    - task_id
+  mcp_service:
+    name: todo_task_get
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: task_id
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: Optional[str] = None, task_id: str = ""'
+  mcp_service_factors: {}
+
+- name: todo_task_create
+  description: 새 To Do 태스크를 생성합니다. title은 필수, 나머지는 선택입니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 리스트 ID 또는 이름 (생략 시 defaultList 사용)
+        targetParam: list_id_or_name
+      title:
+        type: string
+        description: 태스크 제목
+        targetParam: title
+      body:
+        type: string
+        description: 태스크 본문 (text)
+        targetParam: body
+      importance:
+        type: string
+        description: 중요도
+        enum:
+        - low
+        - normal
+        - high
+        targetParam: importance
+      due_datetime:
+        type: string
+        description: '마감 일시 (ISO 8601, 예: 2026-05-20T18:00:00)'
+        targetParam: due_datetime
+      reminder_datetime:
+        type: string
+        description: '알림 일시 (ISO 8601). 값을 주면 isReminderOn=true로 설정됩니다.'
+        targetParam: reminder_datetime
+      categories:
+        type: array
+        items:
+          type: string
+        description: 카테고리 목록
+        targetParam: categories
+    required:
+    - title
+  mcp_service:
+    name: todo_task_create
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: title
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    - name: body
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: importance
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: due_datetime
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: reminder_datetime
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: categories
+      type: List[str]
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: Optional[str] = None, title: str = "", body: Optional[str] = None, importance: Optional[str] = None, due_datetime: Optional[str] = None, reminder_datetime: Optional[str] = None, categories: Optional[List[str]] = None'
+  mcp_service_factors: {}
+
+- name: todo_task_update
+  description: 기존 To Do 태스크를 수정합니다. 전달한 필드만 갱신되며 (PATCH), status='completed'로 설정하면 태스크가 완료 처리됩니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 리스트 ID 또는 이름 (생략 시 defaultList 사용)
+        targetParam: list_id_or_name
+      task_id:
+        type: string
+        description: 수정할 태스크 ID
+        targetParam: task_id
+      title:
+        type: string
+        description: 새 제목
+        targetParam: title
+      body:
+        type: string
+        description: 새 본문 (text)
+        targetParam: body
+      importance:
+        type: string
+        description: 중요도
+        enum:
+        - low
+        - normal
+        - high
+        targetParam: importance
+      status:
+        type: string
+        description: 태스크 상태 변경 (예 completed)
+        enum:
+        - notStarted
+        - inProgress
+        - completed
+        - waitingOnOthers
+        - deferred
+        targetParam: status
+      due_datetime:
+        type: string
+        description: 마감 일시 (ISO 8601)
+        targetParam: due_datetime
+      reminder_datetime:
+        type: string
+        description: 알림 일시 (ISO 8601)
+        targetParam: reminder_datetime
+      categories:
+        type: array
+        items:
+          type: string
+        description: 카테고리 목록
+        targetParam: categories
+    required:
+    - task_id
+  mcp_service:
+    name: todo_task_update
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: task_id
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    - name: title
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: body
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: importance
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: status
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: due_datetime
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: reminder_datetime
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: categories
+      type: List[str]
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: Optional[str] = None, task_id: str = "", title: Optional[str] = None, body: Optional[str] = None, importance: Optional[str] = None, status: Optional[str] = None, due_datetime: Optional[str] = None, reminder_datetime: Optional[str] = None, categories: Optional[List[str]] = None'
+  mcp_service_factors: {}
+
+- name: todo_task_delete
+  description: 지정된 To Do 태스크를 삭제합니다.
+  inputSchema:
+    type: object
+    properties:
+      user_email:
+        type: string
+        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        targetParam: user_email
+      list_id_or_name:
+        type: string
+        description: 리스트 ID 또는 이름 (생략 시 defaultList 사용)
+        targetParam: list_id_or_name
+      task_id:
+        type: string
+        description: 삭제할 태스크 ID
+        targetParam: task_id
+    required:
+    - task_id
+  mcp_service:
+    name: todo_task_delete
+    parameters:
+    - name: user_email
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: list_id_or_name
+      type: str
+      is_required: false
+      is_optional: true
+      has_default: true
+      default: null
+    - name: task_id
+      type: str
+      is_required: true
+      is_optional: false
+      has_default: false
+      default: null
+    signature: 'user_email: Optional[str] = None, list_id_or_name: Optional[str] = None, task_id: str = ""'
+  mcp_service_factors: {}

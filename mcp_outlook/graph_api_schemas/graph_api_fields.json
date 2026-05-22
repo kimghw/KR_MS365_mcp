@@ -1,0 +1,469 @@
+{
+  "filterableFields": {
+    "from/emailAddress/address": {
+      "type": "String",
+      "description": "발신자 이메일 주소",
+      "input": "이메일 주소 (예: boss@company.com)",
+      "result": "해당 이메일 주소에서 보낸 메일만 조회"
+    },
+    "sender/emailAddress/address": {
+      "type": "String",
+      "description": "실제 발송자 이메일 주소 (대리 발송 시 다를 수 있음)",
+      "input": "이메일 주소 (예: assistant@company.com)",
+      "result": "해당 주소가 실제로 발송한 메일만 조회"
+    },
+    "receivedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 수신 일시",
+      "input": "ISO 8601 형식 날짜시간 (예: 2024-12-01T00:00:00Z)",
+      "result": "지정된 날짜/시간 기준으로 필터링 (ge, le, gt, lt 연산자 사용)"
+    },
+    "sentDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 발송 일시",
+      "input": "ISO 8601 형식 날짜시간 (예: 2024-12-01T09:00:00Z)",
+      "result": "지정된 날짜/시간에 발송된 메일 필터링"
+    },
+    "createdDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 메일함에 생성된 일시",
+      "input": "ISO 8601 형식 날짜시간",
+      "result": "지정된 날짜/시간에 생성된 메일 필터링"
+    },
+    "lastModifiedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 마지막으로 수정된 일시",
+      "input": "ISO 8601 형식 날짜시간",
+      "result": "지정된 날짜/시간에 수정된 메일 필터링"
+    },
+    "isRead": {
+      "type": "Boolean",
+      "description": "메일 읽음 상태",
+      "input": "true 또는 false",
+      "result": "true: 읽은 메일만, false: 읽지 않은 메일만 조회"
+    },
+    "isDraft": {
+      "type": "Boolean",
+      "description": "임시저장 메일 여부",
+      "input": "true 또는 false",
+      "result": "true: 임시저장 메일만, false: 발송/수신된 메일만 조회"
+    },
+    "hasAttachments": {
+      "type": "Boolean",
+      "description": "첨부파일 존재 여부",
+      "input": "true 또는 false",
+      "result": "true: 첨부파일이 있는 메일만, false: 첨부파일이 없는 메일만 조회"
+    },
+    "isDeliveryReceiptRequested": {
+      "type": "Boolean",
+      "description": "배달 확인 요청 여부",
+      "input": "true 또는 false",
+      "result": "true: 배달 확인이 요청된 메일만 조회"
+    },
+    "isReadReceiptRequested": {
+      "type": "Boolean",
+      "description": "읽음 확인 요청 여부",
+      "input": "true 또는 false",
+      "result": "true: 읽음 확인이 요청된 메일만 조회"
+    },
+    "importance": {
+      "type": "String",
+      "enum": ["low", "normal", "high"],
+      "description": "메일 중요도",
+      "input": "low, normal, high 중 하나",
+      "result": "지정된 중요도의 메일만 조회"
+    },
+    "sensitivity": {
+      "type": "String",
+      "enum": ["normal", "personal", "private", "confidential"],
+      "description": "메일 민감도/보안 수준",
+      "input": "normal, personal, private, confidential 중 하나",
+      "result": "지정된 민감도 수준의 메일만 조회"
+    },
+    "inferenceClassification": {
+      "type": "String",
+      "enum": ["focused", "other"],
+      "description": "중요 메일함 분류 (AI 기반)",
+      "input": "focused 또는 other",
+      "result": "focused: 중요 메일함, other: 기타 메일함의 메일 조회"
+    },
+    "subject": {
+      "type": "String",
+      "description": "메일 제목",
+      "input": "검색할 키워드 또는 문자열",
+      "result": "제목에 해당 키워드가 포함된 메일 조회 (contains, startswith, endswith 사용)"
+    },
+    "body/content": {
+      "type": "String",
+      "description": "메일 본문 내용",
+      "input": "검색할 키워드 또는 문자열",
+      "result": "본문에 해당 키워드가 포함된 메일 조회 (contains 사용)"
+    },
+    "bodyPreview": {
+      "type": "String",
+      "description": "메일 본문 미리보기 (첫 255자)",
+      "input": "검색할 키워드 또는 문자열",
+      "result": "미리보기에 해당 키워드가 포함된 메일 조회"
+    },
+    "id": {
+      "type": "String",
+      "description": "메일의 고유 ID",
+      "input": "특정 메일의 고유 식별자 (예: AAMkAGI2TG93AAA=)",
+      "result": "정확히 해당 ID를 가진 단일 메일 조회"
+    },
+    "conversationId": {
+      "type": "String",
+      "description": "대화 스레드 ID (답장/전달로 연결된 메일 그룹)",
+      "input": "대화 스레드의 고유 식별자 (예: AAQkAGI2TGAAA=)",
+      "result": "같은 대화 스레드에 속한 모든 메일 조회 (원본, 답장, 전달 포함)"
+    },
+    "parentFolderId": {
+      "type": "String",
+      "description": "메일이 속한 폴더 ID",
+      "input": "폴더 ID 또는 이름 (예: Inbox, Sent, AAMkAGI2...)",
+      "result": "해당 폴더에 있는 메일만 조회"
+    },
+    "categories": {
+      "type": "Collection<String>",
+      "description": "메일에 지정된 카테고리/라벨",
+      "input": "카테고리 이름 (예: Red category, Important, Project X)",
+      "result": "해당 카테고리가 지정된 메일 조회 (any 연산자 사용)"
+    },
+    "flag/flagStatus": {
+      "type": "String",
+      "enum": ["notFlagged", "complete", "flagged"],
+      "description": "플래그(깃발) 상태",
+      "input": "notFlagged, complete, flagged 중 하나",
+      "result": "notFlagged: 플래그 없음, complete: 완료됨, flagged: 플래그 표시된 메일 조회"
+    }
+  },
+  "selectableFields": {
+    "id": {
+      "type": "String",
+      "description": "메일의 고유 ID",
+      "input": "자동 생성됨",
+      "result": "메일의 고유 식별자 반환"
+    },
+    "createdDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 메일함에 생성된 일시",
+      "input": "자동 생성됨",
+      "result": "메일 생성 시각 반환"
+    },
+    "lastModifiedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 마지막으로 수정된 일시",
+      "input": "자동 생성됨",
+      "result": "최종 수정 시각 반환"
+    },
+    "changeKey": {
+      "type": "String",
+      "description": "메일 버전 관리용 키",
+      "input": "자동 생성됨",
+      "result": "메일 변경 추적용 키 반환"
+    },
+    "categories": {
+      "type": "Collection<String>",
+      "description": "메일에 지정된 카테고리/라벨 목록",
+      "input": "사용자가 지정한 카테고리들",
+      "result": "메일에 할당된 모든 카테고리 반환"
+    },
+    "receivedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 수신 일시",
+      "input": "자동 기록됨",
+      "result": "메일을 받은 정확한 시각 반환"
+    },
+    "sentDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 발송 일시",
+      "input": "자동 기록됨",
+      "result": "메일이 발송된 정확한 시각 반환"
+    },
+    "hasAttachments": {
+      "type": "Boolean",
+      "description": "첨부파일 존재 여부",
+      "input": "자동 판별됨",
+      "result": "첨부파일이 있으면 true, 없으면 false 반환"
+    },
+    "internetMessageId": {
+      "type": "String",
+      "description": "인터넷 메시지 ID (RFC2822)",
+      "input": "자동 생성됨",
+      "result": "메일 서버 간 식별용 고유 ID 반환"
+    },
+    "subject": {
+      "type": "String",
+      "description": "메일 제목",
+      "input": "발신자가 작성한 제목",
+      "result": "메일의 전체 제목 텍스트 반환"
+    },
+    "bodyPreview": {
+      "type": "String",
+      "description": "메일 본문 미리보기 (첫 255자)",
+      "input": "본문에서 자동 추출",
+      "result": "본문 내용의 요약 텍스트 반환"
+    },
+    "importance": {
+      "type": "String",
+      "enum": ["low", "normal", "high"],
+      "description": "메일 중요도",
+      "input": "발신자가 설정한 중요도",
+      "result": "low, normal, high 중 하나 반환"
+    },
+    "parentFolderId": {
+      "type": "String",
+      "description": "메일이 속한 폴더 ID",
+      "input": "자동 할당됨",
+      "result": "현재 메일이 저장된 폴더의 ID 반환"
+    },
+    "conversationId": {
+      "type": "String",
+      "description": "대화 스레드 ID",
+      "input": "자동 생성됨",
+      "result": "관련 메일들을 묶는 대화 ID 반환"
+    },
+    "conversationIndex": {
+      "type": "String",
+      "description": "대화 내 메일 순서",
+      "input": "자동 계산됨",
+      "result": "대화 스레드 내에서의 위치 정보 반환"
+    },
+    "isDeliveryReceiptRequested": {
+      "type": "Boolean",
+      "description": "배달 확인 요청 여부",
+      "input": "발신자가 설정",
+      "result": "배달 확인이 요청되면 true 반환"
+    },
+    "isReadReceiptRequested": {
+      "type": "Boolean",
+      "description": "읽음 확인 요청 여부",
+      "input": "발신자가 설정",
+      "result": "읽음 확인이 요청되면 true 반환"
+    },
+    "isRead": {
+      "type": "Boolean",
+      "description": "메일 읽음 상태",
+      "input": "사용자 행동에 따라 변경",
+      "result": "읽었으면 true, 안 읽었으면 false 반환"
+    },
+    "isDraft": {
+      "type": "Boolean",
+      "description": "임시저장 메일 여부",
+      "input": "메일 상태에 따라 결정",
+      "result": "임시저장이면 true, 발송/수신이면 false 반환"
+    },
+    "webLink": {
+      "type": "String",
+      "description": "웹에서 메일을 볼 수 있는 URL",
+      "input": "자동 생성됨",
+      "result": "Outlook 웹에서 메일을 열 수 있는 링크 반환"
+    },
+    "inferenceClassification": {
+      "type": "String",
+      "enum": ["focused", "other"],
+      "description": "AI 기반 중요도 분류",
+      "input": "자동 분류됨",
+      "result": "focused(중요) 또는 other(기타) 반환"
+    },
+    "body": {
+      "type": "Object",
+      "properties": {
+        "contentType": "String",
+        "content": "String"
+      },
+      "description": "메일 본문 전체",
+      "input": "발신자가 작성한 내용",
+      "result": "HTML 또는 텍스트 형식의 전체 본문 반환"
+    },
+    "sender": {
+      "type": "Object",
+      "properties": {
+        "emailAddress": {
+          "name": "String",
+          "address": "String"
+        }
+      },
+      "description": "실제 발송자 정보",
+      "input": "발송한 계정 정보",
+      "result": "이름과 이메일 주소 객체 반환"
+    },
+    "from": {
+      "type": "Object",
+      "properties": {
+        "emailAddress": {
+          "name": "String",
+          "address": "String"
+        }
+      },
+      "description": "발신자 정보",
+      "input": "보낸 사람 정보",
+      "result": "이름과 이메일 주소 객체 반환"
+    },
+    "toRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "받는 사람 목록",
+      "input": "수신자 이메일 주소들",
+      "result": "모든 수신자의 이름과 이메일 배열 반환"
+    },
+    "ccRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "참조 수신자 목록",
+      "input": "참조로 지정된 이메일들",
+      "result": "참조 수신자들의 이름과 이메일 배열 반환"
+    },
+    "bccRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "숨은 참조 수신자 목록",
+      "input": "숨은 참조로 지정된 이메일들",
+      "result": "숨은 참조 수신자들의 배열 반환 (본인 메일만)"
+    },
+    "replyTo": {
+      "type": "Collection<Recipient>",
+      "description": "회신 주소 목록",
+      "input": "회신 시 사용할 주소",
+      "result": "회신 대상 이메일 주소들 반환"
+    },
+    "flag": {
+      "type": "Object",
+      "properties": {
+        "flagStatus": "String"
+      },
+      "description": "플래그 상태 정보",
+      "input": "사용자가 설정한 플래그",
+      "result": "플래그 상태 객체 반환"
+    }
+  },
+  "excludableFields": {
+    "from/emailAddress/address": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 발신자 제외",
+      "input": "제외할 이메일 주소",
+      "result": "해당 주소에서 보낸 메일 제외"
+    },
+    "sender/emailAddress/address": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 실제 발송자 제외",
+      "input": "제외할 발송자 주소",
+      "result": "해당 주소가 발송한 메일 제외"
+    },
+    "subject": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "제목에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "제목에 해당 키워드가 없는 메일만 조회"
+    },
+    "body/content": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "본문에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "본문에 해당 키워드가 없는 메일만 조회"
+    },
+    "bodyPreview": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "미리보기에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "미리보기에 해당 키워드가 없는 메일만 조회"
+    },
+    "importance": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["low", "normal", "high"],
+      "description": "특정 중요도 제외",
+      "input": "제외할 중요도 값",
+      "result": "해당 중요도가 아닌 메일만 조회"
+    },
+    "sensitivity": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["normal", "personal", "private", "confidential"],
+      "description": "특정 민감도 제외",
+      "input": "제외할 민감도 값",
+      "result": "해당 민감도가 아닌 메일만 조회"
+    },
+    "inferenceClassification": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["focused", "other"],
+      "description": "특정 분류 제외",
+      "input": "제외할 분류 (focused/other)",
+      "result": "해당 분류가 아닌 메일만 조회"
+    },
+    "isRead": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "읽음 상태 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isDraft": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "임시저장 상태 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "hasAttachments": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "첨부파일 유무 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isDeliveryReceiptRequested": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "배달 확인 요청 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isReadReceiptRequested": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "읽음 확인 요청 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "flag/flagStatus": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["notFlagged", "complete", "flagged"],
+      "description": "특정 플래그 상태 제외",
+      "input": "제외할 플래그 상태",
+      "result": "해당 플래그 상태가 아닌 메일만 조회"
+    },
+    "categories": {
+      "type": "Collection<String>",
+      "operator": "not any",
+      "description": "특정 카테고리 제외",
+      "input": "제외할 카테고리 이름",
+      "result": "해당 카테고리가 없는 메일만 조회"
+    },
+    "id": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 메일 ID 제외",
+      "input": "제외할 메일 ID",
+      "result": "해당 ID가 아닌 모든 메일 조회"
+    },
+    "conversationId": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 대화 스레드 제외",
+      "input": "제외할 대화 ID",
+      "result": "해당 대화 스레드가 아닌 메일만 조회"
+    },
+    "parentFolderId": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 폴더 제외",
+      "input": "제외할 폴더 ID",
+      "result": "해당 폴더가 아닌 메일만 조회"
+    }
+  }
+}

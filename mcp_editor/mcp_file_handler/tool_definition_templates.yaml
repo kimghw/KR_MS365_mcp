@@ -1,0 +1,196 @@
+# =============================================================================
+# MCP Tool Definition Templates - AUTO-GENERATED
+# =============================================================================
+# Signatures extracted from source code using AST parsing
+#
+# 구조 설명:
+#   - name: MCP 도구 이름 (고유 식별자)
+#   - description: 도구 설명 (에이전트가 도구 선택 시 참고)
+#   - inputSchema: 입력 파라미터 스키마 (JSON Schema 형식)
+#   - mcp_service: 백엔드 서비스 연결 정보
+#   - mcp_service_factors: 내부 파라미터 기본값 설정
+# =============================================================================
+
+tools:
+- name: convert_file_to_text
+  description: Convert a file to text format. Supports various file types including
+    documents, spreadsheets, and PDFs.
+  inputSchema:
+    type: object
+    properties:
+      input_path:
+        type: string
+        description: The path to the file to convert
+        targetParam: input_path
+    required:
+    - input_path
+  mcp_service:
+    name: process
+    signature: 'input_path: str, **kwargs'
+    parameters:
+    - name: input_path
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: '**kwargs'
+      type: null
+      is_optional: true
+      default: null
+      has_default: false
+- name: process_directory
+  description: Process all files in a directory recursively and convert them to text
+  inputSchema:
+    type: object
+    properties:
+      directory_path:
+        type: string
+        description: The path to the directory to process
+        targetParam: directory_path
+    required:
+    - directory_path
+  mcp_service:
+    name: process_directory
+    signature: 'directory_path: str, **kwargs'
+    parameters:
+    - name: directory_path
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: '**kwargs'
+      type: null
+      is_optional: true
+      default: null
+      has_default: false
+- name: save_file_metadata
+  description: Save metadata for a file including keywords and additional information
+  inputSchema:
+    type: object
+    properties:
+      additional_metadata:
+        type: object
+        description: Additional metadata as key-value pairs
+        targetParam: additional_metadata
+      file_url:
+        type: string
+        description: URL or path to the file
+        targetParam: file_url
+      keywords:
+        type: array
+        description: Keywords associated with the file
+        items:
+          type: string
+        targetParam: keywords
+    required:
+    - file_url
+    - keywords
+  mcp_service:
+    name: save_metadata
+    signature: 'file_url: str, keywords: List[str], additional_metadata: Optional[Dict[str,
+      Any]] = None'
+    parameters:
+    - name: file_url
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: keywords
+      type: List[str]
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: additional_metadata
+      type: Dict[str, Any]
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+- name: search_metadata
+  description: Search for files based on metadata criteria
+  inputSchema:
+    type: object
+    description: Search criteria as key-value pairs
+    properties: {}
+    additionalProperties: true
+  mcp_service:
+    name: search_metadata
+    signature: '**search_criteria'
+    parameters:
+    - name: '**search_criteria'
+      type: null
+      is_optional: true
+      default: null
+      has_default: false
+- name: convert_onedrive_to_text
+  description: Convert a file from OneDrive to text format
+  inputSchema:
+    type: object
+    properties:
+      url:
+        type: string
+        description: The OneDrive URL of the file to convert
+        targetParam: url
+    required:
+    - url
+  mcp_service:
+    name: process_onedrive
+    signature: 'url: str, **kwargs'
+    parameters:
+    - name: url
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: '**kwargs'
+      type: null
+      is_optional: true
+      default: null
+      has_default: false
+- name: get_file_metadata
+  description: Retrieve metadata for a specific file
+  inputSchema:
+    type: object
+    properties:
+      file_url:
+        type: string
+        description: URL or path to the file
+        targetParam: file_url
+    required:
+    - file_url
+  mcp_service:
+    name: get_metadata
+    signature: 'file_url: str'
+    parameters:
+    - name: file_url
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+- name: delete_file_metadata
+  description: Delete metadata for a specific file
+  inputSchema:
+    type: object
+    properties:
+      file_url:
+        type: string
+        description: URL or path to the file
+        targetParam: file_url
+    required:
+    - file_url
+  mcp_service:
+    name: delete_metadata
+    signature: 'file_url: str'
+    parameters:
+    - name: file_url
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false

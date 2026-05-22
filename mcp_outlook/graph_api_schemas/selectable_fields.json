@@ -1,0 +1,199 @@
+{
+  "selectableFields": {
+    "id": {
+      "type": "String",
+      "description": "메일의 고유 ID",
+      "input": "자동 생성됨",
+      "result": "메일의 고유 식별자 반환"
+    },
+    "createdDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 메일함에 생성된 일시",
+      "input": "자동 생성됨",
+      "result": "메일 생성 시각 반환"
+    },
+    "lastModifiedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일이 마지막으로 수정된 일시",
+      "input": "자동 생성됨",
+      "result": "최종 수정 시각 반환"
+    },
+    "changeKey": {
+      "type": "String",
+      "description": "메일 버전 관리용 키",
+      "input": "자동 생성됨",
+      "result": "메일 변경 추적용 키 반환"
+    },
+    "categories": {
+      "type": "Collection<String>",
+      "description": "메일에 지정된 카테고리/라벨 목록",
+      "input": "사용자가 지정한 카테고리들",
+      "result": "메일에 할당된 모든 카테고리 반환"
+    },
+    "receivedDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 수신 일시",
+      "input": "자동 기록됨",
+      "result": "메일을 받은 정확한 시각 반환"
+    },
+    "sentDateTime": {
+      "type": "DateTimeOffset",
+      "description": "메일 발송 일시",
+      "input": "자동 기록됨",
+      "result": "메일이 발송된 정확한 시각 반환"
+    },
+    "hasAttachments": {
+      "type": "Boolean",
+      "description": "첨부파일 존재 여부",
+      "input": "자동 판별됨",
+      "result": "첨부파일이 있으면 true, 없으면 false 반환"
+    },
+    "internetMessageId": {
+      "type": "String",
+      "description": "인터넷 메시지 ID (RFC2822)",
+      "input": "자동 생성됨",
+      "result": "메일 서버 간 식별용 고유 ID 반환"
+    },
+    "subject": {
+      "type": "String",
+      "description": "메일 제목",
+      "input": "발신자가 작성한 제목",
+      "result": "메일의 전체 제목 텍스트 반환"
+    },
+    "bodyPreview": {
+      "type": "String",
+      "description": "메일 본문 미리보기 (첫 255자)",
+      "input": "본문에서 자동 추출",
+      "result": "본문 내용의 요약 텍스트 반환"
+    },
+    "importance": {
+      "type": "String",
+      "enum": ["low", "normal", "high"],
+      "description": "메일 중요도",
+      "input": "발신자가 설정한 중요도",
+      "result": "low, normal, high 중 하나 반환"
+    },
+    "parentFolderId": {
+      "type": "String",
+      "description": "메일이 속한 폴더 ID",
+      "input": "자동 할당됨",
+      "result": "현재 메일이 저장된 폴더의 ID 반환"
+    },
+    "conversationId": {
+      "type": "String",
+      "description": "대화 스레드 ID",
+      "input": "자동 생성됨",
+      "result": "관련 메일들을 묶는 대화 ID 반환"
+    },
+    "conversationIndex": {
+      "type": "String",
+      "description": "대화 내 메일 순서",
+      "input": "자동 계산됨",
+      "result": "대화 스레드 내에서의 위치 정보 반환"
+    },
+    "isDeliveryReceiptRequested": {
+      "type": "Boolean",
+      "description": "배달 확인 요청 여부",
+      "input": "발신자가 설정",
+      "result": "배달 확인이 요청되면 true 반환"
+    },
+    "isReadReceiptRequested": {
+      "type": "Boolean",
+      "description": "읽음 확인 요청 여부",
+      "input": "발신자가 설정",
+      "result": "읽음 확인이 요청되면 true 반환"
+    },
+    "isRead": {
+      "type": "Boolean",
+      "description": "메일 읽음 상태",
+      "input": "사용자 행동에 따라 변경",
+      "result": "읽었으면 true, 안 읽었으면 false 반환"
+    },
+    "isDraft": {
+      "type": "Boolean",
+      "description": "임시저장 메일 여부",
+      "input": "메일 상태에 따라 결정",
+      "result": "임시저장이면 true, 발송/수신이면 false 반환"
+    },
+    "webLink": {
+      "type": "String",
+      "description": "웹에서 메일을 볼 수 있는 URL",
+      "input": "자동 생성됨",
+      "result": "Outlook 웹에서 메일을 열 수 있는 링크 반환"
+    },
+    "inferenceClassification": {
+      "type": "String",
+      "enum": ["focused", "other"],
+      "description": "AI 기반 중요도 분류",
+      "input": "자동 분류됨",
+      "result": "focused(중요) 또는 other(기타) 반환"
+    },
+    "body": {
+      "type": "Object",
+      "properties": {
+        "contentType": "String",
+        "content": "String"
+      },
+      "description": "메일 본문 전체",
+      "input": "발신자가 작성한 내용",
+      "result": "HTML 또는 텍스트 형식의 전체 본문 반환"
+    },
+    "sender": {
+      "type": "Object",
+      "properties": {
+        "emailAddress": {
+          "name": "String",
+          "address": "String"
+        }
+      },
+      "description": "실제 발송자 정보",
+      "input": "발송한 계정 정보",
+      "result": "이름과 이메일 주소 객체 반환"
+    },
+    "from": {
+      "type": "Object",
+      "properties": {
+        "emailAddress": {
+          "name": "String",
+          "address": "String"
+        }
+      },
+      "description": "발신자 정보",
+      "input": "보낸 사람 정보",
+      "result": "이름과 이메일 주소 객체 반환"
+    },
+    "toRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "받는 사람 목록",
+      "input": "수신자 이메일 주소들",
+      "result": "모든 수신자의 이름과 이메일 배열 반환"
+    },
+    "ccRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "참조 수신자 목록",
+      "input": "참조로 지정된 이메일들",
+      "result": "참조 수신자들의 이름과 이메일 배열 반환"
+    },
+    "bccRecipients": {
+      "type": "Collection<Recipient>",
+      "description": "숨은 참조 수신자 목록",
+      "input": "숨은 참조로 지정된 이메일들",
+      "result": "숨은 참조 수신자들의 배열 반환 (본인 메일만)"
+    },
+    "replyTo": {
+      "type": "Collection<Recipient>",
+      "description": "회신 주소 목록",
+      "input": "회신 시 사용할 주소",
+      "result": "회신 대상 이메일 주소들 반환"
+    },
+    "flag": {
+      "type": "Object",
+      "properties": {
+        "flagStatus": "String"
+      },
+      "description": "플래그 상태 정보",
+      "input": "사용자가 설정한 플래그",
+      "result": "플래그 상태 객체 반환"
+    }
+  }
+}

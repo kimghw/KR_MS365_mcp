@@ -1,0 +1,94 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+database/
+
+# Cache
+.cache/
+*.cache
+.pytest_cache/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Claude
+# .claude/  # Commented out to include Claude commands in git
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# MCP Editor backups and cache
+mcp_editor/*/backups/
+mcp_editor/*/__pycache__/
+mcp_editor/backups/
+mcp_*/mcp_server/backups/
+*.py.backup
+*.backup
+*.bak
+
+# MCP Editor - server-specific files (auto-generated)
+mcp_editor/*/*.json
+!mcp_editor/editor_config.json
+
+# Text and PID files
+*.txt
+*.pid
+.mcp_pids/
+
+# Backup directories
+jinja/backups_*/
+backups_*/
+
+# Debug files
+mcp_editor/debug_info.md

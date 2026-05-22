@@ -1,0 +1,227 @@
+# =============================================================================
+# MCP Tool Definition Templates - AUTO-GENERATED
+# =============================================================================
+# Signatures extracted from source code using AST parsing
+#
+# 구조 설명:
+#   - name: MCP 도구 이름 (고유 식별자)
+#   - description: 도구 설명 (에이전트가 도구 선택 시 참고)
+#   - inputSchema: 입력 파라미터 스키마 (JSON Schema 형식)
+#   - mcp_service: 백엔드 서비스 연결 정보
+#   - mcp_service_factors: 내부 파라미터 기본값 설정
+# =============================================================================
+
+tools:
+- name: calendar_view
+  description: 지정된 기간의 캘린더 일정을 조회합니다. 반복 일정의 개별 인스턴스도 포함되어 실제 일정을 정확히 파악할 수 있습니다.
+  inputSchema:
+    type: object
+    properties:
+      end_datetime:
+        type: string
+        description: '조회 종료 날짜/시간 (ISO 8601 형식, 예: 2024-01-31T23:59:59)'
+        targetParam: end_datetime
+      start_datetime:
+        type: string
+        description: '조회 시작 날짜/시간 (ISO 8601 형식, 예: 2024-01-01T00:00:00)'
+        targetParam: start_datetime
+      user_email:
+        type: string
+        description: 조회할 사용자의 이메일 주소
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - start_datetime
+    - end_datetime
+  mcp_service:
+    name: calendar_view
+    parameters:
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: user_email
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: start_datetime
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: end_datetime
+      type: str
+    - default: null
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: select_params
+      type: EventSelectParams
+    - default: 50
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: top
+      type: int
+    - default: null
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: orderby
+      type: str
+    signature: 'user_email: str, start_datetime: str, end_datetime: str, select_params:
+      Optional[EventSelectParams] = None, top: int = 50, orderby: Optional[str] =
+      None'
+  mcp_service_factors: {}
+- name: get_event
+  description: 특정 이벤트의 상세 정보를 조회합니다. 이벤트 ID를 알고 있을 때 사용합니다.
+  inputSchema:
+    type: object
+    properties:
+      event_id:
+        type: string
+        description: 조회할 이벤트의 ID
+        targetParam: event_id
+      user_email:
+        type: string
+        description: 사용자 이메일 주소
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - event_id
+  mcp_service:
+    name: get_event
+    parameters:
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: user_email
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: event_id
+      type: str
+    - default: null
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: select_params
+      type: EventSelectParams
+    signature: 'user_email: str, event_id: str, select_params: Optional[EventSelectParams]
+      = None'
+  mcp_service_factors: {}
+- name: create_event
+  description: 새로운 캘린더 이벤트를 생성합니다. 제목, 시작/종료 시간은 필수입니다.
+  inputSchema:
+    type: object
+    properties:
+      body:
+        type: string
+        description: 이벤트 본문/설명
+        targetParam: body
+      end:
+        type: string
+        description: 종료 날짜/시간 (ISO 8601 형식)
+        targetParam: end
+      location:
+        type: string
+        description: 장소
+        targetParam: location
+      start:
+        type: string
+        description: 시작 날짜/시간 (ISO 8601 형식)
+        targetParam: start
+      subject:
+        type: string
+        description: 이벤트 제목
+        targetParam: subject
+      user_email:
+        type: string
+        description: 이벤트를 생성할 사용자 이메일
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - subject
+    - start
+    - end
+  mcp_service:
+    name: create_event
+    parameters:
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: user_email
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: subject
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: start
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: end
+      type: str
+    - default: null
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: body
+      type: str
+    - default: null
+      has_default: true
+      is_optional: true
+      is_required: false
+      name: location
+      type: str
+    signature: 'user_email: str, subject: str, start: str, end: str, body: Optional[str]
+      = None, location: Optional[str] = None'
+  mcp_service_factors: {}
+- name: delete_event
+  description: 지정된 이벤트를 삭제합니다.
+  inputSchema:
+    type: object
+    properties:
+      event_id:
+        type: string
+        description: 삭제할 이벤트의 ID
+        targetParam: event_id
+      user_email:
+        type: string
+        description: 사용자 이메일 주소
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - event_id
+  mcp_service:
+    name: delete_event
+    parameters:
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: user_email
+      type: str
+    - default: null
+      has_default: false
+      is_optional: false
+      is_required: true
+      name: event_id
+      type: str
+    signature: 'user_email: str, event_id: str'
+  mcp_service_factors: {}

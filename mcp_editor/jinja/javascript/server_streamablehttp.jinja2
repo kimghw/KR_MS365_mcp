@@ -1,0 +1,301 @@
+/**
+ * MCP Server for {{ server_title | default(server_name | title) }}
+ * Streamable HTTP Server (SSE-based)
+ *
+ * Generated from JavaScript template with registry data
+ *
+ * Protocol: Streamable HTTP (Server-Sent Events)
+ * Server: {{ server_name }}
+ * Generated: {{ generation_timestamp | default('auto') }}
+ */
+
+const http = require('http');
+const url = require('url');
+
+// ============================================================
+// Configuration
+// ============================================================
+const SERVER_NAME = '{{ server_name }}';
+const SERVER_VERSION = '1.0.0';
+const PORT = {{ port | default(3000) }};
+
+// ============================================================
+// Service Imports
+// ============================================================
+{%- for service_name, service_info in services.items() %}
+{%- set file_path = service_info.file or (service_info.handler.file if service_info.handler else none) %}
+{%- if file_path %}
+// {{ service_name }}: {{ file_path }}
+{%- endif %}
+{%- endfor %}
+
+const services = {};
+
+// Dynamic service loader
+async function loadServices() {
+{%- for service_name, service_info in services.items() %}
+{%- set file_path = service_info.file or (service_info.handler.file if service_info.handler else none) %}
+{%- set method_name = service_info.method or (service_info.handler.method if service_info.handler else service_name) %}
+{%- if file_path %}
+    try {
+        const {{ service_name }}Module = require('{{ file_path | replace(server_root + "/", "./") }}');
+        // Try multiple export patterns: named export, method, default, or module itself
+        services['{{ service_name }}'] = {{ service_name }}Module.{{ method_name }}
+            || {{ service_name }}Module['{{ method_name }}']
+            || {{ service_name }}Module.default
+            || (typeof {{ service_name }}Module === 'function' ? {{ service_name }}Module : null);
+        if (!services['{{ service_name }}']) {
+            console.warn(`Service {{ service_name }}: No callable function found in module`);
+        }
+    } catch (e) {
+        console.warn(`Failed to load service {{ service_name }}:`, e.message);
+    }
+{%- endif %}
+{%- endfor %}
+}
+
+// ============================================================
+// Tool Definitions
+// ============================================================
+const TOOLS = [
+{%- for tool in tools %}
+    {
+        name: '{{ tool.name }}',
+        description: `{{ tool.description | default('') | replace('`', '\\`') }}`,
+        inputSchema: {{ tool.inputSchema | tojson }},
+        {%- if tool.mcp_service %}
+        _service: '{{ tool.mcp_service.name if tool.mcp_service is mapping else tool.mcp_service }}',
+        {%- endif %}
+    },
+{%- endfor %}
+];
+
+// Tool name to service mapping
+const TOOL_SERVICE_MAP = {
+{%- for tool in tools %}
+{%- if tool.mcp_service %}
+    '{{ tool.name }}': '{{ tool.mcp_service.name if tool.mcp_service is mapping else tool.mcp_service }}',
+{%- endif %}
+{%- endfor %}
+};
+
+// ============================================================
+// MCP Protocol Implementation
+// ============================================================
+
+/**
+ * Handle MCP initialize request
+ */
+function handleInitialize(params) {
+    return {
+        protocolVersion: '2024-11-05',
+        capabilities: {
+            tools: { listChanged: true },
+        },
+        serverInfo: {
+            name: SERVER_NAME,
+            version: SERVER_VERSION,
+        },
+    };
+}
+
+/**
+ * Handle tools/list request
+ */
+function handleToolsList() {
+    return {
+        tools: TOOLS.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+        })),
+    };
+}
+
+/**
+ * Handle tools/call request
+ */
+async function handleToolsCall(params) {
+    const { name, arguments: args } = params;
+
+    const serviceName = TOOL_SERVICE_MAP[name];
+    if (!serviceName) {
+        throw new Error(`Unknown tool: ${name}`);
+    }
+
+    const serviceFunc = services[serviceName];
+    if (!serviceFunc) {
+        throw new Error(`Service not loaded: ${serviceName}`);
+    }
+
+    try {
+        const result = await serviceFunc(args);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+                },
+            ],
+        };
+    } catch (error) {
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Error: ${error.message}`,
+                },
+            ],
+            isError: true,
+        };
+    }
+}
+
+/**
+ * Process JSON-RPC request
+ */
+async function processRequest(request) {
+    const { method, params, id } = request;
+
+    let result;
+    let error = null;
+
+    try {
+        switch (method) {
+            case 'initialize':
+                result = handleInitialize(params);
+                break;
+            case 'tools/list':
+                result = handleToolsList();
+                break;
+            case 'tools/call':
+                result = await handleToolsCall(params);
+                break;
+            case 'notifications/initialized':
+                // No response needed for notifications
+                return null;
+            default:
+                throw { code: -32601, message: `Method not found: ${method}` };
+        }
+    } catch (e) {
+        error = {
+            code: e.code || -32603,
+            message: e.message || 'Internal error',
+        };
+    }
+
+    if (id === undefined) {
+        return null; // Notification, no response
+    }
+
+    return {
+        jsonrpc: '2.0',
+        id,
+        ...(error ? { error } : { result }),
+    };
+}
+
+// ============================================================
+// HTTP Server with SSE Support
+// ============================================================
+
+const server = http.createServer(async (req, res) => {
+    const parsedUrl = url.parse(req.url, true);
+
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
+    // Health check endpoint
+    if (parsedUrl.pathname === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', server: SERVER_NAME, version: SERVER_VERSION }));
+        return;
+    }
+
+    // SSE endpoint for streaming
+    if (parsedUrl.pathname === '/sse' || parsedUrl.pathname === '/stream') {
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        });
+
+        // Send initial connection event
+        res.write(`data: ${JSON.stringify({ type: 'connected', server: SERVER_NAME })}\n\n`);
+
+        // Keep connection alive
+        const keepAlive = setInterval(() => {
+            res.write(': keepalive\n\n');
+        }, 30000);
+
+        req.on('close', () => {
+            clearInterval(keepAlive);
+        });
+
+        return;
+    }
+
+    // MCP JSON-RPC endpoint
+    if (parsedUrl.pathname === '/mcp' || parsedUrl.pathname === '/') {
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+            try {
+                const request = JSON.parse(body);
+                const response = await processRequest(request);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                if (response) {
+                    res.end(JSON.stringify(response));
+                } else {
+                    res.end();
+                }
+            } catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    jsonrpc: '2.0',
+                    error: { code: -32700, message: 'Parse error' },
+                    id: null,
+                }));
+            }
+        });
+        return;
+    }
+
+    // 404 for unknown paths
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+// ============================================================
+// Server Startup
+// ============================================================
+
+async function main() {
+    console.log(`Loading services for ${SERVER_NAME}...`);
+    await loadServices();
+    console.log(`Loaded ${Object.keys(services).length} services`);
+
+    server.listen(PORT, () => {
+        console.log(`\n🚀 ${SERVER_NAME} MCP Server running on port ${PORT}`);
+        console.log(`   Health: http://localhost:${PORT}/health`);
+        console.log(`   MCP:    http://localhost:${PORT}/mcp`);
+        console.log(`   SSE:    http://localhost:${PORT}/sse`);
+    });
+}
+
+main().catch(console.error);

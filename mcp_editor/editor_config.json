@@ -1,0 +1,51 @@
+{
+  "calendar": {
+    "template_definitions_path": "mcp_calendar/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_calendar/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_calendar/backups",
+    "types_files": [
+      "../mcp_calendar/calendar_types.py"
+    ],
+    "host": "0.0.0.0",
+    "port": 8002
+  },
+  "file_handler": {
+    "template_definitions_path": "mcp_file_handler/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_file_handler/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_file_handler/backups",
+    "types_files": [],
+    "host": "0.0.0.0",
+    "port": 8003
+  },
+  "outlook": {
+    "template_definitions_path": "mcp_outlook/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_outlook/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_outlook/backups",
+    "types_files": [
+      "../mcp_outlook/outlook_types.py"
+    ],
+    "host": "0.0.0.0",
+    "port": 8004
+  },
+  "asset_management": {
+    "template_definitions_path": "mcp_asset_management/tool_definition_templates.py",
+    "tool_definitions_path": "../mcp_asset_management/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_asset_management/backups",
+    "types_files": [
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_account.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_career.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_crew.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_education.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_license.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_remote_auth.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/employee_shore.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/mst_education.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/mst_employee.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/mst_license.js",
+      "../mcp_asset_management/asset-api/sequelize/models2/mst_position.js"
+    ],
+    "language": "javascript",
+    "host": "0.0.0.0",
+    "port": 8001
+  }
+}

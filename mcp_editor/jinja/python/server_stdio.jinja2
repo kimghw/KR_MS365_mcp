@@ -1,0 +1,274 @@
+{# server_stdio.jinja2 - STDIO Protocol Implementation #}
+# ============================================================
+# STDIO Protocol Implementation for MCP Server
+# ============================================================
+# Note: This template is included by universal_server_template.jinja2
+# All common imports and utilities are defined in the parent template
+# .env loading and stdout redirect are done in the parent template
+# BEFORE module imports to ensure env vars are available early.
+
+# Configure logging for STDIO (stderr to avoid interfering with stdout)
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stderr
+)
+logger = logging.getLogger(__name__)
+
+class StdioMCPServer:
+    """MCP STDIO Protocol Server
+
+    Handles MCP protocol communication via standard input/output using JSON-RPC format.
+    Messages are delimited by newlines for easy parsing.
+    """
+
+    def __init__(self):
+        self.running = False
+        self.request_id_counter = 0
+        logger.info(f"{{ server_title }} STDIO Server initialized")
+
+    async def read_message(self) -> Optional[Dict[str, Any]]:
+        """Read a single JSON-RPC message from stdin"""
+        try:
+            line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+            if not line:
+                return None
+
+            message = json.loads(line.strip())
+            logger.debug(f"Received message: {message}")
+            return message
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON received: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error reading message: {e}")
+            return None
+
+    def write_message(self, message: Dict[str, Any]):
+        """Write a JSON-RPC message to the real stdout (not stderr)"""
+        try:
+            json_str = json.dumps(message, ensure_ascii=False)
+            _original_stdout.write(json_str + '\n')
+            _original_stdout.flush()
+            logger.debug(f"Sent message: {message}")
+        except Exception as e:
+            logger.error(f"Error writing message: {e}")
+
+    def send_error(self, request_id: Any, code: int, message: str, data: Any = None):
+        """Send JSON-RPC error response"""
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": code,
+                "message": message
+            }
+        }
+        if data is not None:
+            error_response["error"]["data"] = data
+        self.write_message(error_response)
+
+    def send_result(self, request_id: Any, result: Any):
+        """Send JSON-RPC success response"""
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result
+        }
+        self.write_message(response)
+
+    async def handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle initialize request"""
+        client_info = params.get("clientInfo", {})
+        logger.info(f"Client connected: {client_info.get('name', 'unknown')}")
+
+        return {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "{{ server_name }}",
+                "version": "1.0.0"
+            }
+        }
+
+    async def handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle tools/list request"""
+        return {"tools": MCP_TOOLS}
+
+    def apply_schema_defaults(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply default values from inputSchema to arguments if not provided."""
+        tool_config = get_tool_config(tool_name)
+        if not tool_config:
+            return arguments
+
+        input_schema = tool_config.get("inputSchema", {})
+        properties = input_schema.get("properties", {})
+
+        # Create a copy of arguments to avoid modifying the original
+        merged_args = dict(arguments) if arguments else {}
+
+        # Apply defaults for properties that have them and are not in arguments
+        for prop_name, prop_def in properties.items():
+            if prop_name not in merged_args and "default" in prop_def:
+                merged_args[prop_name] = prop_def["default"]
+                logger.debug(f"Applied default for {prop_name}: {prop_def['default']}")
+
+        return merged_args
+
+    async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle tools/call request"""
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+
+        if not tool_name:
+            raise ValueError("Tool name is required")
+
+        # Apply default values from inputSchema
+        arguments = self.apply_schema_defaults(tool_name, arguments)
+
+        # Look up the handler function
+        handler_name = f"handle_{tool_name.replace('-', '_')}"
+        if handler_name not in globals():
+            raise ValueError(f"Unknown tool: {tool_name}")
+
+        try:
+            # Call the tool handler
+            result = await globals()[handler_name](arguments)
+
+            # Check for auth_required response (login URL for LLM)
+            if isinstance(result, dict) and result.get("status") == "auth_required":
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(result, ensure_ascii=False, indent=2)
+                        }
+                    ],
+                    "isError": True
+                }
+
+            # Format result for MCP
+            if isinstance(result, dict) and "content" in result:
+                return result
+            elif isinstance(result, str):
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": result
+                        }
+                    ]
+                }
+            else:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(result, ensure_ascii=False, indent=2)
+                        }
+                    ]
+                }
+        except Exception as e:
+            logger.error(f"Error executing tool {tool_name}: {e}")
+            raise
+
+    async def handle_request(self, request: Dict[str, Any]):
+        """Handle a single JSON-RPC request"""
+        request_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params", {})
+
+        if not method:
+            self.send_error(request_id, -32600, "Invalid Request: missing method")
+            return
+
+        try:
+            # Route to appropriate handler based on method
+            if method == "initialize":
+                result = await self.handle_initialize(params)
+            elif method == "tools/list":
+                result = await self.handle_tools_list(params)
+            elif method == "tools/call":
+                result = await self.handle_tools_call(params)
+            elif method == "shutdown":
+                logger.info("Shutdown requested")
+                self.running = False
+                result = {}
+            elif method == "ping":
+                result = {"pong": True}
+            else:
+                self.send_error(request_id, -32601, f"Method not found: {method}")
+                return
+
+            # Send successful response
+            self.send_result(request_id, result)
+
+        except ValueError as e:
+            self.send_error(request_id, -32602, f"Invalid params: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error handling request: {e}", exc_info=True)
+            self.send_error(request_id, -32603, f"Internal error: {str(e)}")
+
+    async def handle_notification(self, notification: Dict[str, Any]):
+        """Handle JSON-RPC notifications (no response expected)"""
+        method = notification.get("method")
+        params = notification.get("params", {})
+
+        logger.info(f"Received notification: {method}")
+
+        # Notifications don't require responses
+        if method == "notifications/initialized":
+            logger.info("Client initialization complete")
+        elif method == "cancelled":
+            logger.info(f"Request cancelled: {params.get('id')}")
+        elif method == "progress":
+            logger.info(f"Progress update: {params}")
+        # Add more notification handlers as needed
+
+    async def run(self):
+        """Main server loop"""
+        self.running = True
+
+        # Initialize services before starting
+        {%- for key, service_info in unique_services.items() %}
+        if hasattr({{ service_info.instance }}, 'initialize'):
+            await {{ service_info.instance }}.initialize()
+            logger.info("{{ service_info.class_name }} initialized")
+        {%- endfor %}
+
+        logger.info(f"{{ server_title }} STDIO Server started")
+        logger.info("Waiting for messages on stdin...")
+
+        try:
+            while self.running:
+                # Read next message
+                message = await self.read_message()
+
+                if message is None:
+                    # EOF or error - exit gracefully
+                    logger.info("Input stream closed, shutting down")
+                    break
+
+                # Check if it's a request or notification
+                if "id" in message:
+                    # Request - requires response
+                    await self.handle_request(message)
+                else:
+                    # Notification - no response needed
+                    await self.handle_notification(message)
+
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+        except Exception as e:
+            logger.error(f"Server error: {e}", exc_info=True)
+        finally:
+            logger.info("{{ server_title }} STDIO Server stopped")
+
+# Main entry point for STDIO protocol
+async def handle_stdio():
+    """Handle MCP protocol via stdin/stdout"""
+    server = StdioMCPServer()
+    await server.run()

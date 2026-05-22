@@ -1,0 +1,67 @@
+/* MCP Logo Box Rotating Gradient Animation */
+@keyframes gradientSpin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.mcp-logo-box {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 12px;
+    overflow: hidden;
+    background: white;
+}
+
+.mcp-logo-box::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0deg,
+        transparent 270deg,
+        #00ff87 270deg,
+        #0080ff 315deg,
+        #5e00ff 350deg,
+        transparent 360deg
+    );
+    animation: gradientSpin 2s linear infinite;
+    z-index: 1;
+}
+
+.mcp-logo-box::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    background: white;
+    border-radius: 50%;
+    z-index: 2;
+}
+
+.mcp-logo-box svg {
+    position: relative;
+    z-index: 3;
+    fill: #1d1d1f;
+}
+
+/* Hover effect - slow down animation */
+.mcp-controller:hover .mcp-logo-box::before {
+    animation-duration: 6s;
+}
+
+/* Shadow effect */
+.mcp-logo-box {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1), 0 0 20px rgba(124,58,237,0.1);
+}

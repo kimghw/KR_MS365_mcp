@@ -1,0 +1,178 @@
+# =============================================================================
+# MCP Tool Definition Templates - AUTO-GENERATED
+# =============================================================================
+# Signatures extracted from source code using AST parsing
+#
+# 구조 설명:
+#   - name: MCP 도구 이름 (고유 식별자)
+#   - description: 도구 설명 (에이전트가 도구 선택 시 참고)
+#   - inputSchema: 입력 파라미터 스키마 (JSON Schema 형식)
+#   - mcp_service: 백엔드 서비스 연결 정보
+#   - mcp_service_factors: 내부 파라미터 기본값 설정
+# =============================================================================
+
+tools:
+- name: new_tool_1768316544612
+  description: New tool description
+  inputSchema:
+    type: object
+    properties:
+      licenseData:
+        type: object
+        description: employeeLicense parameters
+        properties:
+          abilityWelding:
+            type: string
+            description: ''
+            targetParam: abilityWelding
+          createdAt:
+            type: string
+            description: ''
+            targetParam: createdAt
+          deletedAt:
+            type: string
+            description: ''
+            targetParam: deletedAt
+          employeeId:
+            type: integer
+            description: ''
+            targetParam: employeeId
+          expiredDate:
+            type: string
+            description: ''
+            targetParam: expiredDate
+          id:
+            type: integer
+            description: ''
+            targetParam: id
+          issuedDate:
+            type: string
+            description: ''
+            targetParam: issuedDate
+          licenseId:
+            type: integer
+            description: ''
+            targetParam: licenseId
+          updatedAt:
+            type: string
+            description: ''
+            targetParam: updatedAt
+        required: []
+        baseModel: employeeLicense
+        targetParam: licenseData
+    required:
+    - licenseData
+  mcp_service:
+    name: createUserLicense
+- name: new_tool_1768364157986
+  description: New tool description
+  inputSchema:
+    type: object
+    properties:
+      crewData:
+        type: object
+        description: mstEmployee parameters
+        properties:
+          address:
+            type: string
+            description: ''
+            targetParam: address
+          age:
+            type: integer
+            description: ''
+            targetParam: age
+          birthPlace:
+            type: string
+            description: ''
+            targetParam: birthPlace
+          createdAt:
+            type: string
+            description: ''
+            targetParam: createdAt
+          crewCivilStatus:
+            type: string
+            description: ''
+            targetParam: crewCivilStatus
+          dateOfBirth:
+            type: string
+            description: ''
+            targetParam: dateOfBirth
+          deletedAt:
+            type: string
+            description: ''
+            targetParam: deletedAt
+          eduAttainDegree:
+            type: string
+            description: ''
+            targetParam: eduAttainDegree
+          eduAttainSchool:
+            type: string
+            description: ''
+            targetParam: eduAttainSchool
+          emergAddress:
+            type: string
+            description: ''
+            targetParam: emergAddress
+          emergContactName:
+            type: string
+            description: ''
+            targetParam: emergContactName
+          emergNumber:
+            type: string
+            description: ''
+            targetParam: emergNumber
+          emergRlative:
+            type: string
+            description: ''
+            targetParam: emergRlative
+          emplEnd:
+            type: string
+            description: ''
+            targetParam: emplEnd
+          emplIssued:
+            type: string
+            description: ''
+            targetParam: emplIssued
+          gender:
+            type: string
+            description: ''
+            targetParam: gender
+          id:
+            type: integer
+            description: ''
+            targetParam: id
+          mobile:
+            type: string
+            description: ''
+            targetParam: mobile
+          nameChi:
+            type: string
+            description: ''
+            targetParam: nameChi
+          nameEng:
+            type: string
+            description: ''
+            targetParam: nameEng
+          nameKr:
+            type: string
+            description: ''
+            targetParam: nameKr
+          nationality:
+            type: string
+            description: ''
+            targetParam: nationality
+          profilePic:
+            type: string
+            description: ''
+            targetParam: profilePic
+          updatedAt:
+            type: string
+            description: ''
+            targetParam: updatedAt
+        required: []
+        baseModel: mstEmployee
+        targetParam: crewData
+    required:
+    - crewData
+  mcp_service:
+    name: createCrew

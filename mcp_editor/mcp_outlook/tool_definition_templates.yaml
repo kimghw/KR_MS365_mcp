@@ -1,0 +1,1102 @@
+# =============================================================================
+# MCP Tool Definition Templates - AUTO-GENERATED
+# =============================================================================
+#
+# 데이터 출처:
+#   1. 초기 생성: registry_{server}.json (AST 스캐너가 @mcp_service 데코레이터 파싱)
+#   2. 이후 편집: 웹에디터 UI (http://localhost:8094)에서 수정 후 Save
+#
+# 소스 파일: mcp_editor/service_registry/registry_outlook.json
+# 웹에디터: mcp_editor/tool_editor_web.py
+#
+# 구조 설명:
+#   - name: MCP 도구 이름 (고유 식별자)
+#   - description: 도구 설명 (에이전트가 도구 선택 시 참고)
+#   - inputSchema: 입력 파라미터 스키마 (JSON Schema 형식)
+#   - mcp_service: 백엔드 서비스 연결 정보 (registry_{server}.json에서 로드)
+#   - mcp_service_factors: 내부 파라미터 기본값 설정 (웹에디터에서 편집)
+# =============================================================================
+
+tools:
+- name: mail_list_period
+  description: '지정된 기간의 메일 목록을 미리보기 형태로 조회합니다. 메일 본문 전체가 아닌 제목, 발신자, 날짜, 요약 등 핵심 정보만을
+    효율적으로 가져와 테이블 형태로 정리합니다. '
+  inputSchema:
+    type: object
+    properties:
+      DatePeriodFilter:
+        type: object
+        description: '에이전트는 는 사용자의 질의에 따라 검색 범위의 날짜를 추출한다. '
+        properties:
+          received_date_from:
+            type: string
+            description: 메일 수신 시작 날짜 (포함, receivedDateTime >= 이 값)
+            targetParam: received_date_from
+          received_date_to:
+            type: string
+            description: 메일 수신 종료 날짜 (포함, receivedDateTime <= 이 값)
+            targetParam: received_date_to
+        required:
+        - received_date_from
+        - received_date_to
+        baseModel: FilterParams
+        targetParam: filter_params
+      user_email:
+        type: string
+        description: 이메일 주소를 입력하고 입력하지 않을 경우 내부에서 연결정보를 메일 주소를 추정함
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - DatePeriodFilter
+  mcp_service:
+    name: query_mail_list
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: query_method
+      type: QueryMethod
+      is_optional: true
+      is_required: false
+      default: QueryMethod.FILTER
+      has_default: true
+    - name: filter_params
+      type: FilterParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: exclude_params
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: search_term
+      type: str
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: url
+      type: str
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    - name: order_by
+      type: str
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    signature: 'user_email: str, query_method: Optional[QueryMethod] = "QueryMethod.FILTER",
+      filter_params: Optional[FilterParams] = None, exclude_params: Optional[ExcludeParams]
+      = None, select_params: Optional[SelectParams] = None, client_filter: Optional[ExcludeParams]
+      = None, search_term: Optional[str] = None, url: Optional[str] = None, top: Optional[int]
+      = 50, order_by: Optional[str] = None'
+  mcp_service_factors:
+    client_filter:
+      source: internal
+      type: ExcludeParams
+      targetParam: client_filter
+      description: ExcludeParams parameters
+      parameters:
+      - name: exclude_from_address
+        type: array
+        is_optional: true
+        default:
+        - block@krs.co.kr
+        - no-reply@teams.mail.microsoft
+        - reminders@facebookmail.com
+        - no-reply@sharepointonline.com
+        has_default: true
+        description: 제외할 발신자 주소 (from 필드)
+      - name: exclude_subject_keywords
+        type: string
+        is_optional: false
+        default: null
+        has_default: false
+        description: 제목에서 제외할 키워드 목록
+    select:
+      source: internal
+      type: SelectParams
+      targetParam: select_params
+      description: SelectParams parameters
+      parameters:
+      - name: bcc_recipients
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 숨은 참조 (Bcc:) 수신자 목록
+      - name: body
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 본문 (HTML 또는 텍스트 형식)
+      - name: body_preview
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 본문의 처음 255자 (텍스트 형식)
+      - name: categories
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지에 연결된 카테고리 목록
+      - name: cc_recipients
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 참조 (Cc:) 수신자 목록
+      - name: change_key
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 버전 키
+      - name: conversation_id
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 이메일이 속한 대화의 ID
+      - name: conversation_index
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 대화 내 메시지 위치를 나타내는 인덱스
+      - name: created_date_time
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 생성 날짜/시간 (ISO 8601 형식, UTC)
+      - name: flag
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지의 플래그 상태, 시작 날짜, 기한, 완료 날짜
+      - name: from_recipient
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지가 전송된 사서함의 소유자 (from 필드)
+      - name: has_attachments
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 첨부파일 포함 여부
+      - name: id
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 고유 식별자 (읽기 전용)
+      - name: importance
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 중요도 (low, normal, high)
+      - name: inference_classification
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 분류 (focused 또는 other)
+      - name: internet_message_headers
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: RFC5322에 정의된 메시지 헤더 컬렉션 (읽기 전용)
+      - name: internet_message_id
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: RFC2822 형식의 메시지 ID
+      - name: is_delivery_receipt_requested
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 배달 확인 요청 여부
+      - name: is_draft
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지가 임시 저장 상태인지 여부
+      - name: is_read
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 읽음 상태
+      - name: is_read_receipt_requested
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 읽음 확인 요청 여부
+      - name: last_modified_date_time
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 최종 수정 날짜/시간 (ISO 8601 형식, UTC)
+      - name: parent_folder_id
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 부모 메일 폴더의 고유 식별자
+      - name: received_date_time
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 수신 날짜/시간 (ISO 8601 형식, UTC)
+      - name: reply_to
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 회신 시 사용할 이메일 주소 목록
+      - name: sender
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지를 생성하는 데 사용된 계정
+      - name: sent_date_time
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 메시지 발신 날짜/시간 (ISO 8601 형식, UTC)
+      - name: subject
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 제목
+      - name: to_recipients
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 받는 사람 (To:) 목록
+      - name: unique_body
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: 현재 메시지에 고유한 본문 부분
+      - name: web_link
+        type: boolean
+        is_optional: true
+        default: false
+        has_default: true
+        description: Outlook Web에서 메시지를 열기 위한 URL
+    top:
+      source: internal
+      type: integer
+      targetParam: top
+      description: ''
+      default: 500
+      parameters: []
+- name: mail_list_keyword
+  description: New tool description
+  inputSchema:
+    type: object
+    properties:
+      search_keywords:
+        type: string
+        description: '1. 단일 키워드 검색 어디든 해당 키워드가 포함된 메일을 찾습니다. 예: keyword1 2. 여러 키워드
+          모두 포함 (AND) 공백으로 구분하면 모든 키워드가 포함된 메일을 찾습니다. 예: keyword1 keyword2 3. 여러 키워드
+          중 하나라도 포함 (OR) OR 연산자로 여러 키워드 중 하나라도 있는 메일을 찾습니다. 예: keyword1 OR keyword2
+          4. 특정 키워드 제외 (NOT) 마이너스 기호로 특정 키워드가 없는 메일만 찾습니다. 예: keyword1 -keyword2 5.
+          정확한 구문 검색 따옴표로 묶어 정확한 순서의 구문을 찾습니다. 예: "keyword1 keyword2" 6. 복합 조건 괄호와
+          연산자를 조합하여 복잡한 조건을 만들 수 있습니다. 예: (keyword1 OR keyword2) keyword3'
+        targetParam: search_term
+      top:
+        type: integer
+        description: ''
+        targetParam: top
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - search_keywords
+  mcp_service:
+    name: fetch_search
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: search_term
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    signature: 'user_email: str, search_term: str, select_params: Optional[SelectParams]
+      = None, client_filter: Optional[ExcludeParams] = None, top: Optional[int] =
+      50'
+  mcp_service_factors:
+    select_params:
+      source: internal
+      type: SelectParams
+      targetParam: select_params
+      description: SelectParams parameters for mail_list_keyword
+      parameters: []
+- name: mail_query_if_emaidID
+  description: '특정 메일 ID 목록을 사용하여 해당 메일들의 상세 정보를 일괄 조회합니다. 이미 알고 있는 메일 ID를 통해 여러 메일의
+    전체 내용을 한 번에 가져올 수 있습니다. messageid 나 attachmentid 가 식별되지 않는 다면 우선 mail_list_period나
+    mail_list_keyword로 호출한다. '
+  inputSchema:
+    type: object
+    properties:
+      message_ids:
+        type: array
+        description: ''
+        targetParam: message_ids
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required: []
+  mcp_service:
+    name: batch_and_fetch
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: message_ids
+      type: List[str]
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    signature: 'user_email: str, message_ids: List[str], select_params: Optional[SelectParams]
+      = None'
+- name: mail_attachment_meta
+  description: '입력인자는  messageID 를 받아서 해당 메일의 첨부파일 메타정보와 메일 정보를 확인한다. 이전 명령에  mail이
+    조회가 되어야 messageid를 확인 후 사용할 수 있다. '
+  inputSchema:
+    type: object
+    properties:
+      message_ids:
+        type: array
+        description: ''
+        targetParam: message_ids
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - message_ids
+  mcp_service:
+    name: fetch_attachments_metadata
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: message_ids
+      type: List[str]
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    signature: 'user_email: str, message_ids: List[str], select_params: Optional[SelectParams]
+      = None'
+  mcp_service_factors:
+    select_params:
+      source: internal
+      type: SelectParams
+      targetParam: select_params
+      description: SelectParams parameters
+      parameters:
+      - name: body
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 본문 (HTML 또는 텍스트 형식)
+      - name: id
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 고유 식별자 (읽기 전용)
+      - name: received_date_time
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 수신 날짜/시간 (ISO 8601 형식, UTC)
+      - name: subject
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 제목
+- name: mail_attachment_download
+  description: |
+    메일 첨부파일을 다운로드하거나 텍스트로 변환하여 반환합니다.
+
+    [옵션 제약사항]
+    - save_file=false면 storage_type, save_directory, onedrive_folder 무시됨
+    - storage_type="local"이면 save_directory 사용, onedrive_folder 무시
+    - storage_type="onedrive"면 onedrive_folder 사용, save_directory 무시
+    - convert_to_txt=true 시 PDF/DOCX/XLSX/PPTX/HWP 변환, 미지원 형식은 원본 저장
+
+    [권장 조합]
+    - LLM 내용 분석: save_file=false, convert_to_txt=true
+    - 로컬 백업: save_file=true, storage_type="local"
+    - OneDrive 저장: save_file=true, storage_type="onedrive"
+  inputSchema:
+    type: object
+    properties:
+      convert_to_txt:
+        type: boolean
+        description: 첨부파일을 TXT로 변환. PDF, DOCX, XLSX, PPTX, HWP 등 지원
+        default: false
+        targetParam: convert_to_txt
+      include_body:
+        type: boolean
+        description: 메일 조회와 별개로 첨부파일 조회 시 메일 본문 포함 해서 반환하는 파라미터 설정
+        default: true
+        targetParam: include_body
+      message_attachment_ids:
+        type: array
+        description: '메일 ID 리스트 또는 첨부파일 ID 쌍. 예: ["msg_id1", "msg_id2"] 또는 [{"message_id":
+          "...", "attachment_id": "..."}]'
+        targetParam: message_attachment_ids
+      onedrive_folder:
+        type: string
+        description: OneDrive 저장 폴더 경로 (storage_type=onedrive일 때 사용)
+        default: /Attachments
+        targetParam: onedrive_folder
+      save_directory:
+        type: string
+        description: 저장 디렉토리 경로 (save_file=true일 때 사용)
+        default: downloads
+        targetParam: save_directory
+      flat_folder:
+        type: boolean
+        description: true면 메일별 하위폴더 없이 save_directory에 모든 첨부파일을 바로 저장
+        default: false
+        targetParam: flat_folder
+      save_file:
+        type: boolean
+        description: 파일 저장 여부. false면 메모리로 반환 (LLM이 직접 내용 확인 가능)
+        default: true
+        targetParam: save_file
+      skip_duplicates:
+        type: boolean
+        description: 이미 처리된 메일 건너뛰기
+        default: true
+        targetParam: skip_duplicates
+      storage_type:
+        type: string
+        description: '저장소 유형: "local" (로컬 디스크) 또는 "onedrive" (OneDrive 업로드)'
+        enum:
+        - local
+        - onedrive
+        default: local
+        targetParam: storage_type
+      user_email:
+        type: string
+        description: 사용자 이메일 주소
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - message_attachment_ids
+  mcp_service:
+    name: download_attachments
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: message_attachment_ids
+      type: Union[List[str], List[Dict[str, str]]]
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: save_directory
+      type: str
+      is_optional: true
+      is_required: false
+      default: downloads
+      has_default: true
+    - name: flat_folder
+      type: bool
+      is_optional: true
+      is_required: false
+      default: false
+      has_default: true
+    - name: skip_duplicates
+      type: bool
+      is_optional: true
+      is_required: false
+      default: true
+      has_default: true
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: save_file
+      type: bool
+      is_optional: true
+      is_required: false
+      default: true
+      has_default: true
+    - name: storage_type
+      type: str
+      is_optional: true
+      is_required: false
+      default: local
+      has_default: true
+    - name: convert_to_txt
+      type: bool
+      is_optional: true
+      is_required: false
+      default: false
+      has_default: true
+    - name: include_body
+      type: bool
+      is_optional: true
+      is_required: false
+      default: true
+      has_default: true
+    - name: onedrive_folder
+      type: str
+      is_optional: true
+      is_required: false
+      default: /Attachments
+      has_default: true
+    signature: 'user_email: str, message_attachment_ids: Union[List[str], List[Dict[str,
+      str]]], save_directory: Optional[str] = "downloads", flat_folder: Optional[bool]
+      = False, skip_duplicates: Optional[bool] = True, select_params: Optional[SelectParams]
+      = None, save_file: Optional[bool] = True, storage_type: Optional[str] = "local",
+      convert_to_txt: Optional[bool] = False, include_body: Optional[bool] = True,
+      onedrive_folder: Optional[str]
+      = "/Attachments"'
+- name: mail_fetch_filter
+  description: Outlook 메일을 날짜, 발신자, 제목 등 다양한 필터 조건을 사용하여 조회합니다. 특정 기간이나 조건에 맞는 메일을
+    효율적으로 검색할 수 있습니다. mail_list_xx 와 달리 본문을 포함해서 반환한다.
+  inputSchema:
+    type: object
+    properties:
+      exclude_params:
+        type: object
+        description: 제외 조건
+        baseModel: ExcludeParams
+        targetParam: exclude_params
+      filter_params:
+        type: object
+        description: 메일 필터링 조건
+        properties:
+          received_date_from:
+            type: string
+            description: 메일 수신 시작 날짜 (포함, receivedDateTime >= 이 값)
+            targetParam: received_date_from
+          received_date_to:
+            type: string
+            description: 메일 수신 종료 날짜 (포함, receivedDateTime <= 이 값)
+            targetParam: received_date_to
+          sent_date_from:
+            type: string
+            description: 메일 발신 시작 날짜 (포함, sentDateTime >= 이 값)
+            targetParam: sent_date_from
+          sent_date_to:
+            type: string
+            description: 메일 발신 종료 날짜 (포함, sentDateTime <= 이 값)
+            targetParam: sent_date_to
+        baseModel: FilterParams
+        targetParam: filter_params
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required: []
+  mcp_service:
+    name: fetch_filter
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: filter_params
+      type: FilterParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: exclude_params
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    signature: 'user_email: str, filter_params: Optional[FilterParams] = None, exclude_params:
+      Optional[ExcludeParams] = None, select_params: Optional[SelectParams] = None,
+      client_filter: Optional[ExcludeParams] = None, top: Optional[int] = 50'
+  mcp_service_factors:
+    filter_params:
+      source: signature_defaults
+      type: FilterParams
+      targetParam: filter_params
+      description: Test signature defaults
+      parameters:
+      - name: test_field
+        type: string
+        is_optional: true
+        default: test_value
+        has_default: true
+        description: ''
+- name: mail_fetch_search
+  description: Outlook 메일을 키워드로 검색합니다. 제목, 본문, 발신자 등 모든 필드에서 지정한 검색어를 포함하는 메일을 찾아
+    반환합니다.
+  inputSchema:
+    type: object
+    properties:
+      search_term:
+        type: string
+        description: 검색어 ($search 파라미터)
+        targetParam: search_term
+      select_params:
+        type: object
+        description: 조회할 필드 선택
+        properties:
+          fields:
+            type: array
+            description: 조회할 필드 목록
+            items:
+              type: string
+            targetParam: fields
+        baseModel: SelectParams
+        targetParam: select_params
+      top:
+        type: integer
+        description: 반환할 최대 메일 수
+        default: 50
+        targetParam: top
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required:
+    - search_term
+  mcp_service:
+    name: fetch_search
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: search_term
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    signature: 'user_email: str, search_term: str, select_params: Optional[SelectParams]
+      = None, client_filter: Optional[ExcludeParams] = None, top: Optional[int] =
+      50'
+- name: mail_process_with_download
+  description: 메일을 조회하고 첨부파일이 있는 경우 자동으로 다운로드합니다. 필터나 검색 조건으로 메일을 찾은 후 첨부파일을 지정된 폴더에
+    저장합니다.
+  inputSchema:
+    type: object
+    properties:
+      filter_params:
+        type: object
+        description: 메일 필터링 조건
+        properties:
+          received_date_from:
+            type: string
+            description: 메일 수신 시작 날짜
+            targetParam: received_date_from
+          received_date_to:
+            type: string
+            description: 메일 수신 종료 날짜
+            targetParam: received_date_to
+        baseModel: FilterParams
+        targetParam: filter_params
+      save_directory:
+        type: string
+        description: 첨부파일 저장 디렉토리 경로
+        targetParam: save_directory
+      search_term:
+        type: string
+        description: 검색어 (지정시 검색 모드로 전환)
+        targetParam: search_term
+      top:
+        type: integer
+        description: 반환할 최대 메일 수
+        default: 50
+        targetParam: top
+      user_email:
+        type: string
+        description: ''
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required: []
+  mcp_service:
+    name: process_with_download
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: filter_params
+      type: FilterParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: search_term
+      type: str
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    - name: save_directory
+      type: str
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    signature: 'user_email: str, filter_params: Optional[FilterParams] = None, search_term:
+      Optional[str] = None, top: Optional[int] = 50, save_directory: Optional[str]
+      = None'
+- name: mail_query_url
+  description: '이전에 messageid 랑 attachmentid가 제공된 상태에서 조회가 가능하며 messagid만 제공하면  그
+    메일의 첨부파일을 모두 다운로드 하고 attachmentid까지 제공하면 해당 첨부파일만 다운로드 받을 수 있다. 첨부파일 조회시 반드시  mail
+    목록조회가 선행되어야 한다. '
+  inputSchema:
+    type: object
+    properties:
+      filter_params:
+        type: object
+        description: 메일 필터링 조건
+        properties:
+          received_date_from:
+            type: string
+            description: 메일 수신 시작 날짜
+            targetParam: received_date_from
+          received_date_to:
+            type: string
+            description: 메일 수신 종료 날짜
+            targetParam: received_date_to
+        required: []
+        baseModel: FilterParams
+        targetParam: filter_params
+      top:
+        type: integer
+        description: 최대 결과 수
+        default: 50
+        targetParam: top
+      url:
+        type: string
+        description: 'only baseURL : https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages?'
+        default: https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages?
+        targetParam: url
+      user_email:
+        type: string
+        description: 사용자 이메일 (인증용)
+        default: kimghw@krs.co.kr
+        targetParam: user_email
+    required: []
+  mcp_service:
+    name: fetch_url
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: url
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: filter_params
+      type: FilterParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    signature: 'user_email: str, url: str, filter_params: Optional[FilterParams] =
+      None, select_params: Optional[SelectParams] = None, client_filter: Optional[ExcludeParams]
+      = None, top: Optional[int] = 50'
+  mcp_service_factors:
+    select:
+      source: internal
+      type: SelectParams
+      targetParam: select
+      description: SelectParams parameters
+      parameters:
+      - name: body_preview
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 본문의 처음 255자 (텍스트 형식)
+      - name: created_date_time
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 생성 날짜/시간 (ISO 8601 형식, UTC)
+      - name: from_recipient
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지가 전송된 사서함의 소유자 (from 필드)
+      - name: id
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 고유 식별자 (읽기 전용)
+      - name: received_date_time
+        type: boolean
+        is_optional: true
+        default: true
+        has_default: true
+        description: 메시지 수신 날짜/시간 (ISO 8601 형식, UTC)
+- name: test_handler
+  description: New tool description
+  inputSchema:
+    type: object
+    properties:
+      client_filter:
+        type: object
+        description: ExcludeParams parameters
+        targetParam: client_filter
+      exclude_params:
+        type: object
+        description: ExcludeParams parameters
+        targetParam: exclude_params
+      filter_params:
+        type: object
+        description: FilterParams parameters
+        targetParam: filter_params
+      select_params:
+        type: object
+        description: SelectParams parameters
+        targetParam: select_params
+      top:
+        type: integer
+        description: ''
+        targetParam: top
+    required:
+    - filter_params
+    - exclude_params
+    - select_params
+    - client_filter
+  mcp_service:
+    name: fetch_filter
+    parameters:
+    - name: user_email
+      type: str
+      is_optional: false
+      is_required: true
+      default: null
+      has_default: false
+    - name: filter_params
+      type: FilterParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: exclude_params
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: select_params
+      type: SelectParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: client_filter
+      type: ExcludeParams
+      is_optional: true
+      is_required: false
+      default: null
+      has_default: true
+    - name: top
+      type: int
+      is_optional: true
+      is_required: false
+      default: 50
+      has_default: true
+    signature: 'user_email: str, filter_params: Optional[FilterParams] = None, exclude_params:
+      Optional[ExcludeParams] = None, select_params: Optional[SelectParams] = None,
+      client_filter: Optional[ExcludeParams] = None, top: Optional[int] = 50'
+  mcp_service_factors:
+    user_email:
+      source: internal
+      type: string
+      targetParam: user_email
+      description: ''
+      parameters: []

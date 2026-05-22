@@ -1,0 +1,54 @@
+# =============================================================================
+# OneNote Page Summarization Configuration
+# =============================================================================
+# 사용자 편집 가능한 AI 요약 프롬프트 설정
+# 사용처: onenote_summarizer.py (claude-code-sdk)
+# =============================================================================
+
+summarization:
+  # 전체 페이지 요약 설정
+  page_summary:
+    max_length: 500
+    prompt: |
+      다음 OneNote 페이지 내용을 읽고, 핵심 내용을 500자 이내로 요약해 주세요.
+      한국어로 작성하되, 주요 포인트를 빠짐없이 포함하세요.
+
+      페이지 제목: {page_title}
+
+      페이지 내용:
+      {page_content}
+
+      요약:
+
+  # 단락별 요약 설정
+  paragraph_summary:
+    max_length: 200
+    prompt: |
+      다음 문단의 핵심 내용을 200자 이내로 요약해 주세요.
+      한국어로 간결하게 작성하세요.
+
+      문단:
+      {paragraph_text}
+
+      요약:
+
+  # 키워드 추출 설정
+  keyword_extraction:
+    count: 10
+    prompt: |
+      다음 OneNote 페이지 내용에서 핵심 키워드를 정확히 {keyword_count}개 추출해 주세요.
+      키워드는 쉼표로 구분하여 한 줄에 작성해 주세요.
+      키워드는 한국어 또는 영어 명사/명사구로 작성하세요.
+
+      페이지 제목: {page_title}
+
+      페이지 내용:
+      {page_content}
+
+      키워드:
+
+# Claude Code SDK 설정
+claude_sdk:
+  model: "claude-sonnet-4-5-20250929"
+  max_turns: 1
+  allowed_tools: []

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Tool Definitions Editor</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/tool_editor.css">
+</head><body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <img class="brand-logo" src="/static/brands/logo.jpg" alt="Logo" title="Logo" />
+                <span>MCP Tool <span class="gradient-text">Editor</span></span>
+            </h1>
+            <div class="header-buttons">
+                <button class="btn btn-secondary btn-tooltip btn-icon-only" data-debug-id="BTN_RELOAD" onclick="loadTools()" data-tooltip="📂 Load: tool_definitions.py&#10;📂 Load: tool_internal_args.json&#10;&#10;Refresh tool list from server files">
+                    <span class="material-icons">refresh</span>
+                </button>
+                <button class="btn btn-secondary btn-tooltip debug-index-toggle btn-icon-only" data-debug-id="BTN_IDS" id="debugIndexToggle" onclick="toggleDebugIndexes()" data-tooltip="Show IDs on buttons/fields and hover to see inline handlers" aria-pressed="false">
+                    <span class="material-icons">push_pin</span>
+                    <span class="debug-dup-badge" id="debugDuplicateBadge" aria-hidden="true"></span>
+                </button>
+                <button class="btn btn-secondary btn-tooltip btn-icon-only" data-debug-id="BTN_BACKUPS" onclick="showBackups()" data-tooltip="Manage backups">
+                    <span class="material-icons">inventory_2</span>
+                </button>
+                <button class="btn btn-secondary btn-tooltip btn-icon-only" data-debug-id="BTN_VALIDATE" onclick="validateTools()" data-tooltip="Validate tool definitions">
+                    <span class="material-icons">check_circle</span>
+                </button>
+                <button class="btn btn-secondary btn-tooltip btn-icon-only" data-debug-id="BTN_SAVE" onclick="saveTools()" data-tooltip="💾 Save: tool_definitions.py&#10;💾 Save: tool_definition_templates.py&#10;💾 Save: tool_internal_args.json&#10;&#10;Save all changes to disk">
+                    <span class="material-icons">save</span>
+                </button>
+                <button class="btn btn-important btn-tooltip" data-debug-id="BTN_GENERATE" onclick="saveTools(); openGeneratorModal()" data-tooltip="⚙️ Input: tool_definitions.py&#10;📄 Template: *_server_template.jinja2&#10;🚀 Output: server.py&#10;&#10;Generate MCP server from template">
+                    <span class="material-icons">auto_fix_high</span> Generate Server
+                </button>
+                <button class="btn btn-primary btn-tooltip btn-expandable" data-debug-id="BTN_NEW_PROJECT" onclick="openCreateProjectModal()" data-tooltip="🚀 Create new MCP server project&#10;📁 Complete folder structure&#10;📝 Ready-to-use templates&#10;&#10;Create a new MCP service from scratch">
+                    <span class="material-icons">add_circle</span><span class="btn-text">New Project</span>
+                </button>
+            </div>
+        </div>
+        <div id="profileTabs" data-debug-id="AREA_PROFILE_TABS" style="display: flex; justify-content: flex-start; gap: 8px; padding: 10px 20px; background: #f7f7f7; border-bottom: 1px solid #e5e5e5;">
+            <!-- Profile tabs will be rendered here -->
+        </div>
+        <div id="templateSelector" data-debug-id="AREA_TEMPLATE_SELECTOR" style="display: flex; gap: 12px; align-items: center; padding: 8px 20px; background: #fff9e6; border-bottom: 1px solid #e5e5e5;">
+            <label style="font-size: 13px; font-weight: 500; color: #666; white-space: nowrap;">
+                <span class="material-icons" style="font-size: 16px; vertical-align: middle;">description</span>
+                Load Template:
+            </label>
+            <select id="templateSource" class="form-control" data-debug-id="FIELD_TEMPLATE_SOURCE" style="flex: 1; max-width: 400px; padding: 6px 12px; font-size: 13px;">
+                <option value="">-- Current Template --</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" data-debug-id="BTN_TEMPLATE_LOAD" onclick="loadFromSelectedTemplate()" title="Load tools from selected template">
+                <span class="material-icons" style="font-size: 14px;">file_download</span> Load
+            </button>
+            <span id="templateLoadStatus" style="font-size: 12px; color: #666;"></span>
+            <span style="font-size: 11px; color: #999; margin-left: auto;">
+                * Save will update: <strong id="saveTargetLabel">current profile</strong>
+            </span>
+        </div>
+
+        <div class="main-content" data-debug-id="AREA_MAIN_CONTENT">
+            <div class="sidebar" data-debug-id="AREA_SIDEBAR">
+                <div class="tool-list" data-debug-id="AREA_TOOL_LIST">
+                    <!-- MCP Server Controller -->
+                    <div class="mcp-controller" data-debug-id="AREA_MCP_CONTROLLER" style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid rgba(0,0,0,0.05);">
+                        <div style="display: flex; align-items: center; margin-bottom: 16px;">
+                            <div style="width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, #0071e3, #00c6fb); display: flex; align-items: center; justify-content: center; margin-right: 12px; box-shadow: 0 4px 8px rgba(0,113,227,0.2);">
+                                <span class="material-icons" style="color: white; font-size: 24px;">dns</span>
+                            </div>
+                            <div style="flex: 1;">
+                                <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: #1d1d1f;">MCP Server</h3>
+                                <div id="serverStatus" data-debug-id="LABEL_SERVER_STATUS" style="display: flex; align-items: center; font-size: 12px; margin-top: 2px;">
+                                    <span class="status-indicator" id="statusIndicator" style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #86868b; margin-right: 6px;"></span>
+                                    <span id="statusText" style="color: #86868b; font-weight: 500;">Checking...</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+                            <button class="btn btn-sm" data-debug-id="BTN_SERVER_START" id="btnStart" onclick="startServer()" style="background: #e8f5e9; color: #2e7d32; border: none; padding: 6px 4px; border-radius: 8px; font-weight: 600; transition: all 0.2s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; height: auto;">
+                                <span class="material-icons" style="font-size: 20px; margin-bottom: 2px;">play_arrow</span>
+                                <span style="font-size: 10px;">Start</span>
+                            </button>
+                            <button class="btn btn-sm" data-debug-id="BTN_SERVER_STOP" id="btnStop" onclick="stopServer()" style="background: #ffebee; color: #c62828; border: none; padding: 6px 4px; border-radius: 8px; font-weight: 600; transition: all 0.2s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; height: auto;">
+                                <span class="material-icons" style="font-size: 20px; margin-bottom: 2px;">stop</span>
+                                <span style="font-size: 10px;">Stop</span>
+                            </button>
+                            <button class="btn btn-sm" data-debug-id="BTN_SERVER_RESTART" id="btnRestart" onclick="restartServer()" style="background: #fff3e0; color: #ef6c00; border: none; padding: 6px 4px; border-radius: 8px; font-weight: 600; transition: all 0.2s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; height: auto;">
+                                <span class="material-icons" style="font-size: 20px; margin-bottom: 2px;">refresh</span>
+                                <span style="font-size: 10px;">Restart</span>
+                            </button>
+                        </div>
+
+                        <div id="serverInfo" data-debug-id="LABEL_SERVER_INFO" style="font-size: 11px; color: #86868b; background: #f5f5f7; padding: 8px 12px; border-radius: 8px; display: flex; justify-content: space-between;">
+                            <div id="profileInfo">
+                                <span style="font-weight: 600;">Profile:</span> <span id="profileValue">default</span>
+                            </div>
+                            <div id="pidInfo" style="display: none;">
+                                <span style="font-weight: 600;">PID:</span> <span id="pidValue">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="add-button" data-debug-id="BTN_ADD_TOOL" onclick="addNewTool()">
+                        <span class="material-icons">add</span> Add New Tool
+                    </button>
+                    <div id="toolList" style="margin-top: 15px;">
+                        <!-- Tool items will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="editor-area" data-debug-id="AREA_EDITOR">
+                <div id="editorContent">
+                    <div style="text-align: center; padding: 50px; color: var(--text-secondary);">
+                        Select a tool from the left sidebar to edit
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Nested Properties Modal -->
+    <div id="nestedPropertiesModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2 id="nestedModalTitle">Edit Nested Properties</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_NESTED_CLOSE" onclick="closeModal('nestedPropertiesModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="nestedPropertiesEditor">
+                    <!-- Nested properties editor will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" data-debug-id="BTN_NESTED_SAVE" onclick="saveNestedProperties()">Save Properties</button>
+                <button class="btn btn-secondary" data-debug-id="BTN_NESTED_CANCEL" onclick="closeModal('nestedPropertiesModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- BaseModel Selector Modal -->
+    <div id="baseModelModal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2>Select BaseModel to Import</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_BASEMODEL_CLOSE" onclick="closeModal('baseModelModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="baseModelList" style="max-height: 500px; overflow-y: auto;">
+                    <!-- BaseModel list will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-debug-id="BTN_BASEMODEL_CANCEL" onclick="closeModal('baseModelModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Nested Graph Types Modal -->
+    <div id="nestedGraphTypesModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Add Nested Properties</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_NESTED_TYPES_CLOSE" onclick="closeModal('nestedGraphTypesModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Select Type</label>
+                    <select id="nestedGraphTypeClass" data-debug-id="FIELD_NESTED_GRAPH_TYPE" onchange="handleNestedGraphClassChange()" class="form-control">
+                        <option value="">-- Select Type --</option>
+                        <option value="FilterParams">FilterParams (Filter criteria)</option>
+                        <option value="ExcludeParams">ExcludeParams (Exclusion criteria)</option>
+                        <option value="SelectParams">SelectParams (Field selection)</option>
+                    </select>
+                </div>
+                <div class="form-group" id="nestedPropertySelectionDiv" style="display: none;">
+                    <label>Select Properties to Add</label>
+                    <div style="border: 1px solid #ddd; border-radius: 4px; padding: 10px; max-height: 300px; overflow-y: auto;">
+                        <div id="nestedPropertyCheckboxList">
+                            <!-- Checkboxes will be populated here -->
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button type="button" class="btn btn-sm btn-secondary" data-debug-id="BTN_NESTED_SELECT_ALL" onclick="selectAllNestedProperties(true)">Select All</button>
+                        <button type="button" class="btn btn-sm btn-secondary" data-debug-id="BTN_NESTED_DESELECT_ALL" onclick="selectAllNestedProperties(false)">Deselect All</button>
+                        <button type="button" class="btn btn-sm btn-secondary" data-debug-id="BTN_NESTED_ALL_REQUIRED" onclick="toggleAllNestedRequired(true)">All Required</button>
+                        <button type="button" class="btn btn-sm btn-secondary" data-debug-id="BTN_NESTED_ALL_OPTIONAL" onclick="toggleAllNestedRequired(false)">All Optional</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" data-debug-id="BTN_NESTED_TYPES_ADD" onclick="confirmAddNestedGraphProperties()">Add Selected</button>
+                <button class="btn btn-secondary" data-debug-id="BTN_NESTED_TYPES_CANCEL" onclick="closeModal('nestedGraphTypesModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backup Modal -->
+    <div id="backupModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Backup Management</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_BACKUP_CLOSE_X" onclick="closeModal('backupModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="backupList" class="backup-list">
+                    <!-- Backup items will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-debug-id="BTN_BACKUP_CLOSE" onclick="closeModal('backupModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create New MCP Project Modal -->
+    <div id="createProjectModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Create New MCP Project</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_PROJECT_CLOSE" onclick="closeModal('createProjectModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Service Name <span style="color: red;">*</span></label>
+                    <input id="projectServiceName" class="form-control" data-debug-id="FIELD_PROJECT_NAME" placeholder="e.g., calendar, weather, database" required>
+                    <p style="margin-top: 6px; color: var(--text-secondary); font-size: 12px;">
+                        Only letters, numbers, and underscores allowed. Will create mcp_{service_name} folder.
+                    </p>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input id="projectDescription" class="form-control" data-debug-id="FIELD_PROJECT_DESC" placeholder="Brief description of the service">
+                </div>
+                <div class="form-group">
+                    <label>Port</label>
+                    <input id="projectPort" type="number" class="form-control" data-debug-id="FIELD_PROJECT_PORT" value="8080" min="1024" max="65535">
+                    <p style="margin-top: 6px; color: var(--text-secondary); font-size: 12px;">
+                        Server port number (1024-65535)
+                    </p>
+                </div>
+                <div class="form-group">
+                    <label>Author</label>
+                    <input id="projectAuthor" class="form-control" data-debug-id="FIELD_PROJECT_AUTHOR" placeholder="Your name (optional)">
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input id="projectIncludeTypes" type="checkbox" data-debug-id="FIELD_PROJECT_INCLUDE_TYPES" checked>
+                        Include type definitions file (*_types.py)
+                    </label>
+                </div>
+                <div id="createProjectResult" style="margin-top: 15px; padding: 12px; border-radius: 6px; display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-debug-id="BTN_PROJECT_CANCEL" onclick="closeModal('createProjectModal')">Cancel</button>
+                <button class="btn btn-primary" data-debug-id="BTN_PROJECT_CREATE" onclick="createNewProject()">Create Project</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Server Generator Modal -->
+    <div id="generatorModal" class="modal">
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h2>Generate MCP Server</h2>
+                <button class="btn btn-icon" data-debug-id="BTN_GENERATOR_CLOSE" onclick="closeModal('generatorModal')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Select Module</label>
+                    <select id="generatorModule" class="form-control" data-debug-id="FIELD_GENERATOR_MODULE" onchange="handleGeneratorModuleChange()">
+                        <option value="">Custom / Current Profile</option>
+                    </select>
+                    <p style="margin-top: 6px; color: var(--text-secondary); font-size: 12px;">
+                        Detected modules share the same mcp folder layout. Choose one to auto-fill generator args.
+                    </p>
+                </div>
+                <div class="form-group">
+                    <label>Tools path (--tools)</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input id="generatorToolsPath" class="form-control" data-debug-id="FIELD_GENERATOR_TOOLS_PATH" placeholder="/path/to/tool_definition_templates.py" style="flex: 1;">
+                        <button class="btn btn-secondary" data-debug-id="BTN_GENERATOR_TOOLS_PICK" onclick="selectFilePath('generatorToolsPath', '.py')" style="padding: 8px 12px;">
+                            <span class="material-icons" style="font-size: 18px;">folder_open</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Template path (--template)</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input id="generatorTemplatePath" class="form-control" data-debug-id="FIELD_GENERATOR_TEMPLATE_PATH" placeholder="/path/to/server_template.jinja2" style="flex: 1;">
+                        <button class="btn btn-secondary" data-debug-id="BTN_GENERATOR_TEMPLATE_PICK" onclick="selectFilePath('generatorTemplatePath', '.jinja2')" style="padding: 8px 12px;">
+                            <span class="material-icons" style="font-size: 18px;">folder_open</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Output path (--output)</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input id="generatorOutputPath" class="form-control" data-debug-id="FIELD_GENERATOR_OUTPUT_PATH" placeholder="/path/to/server_generated.py" style="flex: 1;">
+                        <button class="btn btn-secondary" data-debug-id="BTN_GENERATOR_OUTPUT_PICK" onclick="selectFilePath('generatorOutputPath', '.py')" style="padding: 8px 12px;">
+                            <span class="material-icons" style="font-size: 18px;">folder_open</span>
+                        </button>
+                    </div>
+                </div>
+                <div id="generatorResult" style="color: var(--text-secondary); font-size: 13px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-important" data-debug-id="BTN_GENERATOR_RUN" onclick="runServerGeneration()">
+                    <span class="material-icons">auto_fix_high</span> Generate
+                </button>
+                <button class="btn btn-secondary" data-debug-id="BTN_GENERATOR_CLOSE_FOOTER" onclick="closeModal('generatorModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- 리팩토링된 JavaScript 모듈들 -->
+    <script src="/static/js/tool_editor_core.js"></script>
+    <script src="/static/js/tool_editor_ui.js"></script>
+    <script src="/static/js/tool_editor_api.js"></script>
+    <script src="/static/js/tool_editor_actions.js"></script>
+</body>
+</html>

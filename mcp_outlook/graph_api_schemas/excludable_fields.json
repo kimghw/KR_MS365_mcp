@@ -1,0 +1,134 @@
+{
+  "excludableFields": {
+    "from/emailAddress/address": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 발신자 제외",
+      "input": "제외할 이메일 주소",
+      "result": "해당 주소에서 보낸 메일 제외"
+    },
+    "sender/emailAddress/address": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 실제 발송자 제외",
+      "input": "제외할 발송자 주소",
+      "result": "해당 주소가 발송한 메일 제외"
+    },
+    "subject": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "제목에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "제목에 해당 키워드가 없는 메일만 조회"
+    },
+    "body/content": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "본문에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "본문에 해당 키워드가 없는 메일만 조회"
+    },
+    "bodyPreview": {
+      "type": "String",
+      "operator": "not contains",
+      "description": "미리보기에 특정 키워드 없는 메일",
+      "input": "제외할 키워드",
+      "result": "미리보기에 해당 키워드가 없는 메일만 조회"
+    },
+    "importance": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["low", "normal", "high"],
+      "description": "특정 중요도 제외",
+      "input": "제외할 중요도 값",
+      "result": "해당 중요도가 아닌 메일만 조회"
+    },
+    "sensitivity": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["normal", "personal", "private", "confidential"],
+      "description": "특정 민감도 제외",
+      "input": "제외할 민감도 값",
+      "result": "해당 민감도가 아닌 메일만 조회"
+    },
+    "inferenceClassification": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["focused", "other"],
+      "description": "특정 분류 제외",
+      "input": "제외할 분류 (focused/other)",
+      "result": "해당 분류가 아닌 메일만 조회"
+    },
+    "isRead": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "읽음 상태 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isDraft": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "임시저장 상태 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "hasAttachments": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "첨부파일 유무 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isDeliveryReceiptRequested": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "배달 확인 요청 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "isReadReceiptRequested": {
+      "type": "Boolean",
+      "operator": "ne",
+      "description": "읽음 확인 요청 제외",
+      "input": "제외할 상태 (true/false)",
+      "result": "지정한 상태가 아닌 메일만 조회"
+    },
+    "flag/flagStatus": {
+      "type": "String",
+      "operator": "ne",
+      "enum": ["notFlagged", "complete", "flagged"],
+      "description": "특정 플래그 상태 제외",
+      "input": "제외할 플래그 상태",
+      "result": "해당 플래그 상태가 아닌 메일만 조회"
+    },
+    "categories": {
+      "type": "Collection<String>",
+      "operator": "not any",
+      "description": "특정 카테고리 제외",
+      "input": "제외할 카테고리 이름",
+      "result": "해당 카테고리가 없는 메일만 조회"
+    },
+    "id": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 메일 ID 제외",
+      "input": "제외할 메일 ID",
+      "result": "해당 ID가 아닌 모든 메일 조회"
+    },
+    "conversationId": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 대화 스레드 제외",
+      "input": "제외할 대화 ID",
+      "result": "해당 대화 스레드가 아닌 메일만 조회"
+    },
+    "parentFolderId": {
+      "type": "String",
+      "operator": "ne",
+      "description": "특정 폴더 제외",
+      "input": "제외할 폴더 ID",
+      "result": "해당 폴더가 아닌 메일만 조회"
+    }
+  }
+}

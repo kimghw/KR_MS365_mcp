@@ -824,5 +824,5 @@ async def call_tool(request: Request):
 if __name__ == "__main__":
     import uvicorn
     # Port can be set via environment variable or defaults to template value
-    port = int(os.environ.get("MCP_SERVER_PORT", 8002))
+    port = int(os.environ.get("MCP_SERVER_PORT", 5002))
     uvicorn.run(app, host="0.0.0.0", port=port)

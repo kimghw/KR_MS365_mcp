@@ -196,7 +196,7 @@ def is_base_profile(profile_name: str) -> bool:
 def create_derived_profile(
     base_profile: str,
     new_profile_name: str,
-    port: int = 8091
+    port: int = 5001
 ) -> dict:
     """
     base 프로필 기반 파생 프로필 생성 (기존 함수 확장)

@@ -119,7 +119,7 @@ pip install mcp-proxy
       "args": [
         "--transport",
         "streamablehttp",
-        "http://YOUR_SERVER_IP:8001/mcp/v1"
+        "http://YOUR_SERVER_IP:5001/mcp/v1"
       ]
     }
   }
@@ -136,7 +136,7 @@ pip install mcp-proxy
       "args": [
         "--transport",
         "streamablehttp",
-        "http://192.168.210.32:8001/mcp/v1"
+        "http://192.168.210.32:5001/mcp/v1"
       ]
     }
   }
@@ -158,9 +158,9 @@ python mcp_outlook/mcp_server/server_stream.py
 
 | Protocol | File | Port | Use Case |
 |----------|------|------|----------|
-| REST | server_rest.py | 8001 | HTTP API 직접 호출 |
+| REST | server_rest.py | 5001 | HTTP API 직접 호출 |
 | STDIO | server_stdio.py | - | 로컬 프로세스 통신 |
-| Streamable HTTP | server_stream.py | 8001 | Claude Desktop 원격 연결 |
+| Streamable HTTP | server_stream.py | 5001 | Claude Desktop 원격 연결 |
 
 ## Development
 

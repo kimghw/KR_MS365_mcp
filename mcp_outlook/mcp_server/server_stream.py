@@ -676,12 +676,12 @@ def build_starlette_app() -> Starlette:
 app = build_starlette_app()
 
 
-def run(host: str = "0.0.0.0", port: int = 8091) -> None:
+def run(host: str = "0.0.0.0", port: int = 5001) -> None:
     import uvicorn
     logger.info(f"Starting Outlook MCP Streamable HTTP server on {host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("MCP_SERVER_PORT", 8091))
+    port = int(os.environ.get("MCP_SERVER_PORT", 5001))
     run(host="0.0.0.0", port=port)

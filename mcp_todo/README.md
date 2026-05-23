@@ -59,7 +59,7 @@ AZURE_SCOPES=User.Read Mail.Read Mail.Send Mail.ReadWrite Calendars.ReadWrite Ta
 ## 실행
 
 ```bash
-# 기본 포트: 8093
+# 기본 포트: 5006
 python -m mcp_todo.mcp_server.server_stream
 
 # 포트 변경
@@ -67,8 +67,8 @@ MCP_SERVER_PORT=9000 python -m mcp_todo.mcp_server.server_stream
 ```
 
 엔드포인트:
-- MCP: `POST/GET/DELETE http://localhost:8093/mcp` (Streamable HTTP, `Mcp-Session-Id` 헤더)
-- Health: `GET http://localhost:8093/health`
+- MCP: `POST/GET/DELETE http://localhost:5006/mcp` (Streamable HTTP, `Mcp-Session-Id` 헤더)
+- Health: `GET http://localhost:5006/health`
 
 ## 클라이언트 등록
 

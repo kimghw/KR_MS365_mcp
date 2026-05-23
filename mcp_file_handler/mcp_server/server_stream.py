@@ -572,7 +572,7 @@ class StreamableHTTPMCPServer:
         """서버 종료 시 정리"""
         logger.info(f"File Handler MCP Server StreamableHTTP Server shutting down")
 
-    def run(self, host: str = '0.0.0.0', port: int = 8001):
+    def run(self, host: str = '0.0.0.0', port: int = 5008):
         """서버 실행"""
         self.app['port'] = port
         self.app.on_startup.append(self.on_startup)
@@ -582,10 +582,10 @@ class StreamableHTTPMCPServer:
         web.run_app(self.app, host=host, port=port, print=lambda _: None)
 
 # 메인 엔트리 포인트
-def handle_streamablehttp(host: str = '0.0.0.0', port: int = 8001):
+def handle_streamablehttp(host: str = '0.0.0.0', port: int = 5008):
     """Handle MCP protocol via StreamableHTTP"""
     server = StreamableHTTPMCPServer()
     server.run(host, port)
 
 if __name__ == "__main__":
-    handle_streamablehttp(host="0.0.0.0", port=8001)  # StreamableHTTP server
+    handle_streamablehttp(host="0.0.0.0", port=5008)  # StreamableHTTP server

@@ -69,7 +69,7 @@ mcp_outlook/
 ├── mail_attachment_converter.py    # 파일 변환 (PDF, DOCX, HWP 등 → TXT)
 ├── mail_attachment_processor.py    # 첨부파일 처리 유틸리티
 └── mcp_server/
-    ├── server_rest.py              # FastAPI REST 서버 (port 8001)
+    ├── server_rest.py              # FastAPI REST 서버 (port 5001)
     ├── server_stdio.py             # STDIO 프로토콜 서버
     ├── server_stream.py            # Streamable HTTP 서버
     ├── server_init.py              # 서버 초기화
@@ -251,7 +251,7 @@ backend = get_storage_backend(
 
 ```env
 # MCP 서버 설정 (선택, 기본값 있음)
-MCP_SERVER_PORT=8091                  # MCP 서버 포트
+MCP_SERVER_PORT=5001                  # MCP 서버 포트
 MCP_SERVER_TYPE=outlook               # 서버 타입 (outlook 설정 시 AZURE_CLIENT_ID, AZURE_TENANT_ID 필수 검증)
 MCP_YAML_PATH=<tool definition yaml>  # MCP 도구 정의 YAML 경로
 

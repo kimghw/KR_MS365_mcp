@@ -1,0 +1,4 @@
+# toolkit_sync 에서 제외할 항목 (gitignore 형식)
+# Python 빌드 부산물
+__pycache__/
+*.pyc

@@ -15,10 +15,21 @@
 #   port_ops.sh discover [project_root]              # 현재 프로젝트에 속한 LISTEN 서버 자동발견. TSV: 포트\tPID\t시작명령\t작업디렉토리
 #   port_ops.sh inspect  [project_root]              # 프로젝트 내부 설정 파일에서 선언된 서버 추출 (실행 여부 무관). TSV: source\t이름\t포트\t시작명령\t작업디렉토리. 미상 필드는 "—"
 #
+# NSSM (Windows 서비스 — Windows 전용, 관리자 권한 필요):
+#   port_ops.sh nssm check                                # NSSM 가용성 확인. "OK <path>" 또는 non-zero exit
+#   port_ops.sh nssm install   <project> <port>           # port_list.md 행을 Windows 서비스로 등록 (자동 시작)
+#   port_ops.sh nssm uninstall <project> <port>           # 서비스 제거 (먼저 stop)
+#   port_ops.sh nssm start     <project> <port>           # 서비스 시작
+#   port_ops.sh nssm stop      <project> <port>           # 서비스 중지
+#   port_ops.sh nssm restart   <project> <port>           # 서비스 재시작
+#   port_ops.sh nssm status    <project> <port>           # "SERVICE_RUNNING" | "SERVICE_STOPPED" | "SERVICE_NOT_INSTALLED" ...
+#   port_ops.sh nssm list      [project]                  # 등록된 pm_* 서비스 나열. TSV: 서비스명\t상태\t포트
+#
 # 환경변수:
 #   PORT_LIST   port_list.md 경로 (기본: 스크립트와 같은 폴더의 port_list.md)
 #   PROJECT_ROOT  start 시 cwd 기준 루트 (기본: $PWD)
 #   LOG_DIR     백그라운드 로그 디렉토리 (기본: /tmp/port_manager)
+#   NSSM        nssm 실행 파일 경로 override (기본: PATH 에서 nssm.exe / nssm 탐색)
 
 set -euo pipefail
 
@@ -447,6 +458,253 @@ for r in deep_resolved:
 PYEOF
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# NSSM (Non-Sucking Service Manager) — Windows 서비스 등록
+# ─────────────────────────────────────────────────────────────────────────────
+
+nssm_path() {
+  if [ -n "${NSSM:-}" ] && [ -x "$NSSM" ]; then
+    printf '%s' "$NSSM"; return 0
+  fi
+  command -v nssm.exe 2>/dev/null && return 0
+  command -v nssm 2>/dev/null && return 0
+  return 1
+}
+
+# 서비스명: pm_<project>_<port> — project 의 비안전 문자는 _ 로
+service_name_for() {
+  local project="$1" port="$2"
+  local safe; safe="$(printf '%s' "$project" | tr -c 'A-Za-z0-9_' '_')"
+  printf 'pm_%s_%s' "$safe" "$port"
+}
+
+# 경로를 Windows 형식으로 변환 (cygpath 가 있으면 사용)
+to_winpath() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# cmd 문자열에 셸 메타문자가 있는지 (있으면 cmd.exe /c 로 래핑 필요)
+cmd_needs_shell() {
+  local c="$1"
+  case "$c" in
+    *'|'*|*'>'*|*'<'*|*'&'*|*';'*|*'$('*|*'`'*|*'&&'*|*'||'*) return 0 ;;
+  esac
+  return 1
+}
+
+cmd_nssm_check() {
+  local p
+  if p="$(nssm_path)"; then
+    echo "OK $p"
+    return 0
+  fi
+  cat >&2 <<'EOF'
+NSSM_NOT_FOUND
+nssm.exe 가 PATH 에 없습니다. 설치 방법:
+  scoop install nssm
+  choco install nssm
+  또는 https://nssm.cc 에서 직접 다운로드 후 PATH 에 추가
+EOF
+  return 1
+}
+
+# port_list.md 의 행을 읽어 NSSM 서비스로 등록.
+# 1) 시작명령 → exe + args 분리 (셸 메타문자 있으면 cmd.exe /c 로 래핑)
+# 2) cwd → AppDirectory
+# 3) 로그 → AppStdout/AppStderr
+# 4) 자동 시작
+cmd_nssm_install() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found (port_ops.sh nssm check)"
+
+  has_row "$project" "$port" || die "no such row: $project:$port — /port_manager 로 먼저 등록"
+
+  # port_list.md 에서 해당 행 추출
+  local row; row="$(list_rows "$project" | awk -F'\t' -v p="$port" '$1==p{print; exit}')"
+  [ -n "$row" ] || die "row not found: $project:$port"
+  local service cmd cwd
+  service="$(awk -F'\t' '{print $2}' <<<"$row")"
+  cmd="$(awk -F'\t' '{print $3}' <<<"$row")"
+  cwd="$(awk -F'\t' '{print $4}' <<<"$row")"
+
+  # cwd 절대화
+  local abs_cwd
+  if [ "$cwd" = "—" ] || [ -z "$cwd" ]; then
+    abs_cwd="$PROJECT_ROOT"
+  elif [[ "$cwd" = /* ]] || [[ "$cwd" =~ ^[A-Za-z]:[\\/] ]]; then
+    abs_cwd="$cwd"
+  else
+    abs_cwd="$PROJECT_ROOT/$cwd"
+  fi
+  [ -d "$abs_cwd" ] || die "cwd not found: $abs_cwd"
+
+  # exe / args 분리
+  local exe args
+  if cmd_needs_shell "$cmd"; then
+    exe="$(command -v cmd.exe 2>/dev/null || echo cmd.exe)"
+    args="/c $cmd"
+  else
+    exe="$(awk '{print $1}' <<<"$cmd")"
+    args="${cmd#$exe}"; args="${args# }"
+    # exe 절대화 (상대경로면 PROJECT_ROOT 기준)
+    if [[ "$exe" != /* ]] && [[ ! "$exe" =~ ^[A-Za-z]:[\\/] ]]; then
+      # cwd 안에 있나? 없으면 PROJECT_ROOT 기준
+      if [ -e "$abs_cwd/$exe" ]; then
+        exe="$abs_cwd/$exe"
+      elif [ -e "$PROJECT_ROOT/$exe" ]; then
+        exe="$PROJECT_ROOT/$exe"
+      else
+        # PATH 에서 찾기 (이름만 주어진 경우, 예: npm, uvicorn)
+        local found; found="$(command -v "$exe" 2>/dev/null || true)"
+        [ -n "$found" ] && exe="$found"
+      fi
+    fi
+  fi
+
+  # Windows 경로로 변환
+  local exe_win cwd_win
+  exe_win="$(to_winpath "$exe")"
+  cwd_win="$(to_winpath "$abs_cwd")"
+
+  # 로그 경로
+  local svc; svc="$(service_name_for "$project" "$port")"
+  mkdir -p "$LOG_DIR"
+  local log_out="$LOG_DIR/${svc}.log"
+  : > "$log_out"
+  local log_win; log_win="$(to_winpath "$log_out")"
+
+  # 이미 등록되어 있으면 중단
+  if "$nssm" status "$svc" >/dev/null 2>&1; then
+    die "service already exists: $svc (먼저 nssm uninstall)"
+  fi
+
+  # nssm install (args 가 비어 있어도 OK)
+  if [ -n "$args" ]; then
+    "$nssm" install "$svc" "$exe_win" "$args" >/dev/null \
+      || die "nssm install failed (관리자 권한 필요할 수 있음)"
+  else
+    "$nssm" install "$svc" "$exe_win" >/dev/null \
+      || die "nssm install failed (관리자 권한 필요할 수 있음)"
+  fi
+  "$nssm" set "$svc" AppDirectory "$cwd_win" >/dev/null || true
+  "$nssm" set "$svc" AppStdout    "$log_win" >/dev/null || true
+  "$nssm" set "$svc" AppStderr    "$log_win" >/dev/null || true
+  "$nssm" set "$svc" AppStdoutCreationDisposition 4 >/dev/null || true
+  "$nssm" set "$svc" AppStderrCreationDisposition 4 >/dev/null || true
+  "$nssm" set "$svc" Start        SERVICE_AUTO_START >/dev/null || true
+  "$nssm" set "$svc" DisplayName  "port_manager: $service ($project :$port)" >/dev/null || true
+  "$nssm" set "$svc" Description  "Auto-registered by /port_manager. cmd: $cmd" >/dev/null || true
+  "$nssm" set "$svc" AppExit Default Restart >/dev/null || true
+
+  echo "NSSM_INSTALLED $svc"
+  echo "  exe: $exe_win"
+  echo "  args: $args"
+  echo "  cwd: $cwd_win"
+  echo "  log: $log_win"
+}
+
+cmd_nssm_uninstall() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  local svc; svc="$(service_name_for "$project" "$port")"
+  if ! "$nssm" status "$svc" >/dev/null 2>&1; then
+    echo "NSSM_NOT_INSTALLED $svc"
+    return 0
+  fi
+  "$nssm" stop "$svc" >/dev/null 2>&1 || true
+  "$nssm" remove "$svc" confirm >/dev/null \
+    || die "nssm remove failed (관리자 권한 필요할 수 있음)"
+  echo "NSSM_REMOVED $svc"
+}
+
+cmd_nssm_start() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  local svc; svc="$(service_name_for "$project" "$port")"
+  "$nssm" status "$svc" >/dev/null 2>&1 || die "service not installed: $svc"
+  "$nssm" start "$svc" >/dev/null \
+    || die "nssm start failed (관리자 권한 필요할 수 있음)"
+  echo "NSSM_STARTED $svc"
+}
+
+cmd_nssm_stop() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  local svc; svc="$(service_name_for "$project" "$port")"
+  "$nssm" status "$svc" >/dev/null 2>&1 || die "service not installed: $svc"
+  "$nssm" stop "$svc" >/dev/null \
+    || die "nssm stop failed (관리자 권한 필요할 수 있음)"
+  echo "NSSM_STOPPED $svc"
+}
+
+cmd_nssm_restart() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  local svc; svc="$(service_name_for "$project" "$port")"
+  "$nssm" status "$svc" >/dev/null 2>&1 || die "service not installed: $svc"
+  "$nssm" restart "$svc" >/dev/null \
+    || die "nssm restart failed (관리자 권한 필요할 수 있음)"
+  echo "NSSM_RESTARTED $svc"
+}
+
+cmd_nssm_status() {
+  local project="$1" port="$2"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  local svc; svc="$(service_name_for "$project" "$port")"
+  local s
+  if s="$("$nssm" status "$svc" 2>/dev/null)"; then
+    # nssm status 출력은 끝에 \r 가 붙을 수 있어 정리
+    s="${s%$'\r'}"
+    echo "$s $svc"
+  else
+    echo "SERVICE_NOT_INSTALLED $svc"
+  fi
+}
+
+# 등록된 pm_* 서비스 목록 — TSV: 서비스명\t상태\t포트
+cmd_nssm_list() {
+  local project="${1:-}"
+  local nssm; nssm="$(nssm_path)" || die "nssm not found"
+  # PowerShell 로 pm_* 서비스 조회 (sc 보다 안정적). prefix 매칭으로 빠르게.
+  local prefix="pm_"
+  if [ -n "$project" ]; then
+    local safe; safe="$(printf '%s' "$project" | tr -c 'A-Za-z0-9_' '_')"
+    prefix="pm_${safe}_"
+  fi
+  powershell.exe -NoProfile -Command "Get-Service -Name '${prefix}*' -ErrorAction SilentlyContinue | ForEach-Object { '{0}\`t{1}' -f \$_.Name, \$_.Status }" 2>/dev/null \
+    | tr -d '\r' \
+    | awk -F'\t' '
+        {
+          # 서비스명에서 포트 추출: 마지막 _ 뒤
+          n=split($1, parts, "_")
+          port=parts[n]
+          print $1 "\t" $2 "\t" port
+        }
+      '
+}
+
+# nssm 서브커맨드 디스패처
+cmd_nssm() {
+  local op="${1:-}"; shift || true
+  case "$op" in
+    check)     cmd_nssm_check ;;
+    install)   [ $# -ge 2 ] || die "usage: nssm install <project> <port>";    cmd_nssm_install   "$@" ;;
+    uninstall) [ $# -ge 2 ] || die "usage: nssm uninstall <project> <port>";  cmd_nssm_uninstall "$@" ;;
+    start)     [ $# -ge 2 ] || die "usage: nssm start <project> <port>";      cmd_nssm_start     "$@" ;;
+    stop)      [ $# -ge 2 ] || die "usage: nssm stop <project> <port>";       cmd_nssm_stop      "$@" ;;
+    restart)   [ $# -ge 2 ] || die "usage: nssm restart <project> <port>";    cmd_nssm_restart   "$@" ;;
+    status)    [ $# -ge 2 ] || die "usage: nssm status <project> <port>";     cmd_nssm_status    "$@" ;;
+    list)      cmd_nssm_list "${1:-}" ;;
+    "")        die "usage: nssm {check|install|uninstall|start|stop|restart|status|list}" ;;
+    *)         die "unknown nssm op: $op" ;;
+  esac
+}
+
 main() {
   local sub="${1:-}"; shift || true
   case "$sub" in
@@ -462,6 +720,7 @@ main() {
     restart)  [ $# -ge 3 ] || die "usage: restart <port> <cwd> <cmd...>"; cmd_restart "$@" ;;
     discover) cmd_discover "${1:-}" ;;
     inspect)  cmd_inspect "${1:-}" ;;
+    nssm)     cmd_nssm "$@" ;;
     ""|help|-h|--help)
       awk 'NR==1 {next} /^#/ || /^[[:space:]]*$/ {print; next} {exit}' "$0"
       ;;

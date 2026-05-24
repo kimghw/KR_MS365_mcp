@@ -1,8 +1,8 @@
 ---
 name: port_manager
-description: 현재 프로젝트의 서버·포트를 SSOT(port_list.md)에서 조회·등록·갱신·삭제하고, 등록된 서버를 상태확인→종료→재시작까지 처리. 행이 0이면 등록 안내, 1이면 자동 재시작, 2+이면 AskUserQuestion으로 선택받아 재시작. 포트 검색·종료·기동·표 편집은 port_ops.sh 스크립트로 위임. TRIGGER when 사용자가 /port_manager 호출, 현재 프로젝트 포트·서버 등록·조회·재시작·재기동 요청. DO NOT TRIGGER when 외부 호스트 접속, 배포·CI 파이프라인.
+description: 현재 프로젝트의 서버·포트를 SSOT(port_list.md)에서 조회·등록·갱신·삭제하고, 등록된 서버를 상태확인→종료→재시작까지 처리. 인자 없이 호출하면 AskUserQuestion 으로 재시작 / 등록(update) / NSSM 중 모드를 먼저 선택받는다. NSSM 으로 Windows 서비스 등록·해제·기동도 동일 인터페이스로 제공. 포트 검색·종료·기동·표 편집·NSSM 호출은 port_ops.sh 스크립트로 위임. TRIGGER when 사용자가 /port_manager 호출, 현재 프로젝트 포트·서버 등록·조회·재시작·재기동·Windows 서비스 등록 요청. DO NOT TRIGGER when 외부 호스트 접속, 배포·CI 파이프라인.
 allowed-tools: Bash AskUserQuestion Read
-argument-hint: [show|all|update [<path>]|add|<port>|rm <port>|help]
+argument-hint: "[show|all|restart|update [<path>]|add|<port>|rm <port>|nssm <op> [<port>]|help]"
 ---
 
 # port_manager — 프로젝트 서버 등록·조회·재시작
@@ -16,14 +16,16 @@ argument-hint: [show|all|update [<path>]|add|<port>|rm <port>|help]
 - **단일 출처(SSOT)**: 모든 결정은 `port_list.md` 한 파일에서 시작한다. 다른 곳을 추측하지 않는다.
 - **스크립트 우선**: 포트 검색·상태·종료·기동·표 편집은 모두 `port_ops.sh` 가 처리한다. Claude가 `ss`/`lsof`/`kill`/`awk`/`sed` 로 표를 직접 다루지 않는다.
 - **현재 프로젝트만 (기본)**: `basename "$CLAUDE_PROJECT_DIR"` 으로 결정한 프로젝트만 다룬다. 다른 프로젝트 행은 `all` 모드에서만 표시한다. **예외**: `update <path>` 는 인자로 받은 외부 경로를 대상 프로젝트로 사용한다(이때 프로젝트명은 `basename <path>`).
-- **수량으로 분기**: 재시작 모드에서 행 수가 0 → 안내, 1 → 자동, 2+ → `AskUserQuestion` 으로 선택.
+- **인자가 곧 모드**: 인자가 있으면 (`restart`/`update`/`nssm`/`show`/`all`/`add`/`<port>`/`rm`...) 모드 선택 단계 없이 곧장 그 모드 절차로 들어간다. 인자가 없을 때만 `AskUserQuestion` 으로 모드를 묻는다.
+- **수량으로 분기**: 재시작 모드 진입 후 행 수가 0 → 안내, 1 → 자동, 2+ → `AskUserQuestion` 으로 선택.
 - **재시작은 명시적 절차**: `status → kill(있을 때만) → start → status` 순서를 따른다.
 
 ## 인자 분기 (`$ARGUMENTS`)
 
 | 인자 | 모드 | 동작 |
 |:---|:---|:---|
-| (없음) | **재시작** | 현재 프로젝트 행을 보여주고 1행이면 자동 재시작, 2+행이면 `AskUserQuestion` 선택 후 재시작. 0행이면 등록 안내. |
+| (없음) | **모드 선택** | `AskUserQuestion` (single) 으로 **재시작 / 등록(update) / NSSM** 중 하나를 받고, 해당 모드 절차로 진입한다. 사용자가 응답하지 않으면 아무 작업도 하지 않고 종료. |
+| `restart` | **재시작** | AskUserQuestion 건너뛰고 곧장 재시작 모드 진입. 현재 프로젝트 행 수 0/1/2+ 에 따라 분기 (등록 안내 / 자동 / 선택). |
 | `show` | **조회** | 현재 프로젝트 행을 출력만. 재시작 안 함. 0행이면 미등록 메시지. |
 | `all` 또는 `list` | **전체 조회** | `port_list.md` 전체 표를 그대로 출력. 다른 프로젝트 포함. |
 | `update` | **자동 발견 등록 (현재 프로젝트)** | 현재 프로젝트에 속한 LISTEN 서버를 `discover` 로 찾아 보여주고, `AskUserQuestion` multiSelect 로 등록 대상을 고르게 한다. 다른 프로젝트와 같은 포트면 충돌 경고. |
@@ -31,6 +33,13 @@ argument-hint: [show|all|update [<path>]|add|<port>|rm <port>|help]
 | `<숫자>` | **등록/갱신** | 그 포트로 등록(미존재) 또는 갱신(존재). 서비스·시작명령·작업디렉토리는 `AskUserQuestion`. |
 | `add` | **등록(대화형)** | 포트부터 `AskUserQuestion` 으로 받고 동일 절차. |
 | `rm <port>` 또는 `remove <port>` | **삭제** | 현재 프로젝트의 그 행을 삭제. 사용자 확인 후. |
+| `nssm` (인자 없음) | **NSSM 상태** | 현재 프로젝트의 등록된 모든 행에 대해 NSSM 서비스 상태(설치/미설치, RUNNING/STOPPED)를 표로 출력. |
+| `nssm check` | **NSSM 가용성** | `nssm.exe` 가 PATH 에 있는지 확인. 없으면 설치 안내. |
+| `nssm install [<port>]` | **서비스 등록** | `port_list.md` 행을 NSSM Windows 서비스로 등록 (자동 시작). 인자 없으면 `AskUserQuestion` multiSelect 로 후보 행에서 선택. |
+| `nssm uninstall [<port>]` | **서비스 해제** | NSSM 서비스 제거 (stop 후 remove). 인자 없으면 설치된 서비스 중 선택. |
+| `nssm start \| stop \| restart [<port>]` | **서비스 제어** | NSSM 명령으로 서비스 시작/중지/재시작. |
+| `nssm status [<port>]` | **서비스 상태** | NSSM 상태 (`SERVICE_RUNNING` 등). 인자 없으면 현재 프로젝트 전체. |
+| `nssm list` | **서비스 목록** | 시스템에 등록된 `pm_*` 접두 서비스 전체 출력. |
 | `help` 또는 `-h` | **사용법** | 본 표를 그대로 출력하고 종료. |
 
 ## 사용 도구
@@ -79,6 +88,16 @@ port_ops.sh restart <port> <cwd> <cmd...>           # kill + start
 # 자동 발견
 port_ops.sh discover [project_root]                 # TSV: 포트\tPID\t시작명령\t작업디렉토리 (PROJECT_ROOT 안에 속한 LISTEN 만)
 port_ops.sh inspect  [project_root]                 # 프로젝트 내부 설정 파일에서 "선언된 서버" 추출. 실행 여부 무관. TSV: source\t이름\t포트\t시작명령\t작업디렉토리. 미상 필드는 "—". 스캔 대상: .vscode/mcp.json · .cursor/mcp.json · .mcp.json · mcp.json · claude_desktop_config.json · .taskpilot/mcp-launchers.json. python3 필요. **deep inspect**: 포트가 "—" 인 행은 cmd 의 스크립트 파일(.py/.js/.ts/.mjs/.cjs/.sh)을 cwd 기준으로 열어 `uvicorn.run(...port=)`, `app.run(port=)`, `.listen()`, `os.environ.get("..._PORT", N)`, `--port N`, `PORT = N` 등의 패턴을 grep 으로 추가 탐색해 채운다. 이때 source 라벨에 `+deep` 접미사가 붙는다.
+
+# NSSM — Windows 서비스 (Windows 전용, 관리자 권한 필요)
+port_ops.sh nssm check                              # nssm.exe 가용성. "OK <path>" 또는 NSSM_NOT_FOUND
+port_ops.sh nssm install   <project> <port>         # port_list.md 행을 Windows 서비스 등록. 시작명령 → AppPath+AppParameters, 작업디렉토리 → AppDirectory, $LOG_DIR/<svc>.log 로 AppStdout/Stderr, SERVICE_AUTO_START. 셸 메타문자 있으면 cmd.exe /c 로 래핑. 서비스명: pm_<project>_<port>
+port_ops.sh nssm uninstall <project> <port>         # stop 후 remove confirm
+port_ops.sh nssm start     <project> <port>         # nssm start <svc>
+port_ops.sh nssm stop      <project> <port>         # nssm stop  <svc>
+port_ops.sh nssm restart   <project> <port>         # nssm restart <svc>
+port_ops.sh nssm status    <project> <port>         # "SERVICE_RUNNING <svc>" | "SERVICE_STOPPED <svc>" | "SERVICE_NOT_INSTALLED <svc>"
+port_ops.sh nssm list      [project]                # 시스템 등록된 pm_* 서비스 나열. TSV: 서비스명\t상태\t포트 (project 인자 있으면 pm_<project>_* 만)
 ```
 
 호출 시 항상 `PROJECT_ROOT="$CLAUDE_PROJECT_DIR"` 를 export 한다 (cwd 해석 기준).
@@ -94,7 +113,21 @@ OPS="$CLAUDE_PROJECT_DIR/.claude/skills/port_manager/port_ops.sh"
 export PROJECT_ROOT="$CLAUDE_PROJECT_DIR"
 ```
 
-### 모드: 재시작 (인자 없음)
+### 모드: (인자 없음) — 모드 선택
+
+인자가 전혀 없을 때만 이 단계로 들어온다. `restart`/`update`/`nssm` 인자가 명시되면 이 단계를 건너뛰고 곧장 해당 모드로 간다.
+
+1. 의사결정에 쓸 보조 데이터를 한 번에 모은다 (각 옵션의 description 에 미리 채워 보여주기 위함):
+   - 등록 행 수: `"$OPS" list "$PROJECT" | wc -l`
+   - NSSM 가용성: `"$OPS" nssm check` 의 exit code
+2. `AskUserQuestion` (multiSelect: false) 로 세 가지 모드 중 하나를 받는다 (§AskUserQuestion 규약).
+3. 선택 결과에 따라 분기:
+   - **재시작** → §모드: 재시작 절차로 이동 (인자 `restart` 와 동일 경로).
+   - **등록(update)** → §모드: 자동 발견 등록 절차로 이동 (인자 없는 `update` 와 동일 경로).
+   - **NSSM** → §모드: NSSM (인자 없음) 절차로 이동 (현재 프로젝트 서비스 상태표).
+4. 사용자가 모달을 닫거나 응답하지 않으면 아무 부작용도 일으키지 않고 종료한다.
+
+### 모드: 재시작 (`restart` 또는 모드 선택에서 "재시작")
 
 1. `"$OPS" list "$PROJECT"` 로 행 수집.
 2. 행 수 분기:
@@ -168,11 +201,77 @@ export PROJECT_ROOT="$CLAUDE_PROJECT_DIR"
 2. 해당 행을 표시한 뒤 `AskUserQuestion` 으로 확인.
 3. 확인 시 `"$OPS" remove "$PROJECT" "$PORT"`.
 
+### 모드: NSSM — Windows 서비스 (`nssm ...`)
+
+**전제조건**: Windows 환경 + `nssm.exe` 가 PATH 에. 미설치 시 `nssm check` 의 안내(`scoop install nssm` / `choco install nssm`)로 유도. 서비스 install/uninstall/start/stop/restart 는 **관리자 권한 쉘** 에서 호출해야 함 (UAC). 권한 부족 시 `nssm install failed (관리자 권한 필요할 수 있음)` 메시지가 떨어지며 종료.
+
+서비스명 컨벤션: `pm_<project>_<port>` (예: `pm_KR_MS365_mcp_5001`). 다른 프로젝트와 같은 포트를 써도 충돌하지 않음.
+
+#### `nssm` (인자 없음) — 현재 프로젝트 서비스 상태
+
+1. `"$OPS" list "$PROJECT"` 로 등록된 행 수집.
+2. 각 행에 대해 `"$OPS" nssm status "$PROJECT" "$PORT"` 호출.
+3. 결과를 §출력 형식의 NSSM 상태표로 출력.
+4. 0행이면 `[port_manager] <PROJECT> — 등록된 서버가 없습니다. 먼저 /port_manager 로 등록하세요.`
+
+#### `nssm check` — NSSM 가용성
+
+1. `"$OPS" nssm check` 호출. exit 0 → `✅ nssm: <path>`. exit 1 → 표준에러의 설치 안내를 그대로 사용자에게 전달.
+
+#### `nssm install [<port>]` — 서비스 등록
+
+1. **포트 결정**:
+   - 인자 있음: 그 포트 단일.
+   - 인자 없음: `"$OPS" list "$PROJECT"` 로 후보 행을 모은 뒤 각 행에 대해 `nssm status` 로 이미 설치된 것은 제외하고, **신규 후보만** `AskUserQuestion` multiSelect 로 제시 (§AskUserQuestion 규약).
+2. **NSSM 가용성 사전 확인**: `"$OPS" nssm check` 실패 시 안내 후 종료.
+3. 각 선택 포트에 대해 `"$OPS" nssm install "$PROJECT" "$PORT"` 호출. 결과(`NSSM_INSTALLED <svc>` + exe/args/cwd/log)를 §출력 형식으로 한 줄씩 보고.
+4. 사용자에게 `nssm start` 로 즉시 기동할지 확인 (AskUserQuestion). 예 → 각 서비스 `nssm start`.
+
+#### `nssm uninstall [<port>]` — 서비스 해제
+
+1. 인자 없으면 `"$OPS" nssm list "$PROJECT"` 로 설치된 서비스만 추려 `AskUserQuestion` multiSelect.
+2. 각 선택에 대해 `"$OPS" nssm uninstall "$PROJECT" "$PORT"` 호출. 결과 한 줄 보고.
+
+#### `nssm start | stop | restart [<port>]` — 서비스 제어
+
+1. 인자 없으면 설치된 서비스 중에서 `AskUserQuestion` (`stop`/`restart` 는 RUNNING 만, `start` 는 STOPPED 만 후보).
+2. `"$OPS" nssm {op} "$PROJECT" "$PORT"` 호출.
+3. 호출 후 `"$OPS" nssm status "$PROJECT" "$PORT"` 로 재확인하고 §출력 형식의 NSSM 상태표로 보고.
+4. 기동 성공(`SERVICE_RUNNING`)이면 클릭 가능 URL 을 **코드펜스 바깥**에 별도 줄로 출력 (`👉 [http://localhost:<PORT>](http://localhost:<PORT>)`).
+
+#### `nssm status [<port>]` — 상태 조회
+
+1. 인자 있음 → 단일 포트 status, 없음 → 현재 프로젝트 전체.
+2. §출력 형식의 NSSM 상태표.
+
+#### `nssm list` — 전체 서비스 목록
+
+1. `"$OPS" nssm list` (project 인자 없이) → 시스템의 모든 `pm_*` 서비스.
+2. TSV 그대로 코드펜스로 출력 + 항목 수 요약.
+
 ### 모드: 도움말 (`help` / `-h`)
 
 본 SKILL.md 의 §인자 분기 표를 그대로 출력하고 종료. 다른 행동 없음.
 
 ## AskUserQuestion 규약
+
+### 모드 선택 — 인자 없음
+
+```yaml
+question: "<PROJECT> · port_manager — 어떤 작업을 할까요?"
+header: "모드 선택"
+multiSelect: false
+options:
+  - label: "재시작 — 등록된 서버 기동/재기동"
+    description: "port_list.md 행 기준 status → kill → start. 현재 등록 N개."
+  - label: "등록(update) — 실행/선언 서버 발견 후 SSOT 등록"
+    description: "discover + inspect 결과를 multiSelect 로 골라 add/update."
+  - label: "NSSM — Windows 서비스 상태 / 관리"
+    description: "관리자 쉘에서 install/start/stop/restart. nssm 가용: OK | 미설치."
+```
+
+- 옵션 description 의 "현재 등록 N개" 와 "nssm 가용" 은 호출 직전 `"$OPS" list "$PROJECT"` 행 수와 `"$OPS" nssm check` exit code 로 채워 넣는다.
+- 같은 동작을 인자로 직접 호출하고 싶다는 사용자 의도가 보이면 (`restart`, `update`, `nssm` 입력) 이 질문을 보내지 않고 곧장 해당 모드로 진입한다.
 
 ### 재시작 모드 — 2+ 행 선택
 
@@ -235,6 +334,31 @@ header: "삭제 확인"
 options:
   - label: "삭제"
   - label: "취소"
+```
+
+### NSSM 모드 — install / uninstall / start / stop / restart 선택
+
+```yaml
+# nssm install [<port>] (인자 없음, multiSelect)
+question: "<PROJECT> 에서 NSSM 서비스로 등록할 행을 모두 고르세요. (이미 설치된 행은 제외)"
+header: "서비스 등록"
+multiSelect: true
+options:
+  - label: "<SERVICE> :<PORT>"
+    description: "<CMD>  @  <CWD>"
+```
+
+- `uninstall`/`start`/`stop`/`restart` 는 multiSelect, 후보는 `nssm list "$PROJECT"` 결과(필요하면 상태로 필터)에서 추림.
+- 후보가 4개 초과면 처음 3개 + Other "직접 입력 (예: 5001)".
+
+```yaml
+# nssm install 직후 — 즉시 기동 여부
+question: "등록한 서비스를 지금 시작할까요?"
+header: "즉시 기동"
+multiSelect: false
+options:
+  - label: "예 (nssm start 실행)"
+  - label: "아니오 (다음 부팅 시 자동 시작)"
 ```
 
 ## 출력 형식
@@ -321,6 +445,35 @@ URL 줄은 **기동 후 status 재확인이 `RUNNING` 일 때만** 출력한다.
   8000  API   uvicorn app:app --reload  @  server
 ```
 
+### NSSM 모드 — 상태표 / 실행 결과
+
+상태표 (코드펜스 안). 상태 라벨: `RUNNING`/`STOPPED`/`미설치`. 클릭 가능 URL 은 코드펜스 바깥에 별도 섹션:
+
+```
+[port_manager] KR_MS365_mcp — NSSM 서비스 상태 (6행)
+  5001  Outlook MCP    pm_KR_MS365_mcp_5001    RUNNING
+  5002  Calendar MCP   pm_KR_MS365_mcp_5002    STOPPED
+  5003  Teams MCP      pm_KR_MS365_mcp_5003    미설치
+  5006  Todo MCP       pm_KR_MS365_mcp_5006    RUNNING
+```
+
+- 👉 [http://localhost:5001](http://localhost:5001) — Outlook MCP
+- 👉 [http://localhost:5006](http://localhost:5006) — Todo MCP
+
+설치/해제/제어 결과:
+
+```
+[port_manager] KR_MS365_mcp — NSSM 등록 결과:
+  + 등록  5001  Outlook MCP   pm_KR_MS365_mcp_5001
+            exe: C:\Users\USER\KR_MS365_mcp\venv\Scripts\python.exe
+            args: mcp_outlook/mcp_server/server_stream.py
+            cwd:  C:\Users\USER\KR_MS365_mcp
+            log:  C:\Users\USER\AppData\Local\Temp\port_manager\pm_KR_MS365_mcp_5001.log
+```
+
+- `+` = 신규 install, `-` = uninstall, `▶` = start, `■` = stop, `↻` = restart.
+- 권한 부족 등 실패 시: `✗ 실패  <port>  <서비스>  — 관리자 권한으로 다시 시도하세요.`
+
 ## DO
 
 - 스크립트로 위임한다 — Claude가 `ss`/`lsof`/`kill` 이나 표 마크다운을 직접 다루지 않는다.
@@ -329,6 +482,7 @@ URL 줄은 **기동 후 status 재확인이 `RUNNING` 일 때만** 출력한다.
 - 등록 시 다른 프로젝트가 같은 포트를 쓰면 충돌 경고를 띄우고 사용자에게 확인.
 - 로그 경로를 결과에 포함해 디버깅 단서를 남긴다.
 - **URL은 코드블록 바깥에 마크다운 하이퍼링크로 출력한다** — `👉 [http://localhost:<PORT>](http://localhost:<PORT>)`. 코드펜스 안에 두면 클릭이 안 된다.
+- **NSSM**: install 전에 `port_list.md` 행이 먼저 존재해야 한다 (없으면 `/port_manager <port>` 로 등록). install/start/stop 호출 전 `nssm check` 로 가용성 확인. 권한 실패 메시지가 나오면 사용자에게 관리자 쉘에서 재시도하라고 안내.
 
 ## DON'T
 
@@ -349,10 +503,15 @@ URL 줄은 **기동 후 status 재확인이 `RUNNING` 일 때만** 출력한다.
 | `add` 가 실패 ("row already exists") | 같은 (project,port) 행이 이미 있음 | `update` 사용 또는 먼저 `remove` |
 | `inspect` 가 포트를 못 찾음 | 포트가 외부 설정 파일(.env, settings, config 클래스)이나 다른 모듈 import 로만 정의됨 / 스크립트가 표준 위치에 없음 | `--port` 인자나 환경변수로 명시 추가, 또는 `add` 로 직접 등록 |
 | Deep inspect 가 잘못된 포트 잡음 | 스크립트 안에 여러 port 리터럴이 있고 첫 번째가 메인이 아님 | 결과를 사용자에게 보여주고 확정 전 검토. `add` 로 정확한 값 직접 등록 가능 |
+| `nssm install failed` | 비관리자 쉘에서 호출 / 같은 이름 서비스가 이미 존재 | PowerShell/cmd 를 **관리자로 실행** 후 재시도. 기존 서비스가 있으면 `nssm uninstall <port>` 후 재설치 |
+| `nssm install` 직후 서비스 STOPPED 로 자동 종료 | 시작명령 즉시 실패 (.env 누락, venv 경로 오류 등) | `nssm get <svc> AppStdout` 으로 로그 경로 확인 → `Get-Content -Tail 30 <log>` |
+| `nssm install` 시 셸 파이프·리다이렉트가 안 먹음 | NSSM 은 exe 를 직접 spawn 함 (셸 미경유) | port_ops.sh 가 메타문자(`|>&;` 등) 감지 시 자동으로 `cmd.exe /c <cmd>` 로 래핑함. 단 복잡한 chain 은 별도 batch 파일로 빼는 것을 권장 |
+| `nssm` 명령은 되지만 port_manager `nssm` 행동이 다름 | `port_list.md` 에 해당 (project,port) 행이 없음 | 먼저 `/port_manager <port>` 로 등록 후 `nssm install` |
 
 ## 체크리스트
 
 - [ ] `$ARGUMENTS` 를 모드 분기 표에 맞게 해석했다.
+- [ ] 인자가 없으면 `AskUserQuestion` 으로 모드(재시작/등록/NSSM)를 먼저 받았다. `restart`/`update`/`nssm` 인자가 있으면 모드 선택을 건너뛰고 곧장 진입했다.
 - [ ] 모든 표 mutation 은 `port_ops.sh` 로 위임했다 (직접 편집 금지).
 - [ ] 재시작 모드에서 행 수에 따라 분기(0/1/2+) 했다.
 - [ ] 2+ 행에 대해 `AskUserQuestion` 으로 물었다.
@@ -361,4 +520,7 @@ URL 줄은 **기동 후 status 재확인이 `RUNNING` 일 때만** 출력한다.
 - [ ] `update` 모드 multiSelect 선택 결과만 add/update 했다 (선택 안 한 행은 건드리지 않음).
 - [ ] kill 은 RUNNING 일 때만 호출했다.
 - [ ] start 후 status 재확인을 수행했다.
+- [ ] NSSM 모드: install 전에 `nssm check` 와 `port_list.md` 행 존재를 확인했다.
+- [ ] NSSM 모드: install/uninstall/start/stop 호출 후 status 재확인으로 검증했다.
+- [ ] NSSM 권한 실패 시 사용자에게 관리자 쉘 재시도 안내를 했다.
 - [ ] 결과 보고가 출력 형식을 따른다.

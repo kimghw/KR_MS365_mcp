@@ -63,6 +63,7 @@ logs/
 
 # Claude
 # .claude/  # Commented out to include Claude commands in git
+.claude/settings.local.json
 
 # Temporary files
 *.tmp

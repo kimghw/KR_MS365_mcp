@@ -1,4 +1,4 @@
-# setup-ms365 참고 문서 (Windows + Claude Code HTTP + Claude Desktop STDIO)
+# setup_ms365 참고 문서 (Windows + Claude Code HTTP + Claude Desktop STDIO)
 
 이 문서는 `SKILL.md`가 실행 중 참조하는 환경 요구사항, 경로 매핑, OAuth Flow 요약입니다.
 
@@ -24,7 +24,7 @@
 |---|---|
 | OS | Windows 10/11 (WSL Bash 도구로 Windows 바이너리 호출) |
 | Python | Windows 시스템 Python 3.10+ (`C:\Python3*\python.exe`) |
-| venv 위치 | `c:\Users\USER\KR_MS365_mcp\venv\` |
+| venv 위치 | `<PROJECT_ROOT>\venv\` |
 | Claude Code CLI | `claude` (PATH에 있어야 함) |
 | 한컴오피스 (선택) | `pyhwpx`로 HWP 변환 시에만 필요 — 기본 스킬에서는 비활성 |
 
@@ -32,12 +32,12 @@
 
 | 항목 | Git Bash / WSL 경로 | Windows 경로 |
 |---|---|---|
-| 프로젝트 루트 | `/c/...` 또는 `/mnt/c/Users/USER/KR_MS365_mcp` | `c:\Users\USER\KR_MS365_mcp` |
-| venv Python | `<root>/venv/Scripts/python.exe` | `c:\Users\USER\KR_MS365_mcp\venv\Scripts\python.exe` |
-| venv pip | `<root>/venv/Scripts/pip.exe` | `c:\Users\USER\KR_MS365_mcp\venv\Scripts\pip.exe` |
-| `.env` | `<root>/.env` | `c:\Users\USER\KR_MS365_mcp\.env` |
-| 토큰 DB | `<root>/database/auth.db` | `c:\Users\USER\KR_MS365_mcp\database\auth.db` |
-| 인증 모듈 | `<root>/session/auth_manager.py` | `c:\Users\USER\KR_MS365_mcp\session\auth_manager.py` |
+| 프로젝트 루트 | `/c/...` 또는 `/mnt/<드라이브>/<PROJECT_ROOT>` | `<PROJECT_ROOT>` |
+| venv Python | `<root>/venv/Scripts/python.exe` | `<PROJECT_ROOT>\venv\Scripts\python.exe` |
+| venv pip | `<root>/venv/Scripts/pip.exe` | `<PROJECT_ROOT>\venv\Scripts\pip.exe` |
+| `.env` | `<root>/.env` | `<PROJECT_ROOT>\.env` |
+| 토큰 DB | `<root>/database/auth.db` | `<PROJECT_ROOT>\database\auth.db` |
+| 인증 모듈 | `<root>/session/auth_manager.py` | `<PROJECT_ROOT>\session\auth_manager.py` |
 
 서버별 진입점: 위 "지원 서버" 표 참조.
 
@@ -69,7 +69,7 @@
 | `AZURE_TENANT_ID` | (사용자 입력) | Tenant UUID 또는 `common`/`organizations`/`consumers` |
 | `AZURE_REDIRECT_URI` | `http://localhost:5000/callback` | **고정** — Azure Portal Redirect URI와 일치 필수 |
 | `AZURE_AUTHORITY` | `https://login.microsoftonline.com` | **고정** |
-| `AZURE_SCOPES` | `offline_access openid` | **고정** — 추가 권한(Mail.Read 등)이 필요하면 수동 편집 |
+| `AZURE_SCOPES` | `https://graph.microsoft.com/.default offline_access openid` | **고정** — 추가 권한(Mail.Read 등)이 필요하면 수동 편집 |
 
 ## OAuth Flow 요약
 
@@ -95,7 +95,7 @@
 | local (프로젝트, 기본) | (생략) | `~/.claude.json` 안의 `projects[<현재경로>].mcpServers` | 그 프로젝트를 열었을 때만 |
 | project | `-s project` | 프로젝트 루트의 `.mcp.json` | 해당 저장소에 체크인됨 |
 
-**setup-ms365 스킬은 항상 `-s user` 사용** — 6개 서버는 디렉토리 무관하게 항상 보여야 하므로.
+**setup_ms365 스킬은 항상 `-s user` 사용** — 6개 서버는 디렉토리 무관하게 항상 보여야 하므로.
 
 엔트리 스키마 (6개 모두 같은 구조, port만 다름):
 

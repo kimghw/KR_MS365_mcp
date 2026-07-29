@@ -30,7 +30,9 @@ env/
 *.db
 *.sqlite
 *.sqlite3
-database/
+database/*
+!database/schema.sql
+!database/*.sql
 
 # Cache
 .cache/
@@ -83,6 +85,8 @@ mcp_editor/*/*.json
 
 # Text and PID files
 *.txt
+!requirements.txt
+!requirements-*.txt
 *.pid
 .mcp_pids/
 

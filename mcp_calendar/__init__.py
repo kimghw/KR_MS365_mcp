@@ -31,13 +31,6 @@ from .calendar_types import (
     create_schedule_request,
 )
 
-from .graph_calendar_url import (
-    CalendarFilterBuilder,
-    GraphCalendarUrlBuilder,
-    quick_event_filter,
-    build_filter_query,
-)
-
 from .graph_calendar_query import GraphCalendarQuery
 from .graph_calendar_client import GraphCalendarClient
 from .calendar_service import CalendarService, calendar_service
@@ -70,11 +63,6 @@ __all__ = [
     "create_event_select_params",
     "create_event_create_params",
     "create_schedule_request",
-    # URL builders
-    "CalendarFilterBuilder",
-    "GraphCalendarUrlBuilder",
-    "quick_event_filter",
-    "build_filter_query",
     # Query
     "GraphCalendarQuery",
     # Client

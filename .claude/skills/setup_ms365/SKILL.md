@@ -1,11 +1,11 @@
 ---
-name: ms365
+name: setup_ms365
 description: KR_MS365_mcp 통합 셋업·운영 스킬. 6개 MS365 MCP 서버(outlook/calendar/teams/onedrive/onenote/todo)의 venv·의존성·.env·MCP 등록(셋업)부터 HTTP 서버 백그라운드 실행·중지·상태점검까지 한 스킬에서 처리합니다. AskUserQuestion으로 모드/서버/등록타겟을 받고, Azure OAuth는 MCP 서버가 첫 툴 호출 시 자동 트리거합니다.
 ---
 
 # MS365 MCP 통합 셋업·운영 스킬
 
-`/ms365`로 호출. 셋업(venv/.env/등록)과 서버 운영(start/stop/status)을 한 곳에서 처리합니다.
+`/setup_ms365`로 호출. 셋업(venv/.env/등록)과 서버 운영(start/stop/status)을 한 곳에서 처리합니다.
 
 ## 인증은 MCP 서버가 자동 처리
 
@@ -48,19 +48,19 @@ OAuth 브라우저 플로우, refresh_token 갱신, 콜백 서버, `auth.db` 저
 
 ## 인자
 
-- `/ms365` — 상태 표시 + 스마트 진단으로 다음 동작 자동 결정
-- `/ms365 setup` / `env` / `check` / `status` — 명시 모드
-- `/ms365 start [<server>...]` — 시작 (인자 없으면 AskUserQuestion, `all` 또는 이름 나열)
-- `/ms365 stop [<server>...]` / `restart [<server>...]` — 중지/재시작
+- `/setup_ms365` — 상태 표시 + 스마트 진단으로 다음 동작 자동 결정
+- `/setup_ms365 setup` / `env` / `check` / `status` — 명시 모드
+- `/setup_ms365 start [<server>...]` — 시작 (인자 없으면 AskUserQuestion, `all` 또는 이름 나열)
+- `/setup_ms365 stop [<server>...]` / `restart [<server>...]` — 중지/재시작
 
 ## 사전 확인 (Windows 절대 경로)
 
 | 항목 | 경로 |
 |---|---|
-| 프로젝트 루트 | `c:\Users\USER\KR_MS365_mcp` |
-| venv Python | `c:\Users\USER\KR_MS365_mcp\venv\Scripts\python.exe` |
-| `.env` (공통) | `c:\Users\USER\KR_MS365_mcp\.env` |
-| 토큰 DB (공통) | `c:\Users\USER\KR_MS365_mcp\database\auth.db` |
+| 프로젝트 루트 | `$CLAUDE_PROJECT_DIR` (이 스킬이 속한 프로젝트 루트, 예: `E:\dev\KR_MS365_mcp`) |
+| venv Python | `<루트>\venv\Scripts\python.exe` |
+| `.env` (공통) | `<루트>\.env` |
+| 토큰 DB (공통) | `<루트>\database\auth.db` |
 | Claude Desktop config | `%APPDATA%\Claude\claude_desktop_config.json` |
 | OAuth 콜백 포트 | `.env`의 `AZURE_REDIRECT_URI` (5000 고정) |
 
@@ -69,7 +69,7 @@ OAuth 브라우저 플로우, refresh_token 갱신, 콜백 서버, `auth.db` 저
 ## 스킬 구성
 
 ```
-ms365/
+setup_ms365/
 ├── SKILL.md
 ├── references/
 │   ├── setup_reference.md            ← 경로·의존성·OAuth flow
@@ -94,9 +94,9 @@ ms365/
 순서대로 실행. Bash 도구 사용, 경로는 Windows 형식. 본 절차에서 자주 등장하는 변수:
 
 ```bash
-PROJ="c:\Users\USER\KR_MS365_mcp"
+PROJ="$CLAUDE_PROJECT_DIR"   # 프로젝트 루트 (예: E:\dev\KR_MS365_mcp)
 VENV_PY="$PROJ\venv\Scripts\python.exe"
-SCRIPTS="$PROJ\.claude\skills\ms365\scripts"
+SCRIPTS="$PROJ\.claude\skills\setup_ms365\scripts"
 ```
 
 ### 1단계: 상태 스냅샷
@@ -231,7 +231,7 @@ fi
 - AZURE_TENANT_ID (UUID 또는 'common')
 ```
 
-**고정값 (묻지 말 것):** `AZURE_REDIRECT_URI=http://localhost:5000/callback`, `AZURE_SCOPES=offline_access openid`, `AZURE_AUTHORITY=https://login.microsoftonline.com`.
+**고정값 (묻지 말 것):** `AZURE_REDIRECT_URI=http://localhost:5000/callback`, `AZURE_SCOPES=https://graph.microsoft.com/.default offline_access openid`, `AZURE_AUTHORITY=https://login.microsoftonline.com`. (Graph 리소스 스코프가 빠지면 Graph API용 access token이 발급되지 않음 — `session/azure_config.py`의 기본값과 동일하게 유지)
 
 **3-B-3. `.env` 작성** (`Write` 도구). **민감정보 채팅 출력 금지** — 라인 수만 확인.
 
@@ -262,7 +262,7 @@ done
 
 ### 3-D. 서버 운영
 
-**3-D-1. start** — `/ms365 start` (인자 없음) → 1단계의 STOPPED 서버를 `AskUserQuestion` multiSelect 로. `all` 또는 명시 이름은 직접 매핑.
+**3-D-1. start** — `/setup_ms365 start` (인자 없음) → 1단계의 STOPPED 서버를 `AskUserQuestion` multiSelect 로. `all` 또는 명시 이름은 직접 매핑.
 
 각 선택된 `{name}`, `{port}`:
 
@@ -290,7 +290,7 @@ health_check.py 출력 형식:
 
 실패한 서버는 로그 확인: `tail -20 /tmp/mcp_{name}.log`. 운영 함정은 [references/caveats.md](references/caveats.md).
 
-**3-D-2. stop** — `/ms365 stop <server>` 또는 `stop all`:
+**3-D-2. stop** — `/setup_ms365 stop <server>` 또는 `stop all`:
 
 ```bash
 "$VENV_PY" "$SCRIPTS\stop_server.py" --servers outlook        # 단일

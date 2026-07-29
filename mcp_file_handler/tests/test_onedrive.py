@@ -1,7 +1,7 @@
 """Tests for OneDrive integration."""
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from pathlib import Path
 
 from ..onedrive import OneDriveClient, OneDriveDownloader, OneDriveProcessor
@@ -13,7 +13,7 @@ class TestOneDriveClient(unittest.TestCase):
     def setUp(self):
         """Setup test fixtures."""
         self.mock_auth = Mock()
-        self.mock_auth.get_access_token.return_value = 'test_token'
+        self.mock_auth.validate_and_refresh_token = AsyncMock(return_value='test_token')
         self.client = OneDriveClient(self.mock_auth)
 
     def test_get_headers(self):

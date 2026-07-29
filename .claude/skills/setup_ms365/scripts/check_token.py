@@ -24,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 # Resolve project root from this script's location:
-#   <PROJECT>/.claude/skills/ms365/scripts/check_token.py → parents[4]
+#   <PROJECT>/.claude/skills/setup_ms365/scripts/check_token.py → parents[4]
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 

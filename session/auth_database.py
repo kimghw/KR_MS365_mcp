@@ -210,13 +210,16 @@ class AuthDatabase:
         finally:
             conn.close()
 
-    def save_token(self, email: str, token_info: Dict[str, Any]) -> bool:
+    def save_token(self, email: str, token_info: Dict[str, Any], reset_refresh_expiry: bool = False) -> bool:
         """
         토큰 정보 저장 (azure_token_info 테이블 사용)
 
         Args:
             email: 사용자 이메일
             token_info: 토큰 정보
+            reset_refresh_expiry: True면 완전 재인증 경로 — 새 refresh_token 발급에 맞춰
+                refresh_token_expires_at을 새 값(+90일)으로 리셋.
+                False면 토큰 refresh 경로 — 기존 만료 시각을 유지.
 
         Returns:
             성공 여부
@@ -242,10 +245,18 @@ class AuthDatabase:
                 # ISO 형식으로 통일 (UTC 시간대 명시)
                 refresh_expires_at = (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
 
-            # azure_token_info에 UPSERT - created_at 보존하여 refresh_token 90일 만료가 매 refresh마다
-            # 리셋되지 않도록 함. 기존 row가 있으면 created_at 그대로, refresh_token_expires_at도
-            # 새 값이 있을 때만 갱신 (없으면 기존 만료 시간 유지)
-            cursor.execute("""
+            # azure_token_info에 UPSERT - created_at은 보존.
+            # refresh_token_expires_at 처리 분기:
+            #  - refresh 경로(reset_refresh_expiry=False): 기존 만료 시각 유지
+            #    (매 refresh마다 90일이 리셋되지 않도록 기존 값 우선)
+            #  - 완전 재인증 경로(reset_refresh_expiry=True): 새 refresh_token이 발급되므로
+            #    만료 시각을 새 값(+90일)으로 리셋
+            if reset_refresh_expiry:
+                refresh_expiry_update = "COALESCE(excluded.refresh_token_expires_at, refresh_token_expires_at)"
+            else:
+                refresh_expiry_update = "COALESCE(refresh_token_expires_at, excluded.refresh_token_expires_at)"
+
+            cursor.execute(f"""
                 INSERT INTO azure_token_info (
                     user_email,
                     access_token,
@@ -261,7 +272,7 @@ class AuthDatabase:
                     refresh_token = COALESCE(excluded.refresh_token, refresh_token),
                     id_token = COALESCE(excluded.id_token, id_token),
                     access_token_expires_at = excluded.access_token_expires_at,
-                    refresh_token_expires_at = COALESCE(refresh_token_expires_at, excluded.refresh_token_expires_at),
+                    refresh_token_expires_at = {refresh_expiry_update},
                     scope = COALESCE(excluded.scope, scope),
                     updated_at = CURRENT_TIMESTAMP
             """, (
@@ -270,7 +281,7 @@ class AuthDatabase:
                 token_info.get('refresh_token'),
                 token_info.get('id_token'),
                 token_info.get('expires_at'),  # access token 만료 시간
-                refresh_expires_at,  # refresh token 만료 시간 (신규 row일 때만 사용)
+                refresh_expires_at,  # refresh token 만료 시간 (신규 row 또는 재인증 시 사용)
                 token_info.get('scope')
             ))
 
@@ -416,7 +427,7 @@ class AuthDatabase:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT u.*, t.access_token_expires_at as expires_at,
-                       CASE WHEN t.access_token_expires_at > datetime('now') THEN 1 ELSE 0 END as has_valid_token
+                       CASE WHEN datetime(t.access_token_expires_at) > datetime('now') THEN 1 ELSE 0 END as has_valid_token
                 FROM azure_user_info u
                 LEFT JOIN azure_token_info t ON u.user_email = t.user_email
                 ORDER BY u.updated_at DESC
@@ -480,50 +491,5 @@ class AuthDatabase:
         except Exception as e:
             logger.error(f"[ERROR] Failed to cleanup tokens: {e}")
             return 0
-        finally:
-            conn.close()
-
-        """
-        기존 users/tokens 테이블에서 azure_* 테이블로 마이그레이션
-
-        Returns:
-            성공 여부
-        """
-        conn = sqlite3.connect(self.db_path)
-        try:
-            cursor = conn.cursor()
-
-            # 1. users -> azure_user_info 마이그레이션
-            cursor.execute("""
-                INSERT OR IGNORE INTO azure_user_info (
-                    user_email, object_id, display_name,
-                    created_at, updated_at
-                )
-                SELECT
-                    email, object_id, display_name,
-                    created_at, updated_at
-                FROM users
-            """)
-
-            # 2. tokens -> azure_token_info 마이그레이션
-            cursor.execute("""
-                INSERT OR IGNORE INTO azure_token_info (
-                    user_email, access_token, refresh_token,
-                    access_token_expires_at, scope, updated_at
-                )
-                SELECT
-                    email, access_token, refresh_token,
-                    access_token_expires_at, scope, updated_at
-                FROM tokens
-            """)
-
-            conn.commit()
-            logger.info("Migration from old tables completed")
-            return True
-
-        except Exception as e:
-            logger.error(f"[ERROR] Migration failed: {e}")
-            conn.rollback()
-            return False
         finally:
             conn.close()

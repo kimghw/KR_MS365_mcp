@@ -25,12 +25,12 @@ class TokenProviderProtocol(Protocol):
     session.AuthManager가 이 Protocol을 구현합니다.
     """
 
-    async def validate_and_refresh_token(self, user_email: Optional[str] = None) -> Optional[str]:
+    async def validate_and_refresh_token(self, email: Optional[str] = None) -> Optional[str]:
         """
         유효한 액세스 토큰 반환 (필요시 자동 갱신)
 
         Args:
-            user_email: 사용자 이메일. None이면 auth.db에서 첫 번째 사용자를 자동으로 가져옴
+            email: 사용자 이메일. None이면 auth.db에서 첫 번째 사용자를 자동으로 가져옴
 
         Returns:
             유효한 액세스 토큰 또는 None

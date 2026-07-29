@@ -460,7 +460,8 @@ class AuthManager:
             import sys
             import os
             parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            sys.path.insert(0, parent_dir)
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
             from callback_server import CallbackServer
 
             self.callback_server = CallbackServer(auth_manager=self, port=port)

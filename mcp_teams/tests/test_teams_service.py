@@ -93,7 +93,7 @@ class TestTeamsService:
         service._client = mock_client
         service._initialized = True
 
-        result = await service.get_chat_messages("test@example.com", "c1")
+        result = await service.get_chat_messages(chat_id="c1", user_email="test@example.com")
 
         assert result["success"] is True
         assert result["count"] == 2
@@ -110,7 +110,7 @@ class TestTeamsService:
         service._client = mock_client
         service._initialized = True
 
-        result = await service.get_chat_messages("test@example.com")
+        result = await service.get_chat_messages(user_email="test@example.com")
 
         assert result["success"] is True
         # chat_id가 None으로 전달됨 (클라이언트에서 NOTES_CHAT_ID 사용)
@@ -190,7 +190,7 @@ class TestTeamsService:
         service._client = mock_client
         service._initialized = True
 
-        result = await service.get_channel_messages("test@example.com", "t1", "ch1")
+        result = await service.get_channel_messages("t1", "ch1", user_email="test@example.com")
 
         assert result["success"] is True
 

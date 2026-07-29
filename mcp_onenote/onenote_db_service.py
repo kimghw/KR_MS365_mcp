@@ -55,8 +55,7 @@ class OneNoteDBService:
                     web_url TEXT,
                     last_accessed TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, item_type, item_name)
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
                 -- 인덱스 생성
@@ -100,6 +99,54 @@ class OneNoteDBService:
             if "notebook_id" not in columns:
                 cursor.execute("ALTER TABLE onenote_items ADD COLUMN notebook_id TEXT")
                 cursor.execute("ALTER TABLE onenote_items ADD COLUMN notebook_name TEXT")
+
+            # 기존 테이블 마이그레이션: UNIQUE(user_id, item_type, item_name) 제약 제거
+            # (다른 섹션의 동명 페이지가 item_id가 달라 이름 제약 위반으로 저장 실패하는 문제)
+            # SQLite는 제약을 직접 제거할 수 없으므로 rename → create → copy → drop 방식으로 재생성
+            cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='onenote_items'"
+            )
+            row = cursor.fetchone()
+            table_sql = "".join((row[0] or "").split()) if row else ""
+            if "UNIQUE(user_id,item_type,item_name)" in table_sql:
+                cursor.execute("ALTER TABLE onenote_items RENAME TO onenote_items_old")
+                cursor.execute("""
+                    CREATE TABLE onenote_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL CHECK(item_type IN ('section', 'page')),
+                        item_id TEXT NOT NULL UNIQUE,
+                        item_name TEXT NOT NULL,
+                        notebook_id TEXT,
+                        notebook_name TEXT,
+                        section_id TEXT,
+                        section_name TEXT,
+                        web_url TEXT,
+                        last_accessed TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO onenote_items
+                        (id, user_id, item_type, item_id, item_name, notebook_id, notebook_name,
+                         section_id, section_name, web_url, last_accessed, created_at, updated_at)
+                    SELECT id, user_id, item_type, item_id, item_name, notebook_id, notebook_name,
+                           section_id, section_name, web_url, last_accessed, created_at, updated_at
+                    FROM onenote_items_old
+                """)
+                cursor.execute("DROP TABLE onenote_items_old")
+                # 인덱스 재생성 (구 테이블 DROP 시 함께 삭제됨)
+                cursor.executescript("""
+                    CREATE INDEX IF NOT EXISTS idx_onenote_items_user_type
+                        ON onenote_items(user_id, item_type);
+                    CREATE INDEX IF NOT EXISTS idx_onenote_items_section
+                        ON onenote_items(section_id, item_type);
+                    CREATE INDEX IF NOT EXISTS idx_onenote_items_last_accessed
+                        ON onenote_items(user_id, item_type, last_accessed DESC);
+                """)
+                logger.info("onenote_items 이름 UNIQUE 제약 제거 마이그레이션 완료")
+
             # 페이지 변경 이력 테이블
             cursor.executescript("""
                 CREATE TABLE IF NOT EXISTS onenote_page_changes (
@@ -178,7 +225,7 @@ class OneNoteDBService:
                 INSERT INTO onenote_items (user_id, item_type, item_id, item_name, notebook_id, notebook_name, section_id, section_name, web_url, last_accessed, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(item_id) DO UPDATE SET
-                    item_name = excluded.item_name,
+                    item_name = CASE WHEN excluded.item_name = '' THEN item_name ELSE excluded.item_name END,
                     notebook_id = COALESCE(excluded.notebook_id, notebook_id),
                     notebook_name = COALESCE(excluded.notebook_name, notebook_name),
                     section_id = COALESCE(excluded.section_id, section_id),

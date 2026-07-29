@@ -89,11 +89,16 @@ class OneDriveProcessor:
 
         except Exception as e:
             logger.error(f"Failed to process URL {url}: {e}")
-            raise
-        finally:
-            # Cleanup if using temp directory
+            # Cleanup temp directory on failure only. On success the caller
+            # still needs the downloaded files, so it must call cleanup()
+            # after consuming them.
             if not kwargs.get('output_dir'):
                 self.downloader.cleanup()
+            raise
+
+    def cleanup(self):
+        """Clean up the temp download directory (call after consuming files)."""
+        self.downloader.cleanup()
 
     def process_path(self, path: str, **kwargs) -> List[Dict[str, Any]]:
         """Process OneDrive path.

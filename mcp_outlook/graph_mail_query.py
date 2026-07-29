@@ -565,10 +565,10 @@ class GraphMailQuery:
                             return data
                         else:
                             print(f"  [FAIL] Page {page_num}: Error {response.status}")
-                            return {"value": []}
+                            return {"value": [], "error": f"HTTP {response.status}", "page": page_num}
                 except Exception as e:
                     print(f"  [FAIL] Page {page_num}: {str(e)}")
-                    return {"value": []}
+                    return {"value": [], "error": str(e), "page": page_num}
 
         async with aiohttp.ClientSession() as session:
             start_time = datetime.now()

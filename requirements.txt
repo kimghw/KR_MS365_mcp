@@ -1,0 +1,13 @@
+# 핵심 런타임 의존성 (전체 목록·선택 의존성은 pyproject.toml 참조)
+# 설치: pip install -r requirements.txt
+#   에디터 웹 UI 포함: pip install -e ".[editor]"
+#   첨부파일 변환기 포함: pip install -e ".[converters]"
+aiohttp
+python-dotenv
+pydantic>=2
+requests
+PyYAML
+mcp
+fastapi
+starlette
+uvicorn

@@ -17,8 +17,15 @@ from .metadata.manager import MetadataManager
 from .onedrive.processor import OneDriveProcessor
 from .config.settings import Settings
 
-# Import mcp_service decorator
-from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
+# mcp_service decorator is only needed for registry scanning, not runtime
+try:
+    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
+except ImportError:
+    # Define a no-op decorator for runtime when mcp_editor is not available
+    def mcp_service(**kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 logger = setup_logger('file_manager')
 
@@ -194,6 +201,11 @@ class FileManager:
         except Exception as e:
             logger.error(f"OneDrive processing failed for {url}: {e}")
             result['errors'].append(str(e))
+        finally:
+            # Temp files were kept alive so they could be read above;
+            # clean them up now that processing is done.
+            if not kwargs.get('output_dir'):
+                self.onedrive_processor.cleanup()
 
         return result
 

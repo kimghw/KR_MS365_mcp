@@ -44,7 +44,7 @@ def get_default_user_email() -> Optional[str]:
         db = AuthDatabase()
         users = db.list_users()
         if users:
-            return users[0].get('user_email')
+            return users[0].get('user_email') or users[0].get('email')
     except Exception:
         pass
     return None
@@ -247,11 +247,12 @@ class CalendarService:
             select_params=select_params,
         )
 
-        if result and "id" in result:
+        # graph_calendar_query는 {"status": "success", "event": {...}} 형태를 반환
+        if result and result.get("status") == "success":
             return {
                 "success": True,
                 "user": user_email,
-                "event": result,
+                "event": result.get("event"),
             }
 
         return result
@@ -350,11 +351,12 @@ class CalendarService:
             event_data=event_data,
         )
 
-        if result and "id" in result:
+        # graph_calendar_query는 {"status": "success", "event": {...}} 형태를 반환
+        if result and result.get("status") == "success":
             return {
                 "success": True,
                 "user": user_email,
-                "event": result,
+                "event": result.get("event"),
                 "message": "Event created successfully",
             }
 
@@ -494,11 +496,12 @@ class CalendarService:
             event_data=event_data,
         )
 
-        if result and "id" in result:
+        # graph_calendar_query는 {"status": "success", "event": {...}} 형태를 반환
+        if result and result.get("status") == "success":
             return {
                 "success": True,
                 "user": user_email,
-                "event": result,
+                "event": result.get("event"),
                 "message": "Event updated successfully",
             }
 
@@ -541,7 +544,8 @@ class CalendarService:
             event_id=event_id,
         )
 
-        if result.get("success", False):
+        # graph_calendar_query는 {"status": "success", ...} 형태를 반환
+        if result.get("status") == "success":
             return {
                 "success": True,
                 "user": user_email,

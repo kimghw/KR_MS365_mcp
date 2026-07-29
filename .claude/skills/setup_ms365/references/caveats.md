@@ -1,4 +1,4 @@
-# /ms365 운영 함정 · 보안 주의
+# /setup_ms365 운영 함정 · 보안 주의
 
 ## 보안 주의
 
@@ -11,13 +11,13 @@
 
 ### 등록 vs 실행
 
-- **HTTP (Claude Code)**: 등록만 함, spawn 안 함 — Claude Code 는 외부 서버에 붙기만 하므로 `/ms365 start` (또는 `/port_manager`) 로 별도 기동 필요.
+- **HTTP (Claude Code)**: 등록만 함, spawn 안 함 — Claude Code 는 외부 서버에 붙기만 하므로 `/setup_ms365 start` (또는 `/port_manager`) 로 별도 기동 필요.
 - **STDIO (Claude Desktop)**: 등록하면 Desktop 이 자동 spawn. 별도 기동 불필요. **Desktop 재시작은 필수**.
 
 ### 포트 점유
 
 - 이미 떠있는 서버는 `start` 가 재시작하지 않음 (skip).
-- 강제 재시작을 원하면 `/ms365 restart <server>` 또는 `stop` 후 `start`.
+- 강제 재시작을 원하면 `/setup_ms365 restart <server>` 또는 `stop` 후 `start`.
 
 ### 로그 위치
 

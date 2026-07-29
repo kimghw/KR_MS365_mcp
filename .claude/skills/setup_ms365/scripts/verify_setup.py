@@ -29,7 +29,8 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-PROJECT_ROOT = Path(r"c:\Users\USER\KR_MS365_mcp")
+# <root>/.claude/skills/setup_ms365/scripts/verify_setup.py → parents[4] == <root>
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 VENV_PYTHON = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
 ENV_FILE = PROJECT_ROOT / ".env"
 DB_FILE = PROJECT_ROOT / "database" / "auth.db"

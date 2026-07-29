@@ -113,4 +113,4 @@ VSCode 안의 Claude Code 확장도 같은 `~/.claude.json` 을 공유.
 | Claude Desktop 에서 서버가 안 보임 | Desktop 재시작 안 함 | Desktop 종료 후 재실행 |
 | `claude mcp list` 에 두 번 나옴 | user + local 양쪽 등록됨 | `claude mcp remove {name} -s local` |
 | Desktop STDIO 서버 즉시 종료 | `PYTHONPATH` 누락으로 `session` import 실패 | env 의 `PYTHONPATH` 가 프로젝트 루트인지 확인 |
-| HTTP 서버 등록은 됐는데 연결 실패 | `server_stream.py` 가 안 떠 있음 | `/ms365 start` 또는 `/port_manager` 로 기동 |
+| HTTP 서버 등록은 됐는데 연결 실패 | `server_stream.py` 가 안 떠 있음 | `/setup_ms365 start` 또는 `/port_manager` 로 기동 |

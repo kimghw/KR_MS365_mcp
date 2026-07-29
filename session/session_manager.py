@@ -5,7 +5,7 @@ Manages user authentication sessions (인증 상태만 관리)
 Note: 메일/캘린더 등 서비스 인스턴스는 각 MCP 서버에서 관리
 """
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Any, TYPE_CHECKING
 import logging
 
@@ -55,6 +55,7 @@ class Session:
         self.created_at = datetime.now()
         self.last_accessed = datetime.now()
         self.access_token: Optional[str] = None
+        self.token_expires_at: Optional[datetime] = None  # 캐시된 access_token의 만료 시각
 
         # Session state
         self.is_active = True
@@ -89,6 +90,7 @@ class Session:
             # Store the access token if we got one
             if access_token:
                 self.access_token = access_token
+                self.token_expires_at = self._load_token_expiry_from_db()
                 self.initialized = True
                 logger.info(f"Session initialized for user: {self.user_email}")
                 return True
@@ -115,6 +117,7 @@ class Session:
 
             if new_token:
                 self.access_token = new_token
+                self.token_expires_at = self._load_token_expiry_from_db()
                 logger.info(f"Token refreshed for session: {self.user_email}")
                 return True
             else:
@@ -125,17 +128,58 @@ class Session:
             logger.error(f"Error refreshing token for {self.user_email}: {str(e)}")
             return False
 
+    def _load_token_expiry_from_db(self) -> Optional[datetime]:
+        """DB에서 현재 access_token의 만료 시각을 조회 (best-effort)"""
+        try:
+            from session.auth_manager import get_default_auth_manager
+            auth_manager = get_default_auth_manager()
+            token_info = auth_manager.auth_db.get_token(self.user_email)
+            if token_info:
+                expires_at = token_info.get('expires_at')
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                if expires_at is not None and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                return expires_at
+        except Exception as e:
+            logger.warning(f"Could not load token expiry for {self.user_email}: {e}")
+        return None
+
+    def _is_cached_token_expired(self, buffer_minutes: int = 5) -> bool:
+        """
+        캐시된 access_token의 만료 여부 확인 (여유 5분 포함)
+        만료 시각을 모르면 만료된 것으로 간주하여 갱신 경로를 타게 함
+        """
+        if not self.access_token:
+            return True
+        if self.token_expires_at is None:
+            return True
+        expires_at = self.token_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= (expires_at - timedelta(minutes=buffer_minutes))
+
     async def get_valid_token(self) -> Optional[str]:
         """
         Get a valid access token, refreshing if necessary
+        캐시된 토큰이라도 만료(여유 5분) 검사를 통과해야 반환하고,
+        만료되었으면 갱신 경로로 진행
 
         Returns:
             Valid access token or None
         """
-        if self.access_token:
+        if self.access_token and not self._is_cached_token_expired():
             return self.access_token
 
         if await self.refresh_token():
+            return self.access_token
+
+        # 만료 시각을 알 수 없는 외부 주입 토큰 등: 갱신 경로가 없으면 기존 동작 유지
+        if self.access_token and self.token_expires_at is None:
+            logger.warning(
+                f"Returning access token with unknown expiry for {self.user_email} "
+                "(refresh path unavailable)"
+            )
             return self.access_token
 
         return None
@@ -163,6 +207,7 @@ class Session:
     def invalidate_token(self):
         """Invalidate the access token and mark session for removal"""
         self.access_token = None
+        self.token_expires_at = None
         self.is_active = False
         logger.info(f"Token invalidated for session: {self.user_email}")
 
@@ -170,6 +215,7 @@ class Session:
         """Clean up session resources"""
         self.is_active = False
         self.access_token = None
+        self.token_expires_at = None
         logger.info(f"Session cleaned up for user: {self.user_email}")
 
 

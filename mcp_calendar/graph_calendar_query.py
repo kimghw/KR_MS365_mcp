@@ -1070,22 +1070,22 @@ async def create_calendar_event(
     Returns:
         생성된 이벤트 정보
     """
-    from .calendar_types import DateTimeTimeZone, Attendee
+    from .calendar_types import DateTimeTimeZone, Attendee, EmailAddress, Location
 
     query = GraphCalendarQuery()
 
     try:
         event_params = EventCreateParams(
             subject=subject,
-            start=DateTimeTimeZone(date_time=start_datetime, time_zone=time_zone),
-            end=DateTimeTimeZone(date_time=end_datetime, time_zone=time_zone),
-            location=location,
+            start=DateTimeTimeZone(dateTime=start_datetime, timeZone=time_zone),
+            end=DateTimeTimeZone(dateTime=end_datetime, timeZone=time_zone),
+            location=Location(displayName=location) if location else None,
             body=body,
             attendees=[
-                Attendee(email_address=email) for email in (attendees or [])
+                Attendee(emailAddress=EmailAddress(address=email)) for email in (attendees or [])
             ],
-            is_online_meeting=is_online_meeting,
-            online_meeting_provider="teamsForBusiness" if is_online_meeting else None,
+            isOnlineMeeting=is_online_meeting,
+            onlineMeetingProvider="teamsForBusiness" if is_online_meeting else None,
         )
 
         return await query.create_event(user_email=user_email, event_data=event_params)

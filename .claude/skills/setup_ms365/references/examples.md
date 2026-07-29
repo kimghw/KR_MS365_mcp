@@ -1,8 +1,8 @@
-# /ms365 시나리오 예시
+# /setup_ms365 시나리오 예시
 
 SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 
-## 첫 설치 — `/ms365`
+## 첫 설치 — `/setup_ms365`
 
 ```
 1. 상태: 다 X (venv·.env·deps·등록 모두 없음)
@@ -16,7 +16,7 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 5. verify_setup.py 검증 표 출력
 ```
 
-## 기존 환경 — 일부 누락 — `/ms365`
+## 기존 환경 — 일부 누락 — `/setup_ms365`
 
 ```
 1. 상태: venv/deps/.env OK. teams 는 Code만, Desktop 누락. todo 는 둘 다 미등록
@@ -29,14 +29,14 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 5. 검증 표
 ```
 
-## 모두 정상 — `/ms365`
+## 모두 정상 — `/setup_ms365`
 
 ```
 1. 상태: venv/deps/.env/토큰 OK, 6개 서버 모두 Code+Desktop 등록 + 포트 LISTEN
 2-D. ✅ 모든 서버 정상 — 추가 작업 메뉴 (선택 안 하면 종료)
 ```
 
-## 일부 서버 시작 — `/ms365 start outlook teams`
+## 일부 서버 시작 — `/setup_ms365 start outlook teams`
 
 ```
 1. 상태 확인
@@ -46,14 +46,14 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
    - health_check.py --servers outlook,teams
 ```
 
-## 전체 중지 — `/ms365 stop all`
+## 전체 중지 — `/setup_ms365 stop all`
 
 ```
 3-D-2. stop_server.py --servers all
        → 6개 포트 모두 Stop-Process
 ```
 
-## 인증 점검 — `/ms365 check`
+## 인증 점검 — `/setup_ms365 check`
 
 ```
 3-C-1. check_token.py

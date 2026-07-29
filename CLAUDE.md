@@ -8,15 +8,19 @@
 ### 컬럼 구조
 | 컬럼 | 설명 |
 |------|------|
+| user_id | 사용자 이메일 |
 | item_type | `'section'` 또는 `'page'` |
-| item_id | 페이지/섹션 고유 ID |
-| item_name | 페이지 제목 또는 섹션 이름 |
+| item_id | 페이지/섹션 고유 ID (**UNIQUE** — upsert 기준) |
+| item_name | 페이지 제목 또는 섹션 이름 (빈 문자열로 upsert 시 기존 값 유지) |
 | notebook_id | 소속 노트북 ID |
 | notebook_name | 소속 노트북 이름 |
 | section_id | 소속 섹션 ID |
 | section_name | 소속 섹션 이름 |
 | web_url | OneNote 웹 브라우저 URL |
 | last_accessed | 최근 접근 시각 |
+| created_at / updated_at | 생성/수정 시각 |
+
+- 이름 기반 UNIQUE 제약은 없음 (다른 섹션의 동명 페이지 허용 — 구버전 DB는 초기화 시 자동 마이그레이션)
 
 ### DB 저장 시점
 - **페이지 생성 시**: `create_page()` 호출 후 자동으로 DB에 저장

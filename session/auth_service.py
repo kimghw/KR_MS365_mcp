@@ -62,6 +62,21 @@ class AuthService:
         # 인증 상태 저장
         self.auth_states: Dict[str, Dict[str, Any]] = {}
 
+        # State 유효 시간 (일회용, 기본 10분)
+        self.state_ttl = timedelta(minutes=10)
+
+    def _cleanup_expired_states(self):
+        """생성 후 TTL(기본 10분)이 지난 auth state 제거"""
+        now = datetime.now(timezone.utc)
+        expired = [
+            s for s, info in self.auth_states.items()
+            if (now - info['created_at']) > self.state_ttl
+        ]
+        for s in expired:
+            del self.auth_states[s]
+        if expired:
+            logger.info(f"Cleaned up {len(expired)} expired auth state(s)")
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """aiohttp 세션 관리"""
         if not self.session or self.session.closed:
@@ -91,7 +106,8 @@ class AuthService:
         # State 생성
         state = secrets.token_urlsafe(32)
 
-        # 인증 상태 저장
+        # 오래된 state 정리 후 인증 상태 저장
+        self._cleanup_expired_states()
         self.auth_states[state] = {
             'created_at': datetime.now(timezone.utc),
             'status': 'pending'
@@ -122,8 +138,17 @@ class AuthService:
                 - expires_at: 만료 시간
         """
         try:
-            # State 검증 (임시로 스킵 - 프로덕션에서는 DB나 Redis 사용 권장)
-            logger.warning(f"State validation skipped for: {state[:10]}... (Consider using shared state storage)")
+            # State 검증 (일회용, TTL 초과 시 만료)
+            self._cleanup_expired_states()
+            if not state or state not in self.auth_states:
+                state_preview = f"{state[:10]}..." if state else "None"
+                logger.error(f"OAuth state validation failed: {state_preview}")
+                raise Exception(
+                    f"Invalid or expired OAuth state: {state_preview}. "
+                    "Please restart the authentication flow."
+                )
+            # 사용된 state는 즉시 제거 (재사용 방지)
+            del self.auth_states[state]
 
             # Authorization code로 토큰 교환
             token_result = await self._exchange_code_for_tokens(authorization_code)
@@ -136,11 +161,9 @@ class AuthService:
                 raise Exception("Could not determine user email")
 
             # 토큰과 사용자 정보 저장
+            # 완전 재인증 경로: 새 refresh_token이 발급되므로 만료 시각(+90일)을 리셋
             self.auth_db.save_user(email, user_info)
-            self.auth_db.save_token(email, token_result)
-
-            # State 정리 (state 검증 스킵 중이므로 주석 처리)
-            # del self.auth_states[state]
+            self.auth_db.save_token(email, token_result, reset_refresh_expiry=True)
 
             logger.info(f"Authentication successful for {email}")
 
@@ -296,30 +319,11 @@ class AuthService:
         # 버퍼 시간을 고려한 만료 체크
         return datetime.now(timezone.utc) >= (expires_at - timedelta(seconds=buffer_seconds))
 
-    def is_refresh_token_expired(self, created_at: Any, days: int = 90) -> bool:
-        """
-        리프레시 토큰 만료 확인 (Azure AD 기본 90일)
-
-        Args:
-            created_at: 토큰 생성 시간
-            days: 유효 기간 (일)
-
-        Returns:
-            만료 여부
-        """
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
-
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-
-        expiry_date = created_at + timedelta(days=days)
-        return datetime.now(timezone.utc) >= expiry_date
-
     def is_refresh_expiry_passed(self, refresh_token_expires_at: Any) -> bool:
         """
         리프레시 토큰의 절대 만료 시각 비교 (DB의 refresh_token_expires_at 컬럼 기준)
-        save_token에서 한 번만 채워지고 그 후 보존되므로 매 refresh마다 리셋되지 않음.
+        토큰 refresh 경로에서는 보존되고(매 refresh마다 리셋되지 않음),
+        브라우저 완전 재인증(complete_auth_flow) 시에만 +90일로 리셋됨.
 
         Args:
             refresh_token_expires_at: ISO 형식 문자열 또는 datetime, None이면 만료된 것으로 간주

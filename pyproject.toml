@@ -1,3 +1,44 @@
+[project]
+name = "kr-ms365-mcp"
+version = "0.1.0"
+description = "MS365 MCP server suite (Outlook/Calendar/OneNote/OneDrive/Teams/Todo/Time)"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp",
+    "python-dotenv",
+    "pydantic>=2",
+    "requests",
+    "PyYAML",
+    "mcp",
+    "fastapi",
+    "starlette",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+# mcp_editor 웹 UI (tool_editor_web)
+editor = [
+    "flask",
+    "flask-cors",
+    "jinja2",
+    "psutil",
+]
+# 첨부파일 변환기 (mcp_outlook / mcp_file_handler)
+converters = [
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
+    "pandas",
+    "olefile",
+    "Pillow",
+    "pytesseract",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "black",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"

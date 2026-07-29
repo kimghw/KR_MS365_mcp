@@ -24,7 +24,8 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-DEFAULT_PROJECT = Path(r"c:\Users\USER\KR_MS365_mcp")
+# <root>/.claude/skills/setup_ms365/scripts/register_claude_desktop.py → parents[4] == <root>
+DEFAULT_PROJECT = Path(__file__).resolve().parents[4]
 SERVER_NAMES = ["outlook", "calendar", "teams", "onedrive", "onenote", "todo"]
 
 

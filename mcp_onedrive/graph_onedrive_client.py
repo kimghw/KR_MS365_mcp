@@ -6,14 +6,15 @@ session 모듈을 통한 인증 관리
 
 import base64
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import aiohttp
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from session import AuthManager
+if TYPE_CHECKING:
+    from core.protocols import TokenProviderProtocol
 from .onedrive_types import (
     DriveInfo,
     DriveItem,
@@ -31,14 +32,17 @@ class GraphOneDriveClient:
 
     GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
-    def __init__(self, auth_manager: Optional[AuthManager] = None):
+    def __init__(self, token_provider: Optional["TokenProviderProtocol"] = None):
         """
         클라이언트 초기화
 
         Args:
-            auth_manager: 인증 매니저 인스턴스 (없으면 새로 생성)
+            token_provider: 토큰 제공자 (없으면 session.AuthManager 사용)
         """
-        self.auth_manager = auth_manager or AuthManager()
+        if token_provider is None:
+            from session import AuthManager
+            token_provider = AuthManager()
+        self.token_provider = token_provider
         self._session: Optional[aiohttp.ClientSession] = None
         self._initialized = False
 
@@ -70,7 +74,7 @@ class GraphOneDriveClient:
             유효한 액세스 토큰 또는 None
         """
         try:
-            token = await self.auth_manager.validate_and_refresh_token(user_email)
+            token = await self.token_provider.validate_and_refresh_token(user_email)
             return token
         except Exception as e:
             logger.error(f"토큰 조회 실패: {str(e)}")

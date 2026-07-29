@@ -1,6 +1,7 @@
 """OneDrive API client using AuthManager."""
 
 import sys
+import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import logging
@@ -26,13 +27,36 @@ class OneDriveClient:
         self.auth_manager = auth_manager or AuthManager()
         self.base_url = 'https://graph.microsoft.com/v1.0'
 
+    def _get_access_token(self) -> Optional[str]:
+        """Get a valid access token from AuthManager.
+
+        AuthManager only exposes the async validate_and_refresh_token(),
+        while this client is synchronous (requests-based), so bridge with
+        asyncio.run. If an event loop is already running in this thread,
+        run the coroutine in a separate thread instead.
+
+        Returns:
+            Valid access token or None
+        """
+        coro = self.auth_manager.validate_and_refresh_token()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coro).result()
+
     def _get_headers(self) -> Dict[str, str]:
         """Get authorization headers.
 
         Returns:
             Headers with authorization token
         """
-        token = self.auth_manager.get_access_token()
+        token = self._get_access_token()
+        if not token:
+            raise RuntimeError("Failed to obtain a valid access token from AuthManager")
         return {
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'

@@ -262,6 +262,56 @@ async def handle_calendar_view(args: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+async def handle_list_events(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle list_events tool call"""
+    user_email = args.get("user_email")
+    top_sig = args.get("top")
+    top = top_sig if top_sig is not None else 50
+    orderby = args.get("orderby")
+    return await calendar_service.list_events(
+        user_email=user_email,
+        top=top,
+        orderby=orderby,
+    )
+
+
+async def handle_update_event(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle update_event tool call"""
+    user_email = args.get("user_email")
+    event_id = args["event_id"]
+    subject = args.get("subject")
+    start = args.get("start")
+    end = args.get("end")
+    body = args.get("body")
+    location = args.get("location")
+    return await calendar_service.update_event(
+        user_email=user_email,
+        event_id=event_id,
+        subject=subject,
+        start=start,
+        end=end,
+        body=body,
+        location=location,
+    )
+
+
+async def handle_get_schedule(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle get_schedule tool call"""
+    user_email = args.get("user_email")
+    schedules = args["schedules"]
+    start_time = args["start_time"]
+    end_time = args["end_time"]
+    interval_sig = args.get("availability_view_interval")
+    availability_view_interval = interval_sig if interval_sig is not None else 30
+    return await calendar_service.get_schedule(
+        user_email=user_email,
+        schedules=schedules,
+        start_time=start_time,
+        end_time=end_time,
+        availability_view_interval=availability_view_interval,
+    )
+
+
 async def handle_get_event(args: Dict[str, Any]) -> Dict[str, Any]:
     """Handle get_event tool call"""
     user_email = args.get("user_email")
@@ -308,9 +358,12 @@ async def handle_delete_event(args: Dict[str, Any]) -> Dict[str, Any]:
 
 TOOL_HANDLERS = {
     "calendar_view": handle_calendar_view,
+    "list_events": handle_list_events,
     "get_event": handle_get_event,
     "create_event": handle_create_event,
+    "update_event": handle_update_event,
     "delete_event": handle_delete_event,
+    "get_schedule": handle_get_schedule,
 }
 
 

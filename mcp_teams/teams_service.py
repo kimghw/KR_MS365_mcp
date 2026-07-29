@@ -464,6 +464,12 @@ class TeamsService:
         # DB에 동기화
         chats = result.get("chats", [])
         sync_result = await self._db_manager.sync_chats_to_db(user_email, chats)
+        if not sync_result.get("success"):
+            return {
+                "success": False,
+                "error": sync_result.get("error", "DB 동기화 실패"),
+                "chats_count": len(chats),
+            }
 
         return {
             "success": True,

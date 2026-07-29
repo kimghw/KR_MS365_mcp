@@ -312,8 +312,13 @@ class TeamsDBManager:
                 peer_user_email = None
                 if chat_type == "oneOnOne" and len(members) >= 2:
                     peer_member = members[1] if len(members) > 1 else members[0]
-                    peer_user_name = peer_member.get("displayName", "")
-                    peer_user_email = peer_member.get("email", "")
+                    # graph_teams_client가 UserInfo를 asdict로 직렬화하므로 snake_case 키 우선
+                    peer_user_name = peer_member.get("display_name") or peer_member.get("displayName", "")
+                    peer_user_email = (
+                        peer_member.get("email")
+                        or peer_member.get("user_principal_name")
+                        or peer_member.get("userPrincipalName", "")
+                    )
 
                 # 한글 이름(topic_kr) 추정
                 topic_kr = None
@@ -325,11 +330,10 @@ class TeamsDBManager:
                         topic_kr = topic
 
                 # 마지막 메시지 정보
-                last_message_preview = ""
-                if chat.get("lastMessagePreview"):
-                    body = chat["lastMessagePreview"].get("body", {})
-                    last_message_preview = body.get("content", "") if isinstance(body, dict) else ""
-                last_message_time = chat.get("lastUpdatedDateTime", "")
+                # graph_teams_client가 ChatInfo를 snake_case 키로 직렬화하며,
+                # last_message_preview는 이미 본문 content 문자열임
+                last_message_preview = chat.get("last_message_preview") or ""
+                last_message_time = chat.get("last_updated_datetime") or ""
 
                 # DB에 UPSERT
                 cursor.execute(

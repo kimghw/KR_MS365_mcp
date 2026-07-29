@@ -123,10 +123,17 @@ class CallbackServer:
             self.auth_completed.set()
             return web.Response(text=html_content, content_type='text/html', status=400)
 
-        if not code:
-            self.auth_error = "Missing authorization code"
+        if not code or not state:
+            missing = []
+            if not code:
+                missing.append("authorization code")
+            if not state:
+                missing.append("state")
+            error_msg = f"Missing required parameter(s): {', '.join(missing)}"
+            logger.error(f"Callback rejected - {error_msg}")
+            self.auth_error = error_msg
             self.auth_completed.set()
-            return web.Response(text="Missing authorization code", status=400)
+            return web.Response(text=error_msg, status=400)
 
         logger.info(f"Processing callback with state: {state[:10]}...")
 

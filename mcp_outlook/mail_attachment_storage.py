@@ -18,13 +18,14 @@ import asyncio
 import aiohttp
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from session.auth_manager import AuthManager
+if TYPE_CHECKING:
+    from core.protocols import TokenProviderProtocol
 
 
 class StorageBackend(ABC):
@@ -332,7 +333,7 @@ class OneDriveStorageBackend(StorageBackend):
 
     def __init__(
         self,
-        auth_manager: AuthManager,
+        auth_manager: "TokenProviderProtocol",
         user_email: str,
         base_folder: str = "/Attachments"
     ):
@@ -340,7 +341,7 @@ class OneDriveStorageBackend(StorageBackend):
         초기화
 
         Args:
-            auth_manager: 인증 매니저
+            auth_manager: 토큰 제공자 (TokenProviderProtocol 구현체, 예: session.AuthManager)
             user_email: 사용자 이메일 (토큰 조회용)
             base_folder: OneDrive 기본 폴더 경로
         """
@@ -889,7 +890,7 @@ class MailFolderManager(LocalStorageBackend):
 
 def get_storage_backend(
     storage_type: str = "local",
-    auth_manager: Optional[AuthManager] = None,
+    auth_manager: Optional["TokenProviderProtocol"] = None,
     user_email: Optional[str] = None,
     **kwargs
 ) -> StorageBackend:

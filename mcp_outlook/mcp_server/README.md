@@ -156,11 +156,13 @@ python mcp_outlook/mcp_server/server_stream.py
 
 ## Server Protocols
 
+지원 트랜스포트는 **stdio 와 Streamable HTTP 2종**입니다. 근거와 상세는
+[spec/spec_MCP트랜스포트.md](../../spec/spec_MCP트랜스포트.md) 를 참조하세요.
+
 | Protocol | File | Port | Use Case |
 |----------|------|------|----------|
-| REST | server_rest.py | 5001 | HTTP API 직접 호출 |
-| STDIO | server_stdio.py | - | 로컬 프로세스 통신 |
-| Streamable HTTP | server_stream.py | 5001 | Claude Desktop 원격 연결 |
+| STDIO | server_stdio.py | - | 로컬 프로세스 통신 (Claude Desktop / Claude Code) |
+| Streamable HTTP | server_stream.py | 5001 | 원격·다중 클라이언트 연결, `/health` 노출 |
 
 ## Development
 

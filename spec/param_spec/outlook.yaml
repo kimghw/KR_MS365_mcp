@@ -1,0 +1,612 @@
+# Outlook MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·서비스 호출 인자는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 이 파일은 mcp_editor/mcp_outlook/tool_definition_templates.yaml 에서 기계 변환됐다.
+# 핸들러 코드에 리터럴로 박혀 있던 기본값(select_params 31개 필드 등)도 여기로 올라왔다.
+
+server:
+  name: outlook
+  version: "1.0.0"
+  port: 5001
+  description: "Outlook 메일 조회·검색·첨부 처리."
+
+tools:
+  - name: mail_list_period
+    description: "지정된 기간의 메일 목록을 미리보기 형태로 조회합니다. 메일 본문 전체가 아닌 제목, 발신자, 날짜, 요약 등 핵심 정보만을 효율적으로 가져와 테이블 형태로 정리합니다. "
+    service: MailService.query_mail_list
+    params:
+      - name: DatePeriodFilter
+        type: object
+        required: true
+        expose: tool
+        description: "에이전트는 는 사용자의 질의에 따라 검색 범위의 날짜를 추출한다. "
+        baseModel: FilterParams
+        targetParam: filter_params
+        fields:
+          - name: received_date_from
+            type: string
+            required: true
+            description: "메일 수신 시작 날짜 (포함, receivedDateTime >= 이 값)"
+            targetParam: received_date_from
+          - name: received_date_to
+            type: string
+            required: true
+            description: "메일 수신 종료 날짜 (포함, receivedDateTime <= 이 값)"
+            targetParam: received_date_to
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "이메일 주소를 입력하고 입력하지 않을 경우 내부에서 연결정보를 메일 주소를 추정함"
+        targetParam: user_email
+      - name: client_filter
+        type: object
+        required: false
+        expose: internal
+        description: "ExcludeParams parameters"
+        baseModel: ExcludeParams
+        targetParam: client_filter
+        fields:
+          - name: exclude_from_address
+            type: array
+            description: "제외할 발신자 주소 (from 필드)"
+            default:
+              - "block@krs.co.kr"
+              - "no-reply@teams.mail.microsoft"
+              - "reminders@facebookmail.com"
+              - "no-reply@sharepointonline.com"
+          - name: exclude_subject_keywords
+            type: string
+            description: "제목에서 제외할 키워드 목록"
+      - name: select
+        type: object
+        required: false
+        expose: internal
+        description: "SelectParams parameters"
+        baseModel: SelectParams
+        targetParam: select_params
+        fields:
+          - name: bcc_recipients
+            type: boolean
+            description: "숨은 참조 (Bcc:) 수신자 목록"
+            default: false
+          - name: body
+            type: boolean
+            description: "메시지 본문 (HTML 또는 텍스트 형식)"
+            default: false
+          - name: body_preview
+            type: boolean
+            description: "메시지 본문의 처음 255자 (텍스트 형식)"
+            default: true
+          - name: categories
+            type: boolean
+            description: "메시지에 연결된 카테고리 목록"
+            default: false
+          - name: cc_recipients
+            type: boolean
+            description: "참조 (Cc:) 수신자 목록"
+            default: false
+          - name: change_key
+            type: boolean
+            description: "메시지 버전 키"
+            default: false
+          - name: conversation_id
+            type: boolean
+            description: "이메일이 속한 대화의 ID"
+            default: false
+          - name: conversation_index
+            type: boolean
+            description: "대화 내 메시지 위치를 나타내는 인덱스"
+            default: false
+          - name: created_date_time
+            type: boolean
+            description: "메시지 생성 날짜/시간 (ISO 8601 형식, UTC)"
+            default: false
+          - name: flag
+            type: boolean
+            description: "메시지의 플래그 상태, 시작 날짜, 기한, 완료 날짜"
+            default: false
+          - name: from_recipient
+            type: boolean
+            description: "메시지가 전송된 사서함의 소유자 (from 필드)"
+            default: true
+          - name: has_attachments
+            type: boolean
+            description: "첨부파일 포함 여부"
+            default: true
+          - name: id
+            type: boolean
+            description: "메시지 고유 식별자 (읽기 전용)"
+            default: true
+          - name: importance
+            type: boolean
+            description: "메시지 중요도 (low, normal, high)"
+            default: false
+          - name: inference_classification
+            type: boolean
+            description: "메시지 분류 (focused 또는 other)"
+            default: false
+          - name: internet_message_headers
+            type: boolean
+            description: "RFC5322에 정의된 메시지 헤더 컬렉션 (읽기 전용)"
+            default: false
+          - name: internet_message_id
+            type: boolean
+            description: "RFC2822 형식의 메시지 ID"
+            default: true
+          - name: is_delivery_receipt_requested
+            type: boolean
+            description: "배달 확인 요청 여부"
+            default: false
+          - name: is_draft
+            type: boolean
+            description: "메시지가 임시 저장 상태인지 여부"
+            default: false
+          - name: is_read
+            type: boolean
+            description: "메시지 읽음 상태"
+            default: false
+          - name: is_read_receipt_requested
+            type: boolean
+            description: "읽음 확인 요청 여부"
+            default: false
+          - name: last_modified_date_time
+            type: boolean
+            description: "메시지 최종 수정 날짜/시간 (ISO 8601 형식, UTC)"
+            default: false
+          - name: parent_folder_id
+            type: boolean
+            description: "부모 메일 폴더의 고유 식별자"
+            default: false
+          - name: received_date_time
+            type: boolean
+            description: "메시지 수신 날짜/시간 (ISO 8601 형식, UTC)"
+            default: false
+          - name: reply_to
+            type: boolean
+            description: "회신 시 사용할 이메일 주소 목록"
+            default: false
+          - name: sender
+            type: boolean
+            description: "메시지를 생성하는 데 사용된 계정"
+            default: true
+          - name: sent_date_time
+            type: boolean
+            description: "메시지 발신 날짜/시간 (ISO 8601 형식, UTC)"
+            default: false
+          - name: subject
+            type: boolean
+            description: "메시지 제목"
+            default: true
+          - name: to_recipients
+            type: boolean
+            description: "받는 사람 (To:) 목록"
+            default: false
+          - name: unique_body
+            type: boolean
+            description: "현재 메시지에 고유한 본문 부분"
+            default: false
+          - name: web_link
+            type: boolean
+            description: "Outlook Web에서 메시지를 열기 위한 URL"
+            default: false
+      - name: top
+        type: integer
+        required: false
+        expose: internal
+        description: "서버가 주입하는 값"
+        default: 500
+        targetParam: top
+
+  - name: mail_list_keyword
+    description: "New tool description"
+    service: MailService.fetch_search
+    params:
+      - name: search_keywords
+        type: string
+        required: true
+        expose: tool
+        description: "1. 단일 키워드 검색 어디든 해당 키워드가 포함된 메일을 찾습니다. 예: keyword1 2. 여러 키워드 모두 포함 (AND) 공백으로 구분하면 모든 키워드가 포함된 메일을 찾습니다. 예: keyword1 keyword2 3. 여러 키워드 중 하나라도 포함 (OR) OR 연산자로 여러 키워드 중 하나라도 있는 메일을 찾습니다. 예: keyword1 OR keyword2 4. 특정 키워드 제외 (NOT) 마이너스 기호로 특정 키워드가 없는 메일만 찾습니다. 예: keyword1 -keyword2 5. 정확한 구문 검색 따옴표로 묶어 정확한 순서의 구문을 찾습니다. 예: \"keyword1 keyword2\" 6. 복합 조건 괄호와 연산자를 조합하여 복잡한 조건을 만들 수 있습니다. 예: (keyword1 OR keyword2) keyword3"
+        targetParam: search_term
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        description: ""
+        default: 50
+        # 핸들러 코드에 하드코딩돼 있던 기본값을 spec 으로 승격
+        targetParam: top
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_query_if_emaidID
+    description: "특정 메일 ID 목록을 사용하여 해당 메일들의 상세 정보를 일괄 조회합니다. 이미 알고 있는 메일 ID를 통해 여러 메일의 전체 내용을 한 번에 가져올 수 있습니다. messageid 나 attachmentid 가 식별되지 않는 다면 우선 mail_list_period나 mail_list_keyword로 호출한다. "
+    service: MailService.batch_and_fetch
+    params:
+      - name: message_ids
+        type: array
+        required: true
+        expose: tool
+        description: "조회할 메일 ID 목록"
+        targetParam: message_ids
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_attachment_meta
+    description: "입력인자는  messageID 를 받아서 해당 메일의 첨부파일 메타정보와 메일 정보를 확인한다. 이전 명령에  mail이 조회가 되어야 messageid를 확인 후 사용할 수 있다. "
+    service: MailService.fetch_attachments_metadata
+    params:
+      - name: message_ids
+        type: array
+        required: true
+        expose: tool
+        description: ""
+        targetParam: message_ids
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+      - name: select_params
+        type: object
+        required: false
+        # hidden 확정 (2026-08-12). 구 정의는 internal(주입)이었으나 생성된 핸들러가
+        # 이 값을 쓰지 않아 실제로는 한 번도 주입된 적이 없고, **주입해도 결과가 같다**:
+        # None 이면 하류(mail_attachment.py _build_batch_requests)가 기본 6필드
+        # (id, subject, from, receivedDateTime, body, hasAttachments)를 쓰는데, 아래
+        # 4필드는 전부 그 부분집합이라 합집합이 기본값과 동일하다. 필드표는 이력으로 보존.
+        expose: hidden
+        description: "SelectParams parameters"
+        baseModel: SelectParams
+        targetParam: select_params
+        fields:
+          - name: body
+            type: boolean
+            description: "메시지 본문 (HTML 또는 텍스트 형식)"
+            default: true
+          - name: id
+            type: boolean
+            description: "메시지 고유 식별자 (읽기 전용)"
+            default: true
+          - name: received_date_time
+            type: boolean
+            description: "메시지 수신 날짜/시간 (ISO 8601 형식, UTC)"
+            default: true
+          - name: subject
+            type: boolean
+            description: "메시지 제목"
+            default: true
+
+  - name: mail_attachment_download
+    description: "메일 첨부파일을 다운로드하거나 텍스트로 변환하여 반환합니다.\n\n[옵션 제약사항]\n- save_file=false면 storage_type, save_directory, onedrive_folder 무시됨\n- storage_type=\"local\"이면 save_directory 사용, onedrive_folder 무시\n- storage_type=\"onedrive\"면 onedrive_folder 사용, save_directory 무시\n- convert_to_txt=true 시 PDF/DOCX/XLSX/PPTX/HWP 변환, 미지원 형식은 원본 저장\n\n[권장 조합]\n- LLM 내용 분석: save_file=false, convert_to_txt=true\n- 로컬 백업: save_file=true, storage_type=\"local\"\n- OneDrive 저장: save_file=true, storage_type=\"onedrive\"\n"
+    service: MailService.download_attachments
+    params:
+      - name: convert_to_txt
+        type: boolean
+        required: false
+        expose: tool
+        description: "첨부파일을 TXT로 변환. PDF, DOCX, XLSX, PPTX, HWP 등 지원"
+        default: false
+        targetParam: convert_to_txt
+      - name: include_body
+        type: boolean
+        required: false
+        expose: tool
+        description: "메일 조회와 별개로 첨부파일 조회 시 메일 본문 포함 해서 반환하는 파라미터 설정"
+        default: true
+        targetParam: include_body
+      - name: message_attachment_ids
+        type: array
+        required: true
+        expose: tool
+        description: "메일 ID 리스트 또는 첨부파일 ID 쌍. 예: [\"msg_id1\", \"msg_id2\"] 또는 [{\"message_id\": \"...\", \"attachment_id\": \"...\"}]"
+        targetParam: message_attachment_ids
+      - name: onedrive_folder
+        type: string
+        required: false
+        expose: tool
+        description: "OneDrive 저장 폴더 경로 (storage_type=onedrive일 때 사용)"
+        default: "/Attachments"
+        targetParam: onedrive_folder
+      - name: save_directory
+        type: string
+        required: false
+        expose: tool
+        description: "저장 디렉토리 경로 (save_file=true일 때 사용)"
+        default: "downloads"
+        targetParam: save_directory
+      - name: flat_folder
+        type: boolean
+        required: false
+        expose: tool
+        description: "true면 메일별 하위폴더 없이 save_directory에 모든 첨부파일을 바로 저장"
+        default: false
+        targetParam: flat_folder
+      - name: save_file
+        type: boolean
+        required: false
+        expose: tool
+        description: "파일 저장 여부. false면 메모리로 반환 (LLM이 직접 내용 확인 가능)"
+        default: true
+        targetParam: save_file
+      - name: skip_duplicates
+        type: boolean
+        required: false
+        expose: tool
+        description: "이미 처리된 메일 건너뛰기"
+        default: true
+        targetParam: skip_duplicates
+      - name: storage_type
+        type: string
+        required: false
+        expose: tool
+        description: "저장소 유형: \"local\" (로컬 디스크) 또는 \"onedrive\" (OneDrive 업로드)"
+        enum:
+          - "local"
+          - "onedrive"
+        default: "local"
+        targetParam: storage_type
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소"
+        targetParam: user_email
+
+  - name: mail_fetch_filter
+    description: "Outlook 메일을 날짜, 발신자, 제목 등 다양한 필터 조건을 사용하여 조회합니다. 특정 기간이나 조건에 맞는 메일을 효율적으로 검색할 수 있습니다. mail_list_xx 와 달리 본문을 포함해서 반환한다."
+    service: MailService.fetch_filter
+    params:
+      - name: exclude_params
+        type: object
+        required: false
+        expose: tool
+        description: "제외 조건"
+        baseModel: ExcludeParams
+        targetParam: exclude_params
+      - name: filter_params
+        type: object
+        required: false
+        expose: tool
+        description: "메일 필터링 조건"
+        baseModel: FilterParams
+        targetParam: filter_params
+        fields:
+          - name: received_date_from
+            type: string
+            required: false
+            description: "메일 수신 시작 날짜 (포함, receivedDateTime >= 이 값)"
+            targetParam: received_date_from
+          - name: received_date_to
+            type: string
+            required: false
+            description: "메일 수신 종료 날짜 (포함, receivedDateTime <= 이 값)"
+            targetParam: received_date_to
+          - name: sent_date_from
+            type: string
+            required: false
+            description: "메일 발신 시작 날짜 (포함, sentDateTime >= 이 값)"
+            targetParam: sent_date_from
+          - name: sent_date_to
+            type: string
+            required: false
+            description: "메일 발신 종료 날짜 (포함, sentDateTime <= 이 값)"
+            targetParam: sent_date_to
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_fetch_search
+    description: "Outlook 메일을 키워드로 검색합니다. 제목, 본문, 발신자 등 모든 필드에서 지정한 검색어를 포함하는 메일을 찾아 반환합니다."
+    service: MailService.fetch_search
+    params:
+      - name: search_term
+        type: string
+        required: true
+        expose: tool
+        description: "검색어 ($search 파라미터)"
+        targetParam: search_term
+      - name: select_params
+        type: object
+        required: false
+        expose: tool
+        description: "조회할 필드 선택"
+        baseModel: SelectParams
+        targetParam: select_params
+        fields:
+          - name: fields
+            type: array
+            required: false
+            description: "조회할 필드 목록"
+            items:
+              type: string
+            targetParam: fields
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        description: "반환할 최대 메일 수"
+        default: 50
+        targetParam: top
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_process_with_download
+    description: "메일을 조회하고 첨부파일이 있는 경우 자동으로 다운로드합니다. 필터나 검색 조건으로 메일을 찾은 후 첨부파일을 지정된 폴더에 저장합니다."
+    service: MailService.process_with_download
+    params:
+      - name: filter_params
+        type: object
+        required: false
+        expose: tool
+        description: "메일 필터링 조건"
+        baseModel: FilterParams
+        targetParam: filter_params
+        fields:
+          - name: received_date_from
+            type: string
+            required: false
+            description: "메일 수신 시작 날짜"
+            targetParam: received_date_from
+          - name: received_date_to
+            type: string
+            required: false
+            description: "메일 수신 종료 날짜"
+            targetParam: received_date_to
+      - name: save_directory
+        type: string
+        required: false
+        expose: tool
+        description: "첨부파일 저장 디렉토리 경로"
+        targetParam: save_directory
+      - name: search_term
+        type: string
+        required: false
+        expose: tool
+        description: "검색어 (지정시 검색 모드로 전환)"
+        targetParam: search_term
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        description: "반환할 최대 메일 수"
+        default: 50
+        targetParam: top
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_query_url
+    description: "이전에 messageid 랑 attachmentid가 제공된 상태에서 조회가 가능하며 messagid만 제공하면  그 메일의 첨부파일을 모두 다운로드 하고 attachmentid까지 제공하면 해당 첨부파일만 다운로드 받을 수 있다. 첨부파일 조회시 반드시  mail 목록조회가 선행되어야 한다. "
+    service: MailService.fetch_url
+    params:
+      - name: filter_params
+        type: object
+        required: false
+        expose: tool
+        description: "메일 필터링 조건"
+        baseModel: FilterParams
+        targetParam: filter_params
+        fields:
+          - name: received_date_from
+            type: string
+            required: false
+            description: "메일 수신 시작 날짜"
+            targetParam: received_date_from
+          - name: received_date_to
+            type: string
+            required: false
+            description: "메일 수신 종료 날짜"
+            targetParam: received_date_to
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        description: "최대 결과 수"
+        default: 50
+        targetParam: top
+      - name: url
+        type: string
+        required: false
+        expose: tool
+        description: "only baseURL : https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages?"
+        default: "https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages?"
+        targetParam: url
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (인증용)"
+        targetParam: user_email
+      - name: select
+        type: object
+        required: false
+        expose: internal
+        description: "SelectParams parameters"
+        baseModel: SelectParams
+        # 구 정의는 targetParam 이 `select` 였는데 MailService.fetch_url 의 인자는
+        # `select_params` 다. 즉 이 도구는 호출될 때마다 TypeError 로 죽고 있었다.
+        # 시그니처에 맞춰 바로잡는다 (2026-08-12).
+        targetParam: select_params
+        fields:
+          - name: body_preview
+            type: boolean
+            description: "메시지 본문의 처음 255자 (텍스트 형식)"
+            default: true
+          - name: created_date_time
+            type: boolean
+            description: "메시지 생성 날짜/시간 (ISO 8601 형식, UTC)"
+            default: true
+          - name: from_recipient
+            type: boolean
+            description: "메시지가 전송된 사서함의 소유자 (from 필드)"
+            default: true
+          - name: id
+            type: boolean
+            description: "메시지 고유 식별자 (읽기 전용)"
+            default: true
+          - name: received_date_time
+            type: boolean
+            description: "메시지 수신 날짜/시간 (ISO 8601 형식, UTC)"
+            default: true
+
+  - name: test_handler
+    description: "New tool description"
+    service: MailService.fetch_filter
+    params:
+      - name: client_filter
+        type: object
+        required: false
+        expose: tool
+        description: "ExcludeParams parameters"
+        targetParam: client_filter
+      - name: exclude_params
+        type: object
+        required: false
+        expose: tool
+        description: "ExcludeParams parameters"
+        targetParam: exclude_params
+      - name: filter_params
+        type: object
+        required: false
+        expose: tool
+        description: "FilterParams parameters"
+        targetParam: filter_params
+      - name: select_params
+        type: object
+        required: false
+        expose: tool
+        description: "SelectParams parameters"
+        targetParam: select_params
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        description: ""
+        default: 50
+        # 핸들러 코드에 하드코딩돼 있던 기본값을 spec 으로 승격
+        targetParam: top
+

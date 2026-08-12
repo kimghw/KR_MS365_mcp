@@ -1,0 +1,293 @@
+# Todo MCP (Microsoft To Do) — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 출처: mcp_editor/mcp_todo/tool_definition_templates.yaml 의 계약을 그대로 이관했다.
+#       도구 이름·설명·파라미터 설명·enum·default 는 한 글자도 바꾸지 않았다.
+#
+# Graph API base: https://graph.microsoft.com/v1.0/users/{user_email}/todo
+# Required Azure scope: Tasks.ReadWrite (또는 Tasks.ReadWrite.Shared)
+#
+# 주의 1) 이관 시 해소한 계약 위반
+#   display_name / task_id / title 은 inputSchema.required 에 있는데 서비스 시그니처
+#   기본값이 `""` 였다. CLAUDE.md "필수/선택 일관성"에 따라 inputSchema.required 를
+#   정본으로 삼아 `required: true` + default 없음으로 적는다(시그니처의 `""` 는 사문).
+# 주의 2) mcp_service_factors 는 8개 도구 전부 `{}` 였다 —
+#   서버가 주입하던 값이 없으므로 `expose: internal` 파라미터는 하나도 없다.
+# 주의 3) user_email 은 스키마상 선택이지만 서비스에는 항상 확정된 값이 가야 한다.
+#   선택 정책은 mcp_common.user_resolver(SSOT)가 handlers.py 에서 적용한다.
+# 주의 4) targetParam 은 기존 YAML 의 property 에 전부(35개) 붙어 있었고 값은 모두
+#   파라미터 이름과 같은 항등 매핑이다. 파생 스키마에 그대로 실리므로 여기에도 전부 적는다.
+# 주의 5) categories 의 `items: {type: string}` 은 복원 완료(:195, :263).
+#   param_spec 이 `items` 를 지원하므로 배열 파라미터는 반드시 원소 스키마를 적는다 —
+#   빠뜨리면 원소 계약이 통째로 사라진다.
+
+server:
+  name: todo
+  version: "1.0.0"
+  port: 5006
+  description: Microsoft To Do 태스크 리스트·태스크 조회/생성/수정/삭제.
+
+tools:
+  - name: todo_lists_view
+    description: "사용자의 모든 Microsoft To Do 태스크 리스트를 조회합니다. 각 리스트의 id, displayName, wellknownListName을 반환합니다."
+    service: TodoService.todo_lists_view
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        default: 50
+        description: "최대 결과 수"
+        targetParam: top
+
+  - name: todo_list_create
+    description: "새로운 Microsoft To Do 태스크 리스트를 생성합니다."
+    service: TodoService.todo_list_create
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: display_name
+        type: string
+        required: true
+        expose: tool
+        description: "새 태스크 리스트의 표시 이름"
+        targetParam: display_name
+
+  - name: todo_list_delete
+    description: "지정된 Microsoft To Do 태스크 리스트를 삭제합니다. list_id 또는 displayName/wellknownListName(예 defaultList)을 받아 해석합니다."
+    service: TodoService.todo_list_delete
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: true
+        expose: tool
+        description: "삭제할 리스트의 ID 또는 displayName/wellknownListName"
+        targetParam: list_id_or_name
+
+  - name: todo_tasks_view
+    description: "지정된 To Do 리스트의 태스크를 조회합니다. list_id_or_name이 비어있으면 기본 리스트(defaultList)를 사용합니다."
+    service: TodoService.todo_tasks_view
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: false
+        expose: tool
+        description: "리스트 ID 또는 이름 (생략 시 defaultList 사용)"
+        targetParam: list_id_or_name
+      - name: status_filter
+        type: string
+        required: false
+        expose: tool
+        enum: [notStarted, inProgress, completed, waitingOnOthers, deferred]
+        description: "status 필드로 필터링. enum: notStarted | inProgress | completed | waitingOnOthers | deferred"
+        targetParam: status_filter
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        default: 50
+        description: "최대 결과 수"
+        targetParam: top
+      - name: orderby
+        type: string
+        required: false
+        expose: tool
+        description: "정렬 순서 (예: 'createdDateTime desc', 'dueDateTime/dateTime asc')"
+        targetParam: orderby
+
+  - name: todo_task_get
+    description: "단일 To Do 태스크의 상세 정보를 조회합니다."
+    service: TodoService.todo_task_get
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: false
+        expose: tool
+        description: "리스트 ID 또는 이름 (생략 시 defaultList 사용)"
+        targetParam: list_id_or_name
+      - name: task_id
+        type: string
+        required: true
+        expose: tool
+        description: "조회할 태스크 ID"
+        targetParam: task_id
+
+  - name: todo_task_create
+    description: "새 To Do 태스크를 생성합니다. title은 필수, 나머지는 선택입니다."
+    service: TodoService.todo_task_create
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: false
+        expose: tool
+        description: "리스트 ID 또는 이름 (생략 시 defaultList 사용)"
+        targetParam: list_id_or_name
+      - name: title
+        type: string
+        required: true
+        expose: tool
+        description: "태스크 제목"
+        targetParam: title
+      - name: body
+        type: string
+        required: false
+        expose: tool
+        description: "태스크 본문 (text)"
+        targetParam: body
+      - name: importance
+        type: string
+        required: false
+        expose: tool
+        enum: [low, normal, high]
+        description: "중요도"
+        targetParam: importance
+      - name: due_datetime
+        type: string
+        required: false
+        expose: tool
+        description: "마감 일시 (ISO 8601, 예: 2026-05-20T18:00:00)"
+        targetParam: due_datetime
+      - name: reminder_datetime
+        type: string
+        required: false
+        expose: tool
+        description: "알림 일시 (ISO 8601). 값을 주면 isReminderOn=true로 설정됩니다."
+        targetParam: reminder_datetime
+      - name: categories
+        type: array
+        required: false
+        expose: tool
+        description: "카테고리 목록"
+        items:
+          type: string
+        targetParam: categories
+
+  - name: todo_task_update
+    description: "기존 To Do 태스크를 수정합니다. 전달한 필드만 갱신되며 (PATCH), status='completed'로 설정하면 태스크가 완료 처리됩니다."
+    service: TodoService.todo_task_update
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: false
+        expose: tool
+        description: "리스트 ID 또는 이름 (생략 시 defaultList 사용)"
+        targetParam: list_id_or_name
+      - name: task_id
+        type: string
+        required: true
+        expose: tool
+        description: "수정할 태스크 ID"
+        targetParam: task_id
+      - name: title
+        type: string
+        required: false
+        expose: tool
+        description: "새 제목"
+        targetParam: title
+      - name: body
+        type: string
+        required: false
+        expose: tool
+        description: "새 본문 (text)"
+        targetParam: body
+      - name: importance
+        type: string
+        required: false
+        expose: tool
+        enum: [low, normal, high]
+        description: "중요도"
+        targetParam: importance
+      - name: status
+        type: string
+        required: false
+        expose: tool
+        enum: [notStarted, inProgress, completed, waitingOnOthers, deferred]
+        description: "태스크 상태 변경 (예 completed)"
+        targetParam: status
+      - name: due_datetime
+        type: string
+        required: false
+        expose: tool
+        description: "마감 일시 (ISO 8601)"
+        targetParam: due_datetime
+      - name: reminder_datetime
+        type: string
+        required: false
+        expose: tool
+        description: "알림 일시 (ISO 8601)"
+        targetParam: reminder_datetime
+      - name: categories
+        type: array
+        required: false
+        expose: tool
+        description: "카테고리 목록"
+        items:
+          type: string
+        targetParam: categories
+
+  - name: todo_task_delete
+    description: "지정된 To Do 태스크를 삭제합니다."
+    service: TodoService.todo_task_delete
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        targetParam: user_email
+      - name: list_id_or_name
+        type: string
+        required: false
+        expose: tool
+        description: "리스트 ID 또는 이름 (생략 시 defaultList 사용)"
+        targetParam: list_id_or_name
+      - name: task_id
+        type: string
+        required: true
+        expose: tool
+        description: "삭제할 태스크 ID"
+        targetParam: task_id

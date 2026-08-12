@@ -1,0 +1,126 @@
+# OneNote MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 주의: description 이 없는 파라미터는 이전 MCP_TOOLS 리터럴에도 설명이 없었다.
+#       계약을 그대로 옮기는 것이 우선이라 임의로 추가하지 않는다.
+
+server:
+  name: onenote
+  version: "1.0.0"
+  port: 5005
+  description: OneNote 페이지/섹션 조회·작성·삭제 및 DB 동기화.
+
+tools:
+  - name: read_onenote
+    description: "OneNote 조회 라우터. action에 따라 페이지/섹션 목록, 검색, 본문 조회, 요약 수행"
+    service: OneNoteService.read_onenote
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: action
+        type: string
+        required: true
+        expose: tool
+        enum: [list_pages, list_sections, search, get_content, get_summary]
+        description: "수행할 액션"
+      - name: keyword
+        type: string
+        required: false
+        expose: tool
+        description: "search 액션의 검색어"
+      - name: page_id
+        type: string
+        required: false
+        expose: tool
+        description: "get_content/get_summary용"
+      - name: section_id
+        type: string
+        required: false
+        expose: tool
+      - name: notebook_id
+        type: string
+        required: false
+        expose: tool
+      - name: date_from
+        type: string
+        required: false
+        expose: tool
+        description: "ISO 8601 시작 날짜 (포함)"
+      - name: date_to
+        type: string
+        required: false
+        expose: tool
+        description: "ISO 8601 종료 날짜 (포함)"
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        default: 50            # 기존 핸들러의 args.get("top", 50) 을 승격
+
+  - name: write_onenote
+    description: "OneNote 생성/수정 라우터. action: append, create_page, create_section"
+    service: OneNoteService.write_onenote
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: action
+        type: string
+        required: true
+        expose: tool
+        enum: [append, create_page, create_section]
+      - name: content
+        type: string
+        required: false
+        expose: tool
+        description: "append/create_page용 본문"
+      - name: page_id
+        type: string
+        required: false
+        expose: tool
+        description: "append용 (없으면 최근 페이지)"
+      - name: section_id
+        type: string
+        required: false
+        expose: tool
+        description: "create_page용"
+      - name: notebook_id
+        type: string
+        required: false
+        expose: tool
+        description: "create_section용"
+      - name: title
+        type: string
+        required: false
+        expose: tool
+        description: "create_page/create_section용"
+
+  - name: delete_onenote
+    description: "OneNote 페이지 삭제"
+    service: OneNoteService.delete_onenote
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: page_id
+        type: string
+        required: true
+        expose: tool
+
+  - name: sync_onenote_db
+    description: "OneNote 전체 페이지를 DB에 동기화 (/me/onenote/pages 전체 조회)"
+    service: OneNoteService.writer.sync_db
+    params:
+      # 이전 inputSchema 에는 required 키 자체가 없었다 — 전원 선택 파라미터다.
+      - name: user_email
+        type: string
+        required: false
+        expose: tool

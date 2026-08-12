@@ -16,22 +16,9 @@ from .teams_types import (
 from mcp_common.user_resolver import resolve_user_email
 
 logger = logging.getLogger(__name__)
-
-# mcp_service decorator 는 registry 스캔용 메타데이터일 뿐 런타임 동작에는 영향이 없다.
-# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이다.
-try:
-    from mcp_editor.service_registry.python.decorator import mcp_service
-except ImportError as _decorator_import_error:  # pragma: no cover - 선택적 의존성
-    logger.warning(
-        "mcp_editor.service_registry.python.decorator import 실패(%s) — "
-        "no-op decorator 로 대체합니다. 서비스 메타데이터가 registry 에 등록되지 않습니다.",
-        _decorator_import_error,
-    )
-
-    def mcp_service(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
+# mcp_service 는 메타데이터 표식일 뿐 런타임 동작에는 영향이 없다.
+# 도구의 실제 계약은 spec/param_spec/teams.yaml 이며 이 데코레이터의 인자가 아니다.
+from mcp_common.service_meta import mcp_service
 
 
 def _get_default_user_email() -> Optional[str]:

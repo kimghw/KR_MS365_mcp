@@ -69,12 +69,12 @@ mcp_outlook/
 ├── mail_attachment_converter.py    # 파일 변환 (PDF, DOCX, HWP 등 → TXT)
 ├── mail_attachment_processor.py    # 첨부파일 처리 유틸리티
 └── mcp_server/
-    ├── server_rest.py              # FastAPI REST 서버 (port 5001)
     ├── server_stdio.py             # STDIO 프로토콜 서버
-    ├── server_stream.py            # Streamable HTTP 서버
-    ├── server_init.py              # 서버 초기화
-    └── run.py                      # 진입점
+    ├── server_stream.py            # Streamable HTTP 서버 (port 5001)
 ```
+
+> 지원 트랜스포트는 **stdio 와 Streamable HTTP 2종**입니다. REST 계열(`server_rest.py`)은
+> 폐지되었습니다 — 근거와 상세는 [spec/spec_MCP트랜스포트.md](../spec/spec_MCP트랜스포트.md) 참조.
 
 ## 인증 연동
 

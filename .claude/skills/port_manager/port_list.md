@@ -14,4 +14,3 @@
 | KR_MS365_mcp | 5006 | Todo MCP | venv/Scripts/python.exe mcp_todo/mcp_server/server_stream.py | — |
 | KR_MS365_mcp | 5007 | Time MCP | venv/Scripts/python.exe mcp_time/mcp_server/server_stream.py | — |
 | KR_MS365_mcp | 5008 | FileHandler MCP | venv/Scripts/python.exe mcp_file_handler/mcp_server/server_stream.py | — |
-| KR_MS365_mcp | 8091 | MCP Tool Editor | venv/Scripts/python.exe mcp_editor/tool_editor_web.py | — |

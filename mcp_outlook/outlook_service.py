@@ -15,23 +15,9 @@ from .outlook_types import (
 
 logger = logging.getLogger(__name__)
 
-# mcp_service 데코레이터는 registry 스캐닝용이며 런타임 동작에는 필수가 아니다.
-# 실제 구현 위치: mcp_editor/service_registry/python/decorator.py
-try:
-    from mcp_editor.service_registry.python.decorator import mcp_service
-except ImportError as _mcp_service_import_error:
-    # mcp_editor 가 없는 배포에서는 no-op 으로 폴백하되, 조용히 넘어가지 않고 경고를 남긴다.
-    logger.warning(
-        "mcp_editor.service_registry.python.decorator import 실패 (%s). "
-        "no-op mcp_service 데코레이터로 폴백합니다 — 서비스 메타데이터가 registry 에 등록되지 않습니다.",
-        _mcp_service_import_error,
-    )
-
-    def mcp_service(**kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
+# mcp_service 는 메타데이터 표식일 뿐 런타임 동작에 영향이 없다.
+# 도구의 실제 계약은 spec/param_spec/outlook.yaml 이며 이 데코레이터의 인자가 아니다.
+from mcp_common.service_meta import mcp_service
 
 
 class MailService:

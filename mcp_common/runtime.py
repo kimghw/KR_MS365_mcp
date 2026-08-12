@@ -22,6 +22,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence
 
 from mcp_common.errors import ToolExecutionError, normalize_tool_result
+from mcp_common.schema_normalize import coerce_boolean_enums_for_schema
 from mcp_common.validation import apply_schema_defaults, validate_arguments
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,11 @@ class ToolRuntime:
             )
 
         schema = self.input_schema(name)
+        # 검증 **전** 보정. boolean 파라미터는 스키마상 enabled/disabled 문자열 enum 으로
+        # 노출되는데(OpenAI function-calling 이 boolean 을 안 받는다), 기존 클라이언트는
+        # 진짜 true/false 를 보낸다. 여기서 흡수하지 않으면 정상 호출이 검증에서 거절된다.
+        # 진입점을 여기 하나로 둬서 도메인마다 우회 코드가 생기지 않게 한다.
+        arguments = coerce_boolean_enums_for_schema(schema, arguments)
         merged = apply_schema_defaults(schema, arguments)
         if self.validate:
             validate_arguments(schema, merged, tool=name)

@@ -13,12 +13,25 @@ mcp_teams/
 ├── teams_service.py         # 서비스 레이어 (Facade 패턴)
 ├── teams_db_manager.py      # DB 관리 (한글 이름 저장)
 ├── mcp_server/              # MCP 서버
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── handlers.py          # 핸들러 + Server 구성 (두 트랜스포트의 유일한 원본)
+│   ├── server_stdio.py      # stdio 트랜스포트 (얇은 구동부)
+│   └── server_stream.py     # Streamable HTTP 트랜스포트 (포트 5003)
 ├── tests/                   # 테스트
 │   ├── __init__.py
 │   └── test_teams_service.py
 └── README.md
 ```
+
+## 도구 계약 (param_spec)
+
+도구 이름·설명·파라미터·기본값은 **`spec/param_spec/teams.yaml` 한 곳에만** 있다.
+`inputSchema` 와 서비스 호출 인자는 기동 시 `mcp_common.param_spec` 가 파생시킨다
+(코드 생성 없음, 미리 구워 둔 산출물 없음). 파라미터를 늘리거나 기본값을 바꿀 때는
+그 YAML 만 고친다 — `handlers.py` 에 도구 정의를 적으면 사본이 두 벌이 된다.
+
+기본값(`limit` 50, `prefix` `[claude]`, `content_type` `text`)도 전부 YAML 에 있다.
+`user_email` 만은 예외로, 값이 비면 `mcp_common.user_resolver` 가 기본 사용자를 고른다.
 
 ## 기능
 

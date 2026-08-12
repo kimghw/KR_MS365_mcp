@@ -1,153 +1,82 @@
-"""
-FileHandler MCP Streamable HTTP 서버 (표준 MCP SDK transport, port 5008)
+"""Streamable HTTP MCP Server for mcp_file_handler (port 5008). 인증 불필요(로컬 파일 처리).
+
+도구 정의·핸들러·`Server` 구성은 `handlers.py` 한 벌을 쓰고, ASGI 배선은
+`mcp_common.http_transport` 를 쓴다. 이 파일에는 **HTTP 고유의 것만** 남는다
+(spec/spec_MCP트랜스포트.md ②-3-1, ②-4).
+
+엔드포인트:
+    /mcp     — 표준 Streamable HTTP 단일 엔드포인트 (SDK 가 프로토콜 버전을 협상)
+    /health  — 상태 조회. 초기화 실패 시 degraded + HTTP 503. 이 도메인은 보안 고지
+               (인증 없음·바인드 정책·허용 루트)를 추가로 싣는다.
 
 보안 주의:
     - 이 서버에는 **호출자 인증이 없다**. 기본 바인드는 loopback(127.0.0.1) 전용이며,
       외부 노출은 `MCP_BIND_HOST` + `MCP_ALLOW_PUBLIC_BIND=1` 옵트인이 필요하다.
-    - 도구가 여는 모든 파일/디렉터리는 `mcp_common.paths` 허용 루트로 제한된다
-      (기본: 프로젝트 루트, `MCP_ALLOWED_PATHS` 로 확장).
-
-엔드포인트:
-    /mcp     — 표준 Streamable HTTP 단일 엔드포인트 (SDK 가 프로토콜 버전을 협상)
-    /health  — 상태 조회. 초기화 실패 시 degraded + HTTP 503
-
-이전 구현의 `/mcp/v1/initialize|tools/list|tools/call` 독자 경로, 자체 NDJSON 스트리밍,
-`protocolVersion: 0.1.0` 하드코딩은 제거됐다(표준 클라이언트는 `/mcp` 만 호출한다).
-도구 호출은 `ToolRuntime` 을 경유하므로 동기 핸들러를 `await` 하던 버그도 재발하지 않는다.
+    - 도구가 여는 모든 파일/디렉터리는 `mcp_common.paths` 허용 루트로 제한된다.
 """
 
-import logging
 import os
 import sys
-import contextlib
-from collections.abc import AsyncIterator
-from typing import Any, Dict, List
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-grandparent_dir = os.path.dirname(parent_dir)
+# mcp_common 을 import 하려면 프로젝트 루트가 먼저 sys.path 에 있어야 한다.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-for _path in (grandparent_dir, parent_dir, current_dir):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+from mcp_common.bootstrap import bootstrap_http
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stderr,
-)
-logger = logging.getLogger(__name__)
+BOOT = bootstrap_http(__file__, package_name="mcp_file_handler")
 
-import mcp.types as mcp_types
-from mcp.server.lowlevel import Server as MCPServer
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from starlette.applications import Starlette
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-
-from mcp_common.net import resolve_bind_host
+# ↓ 서비스 모듈을 끌어오는 import 는 반드시 bootstrap 뒤에
+from mcp_common.http_transport import build_starlette_app, run_http
 from mcp_common.runtime import build_health_payload, health_status_code
 
-try:
-    from .handlers import (
-        DEFAULT_PORT,
-        SERVER_NAME,
-        SERVER_VERSION,
-        build_lifecycle,
-        build_runtime,
-        security_payload,
-    )
-except ImportError:  # 스크립트 직접 실행
-    from handlers import (  # type: ignore[no-redef]
-        DEFAULT_PORT,
-        SERVER_NAME,
-        SERVER_VERSION,
-        build_lifecycle,
-        build_runtime,
-        security_payload,
-    )
+from mcp_file_handler.mcp_server.handlers import (
+    DEFAULT_PORT,
+    SERVER_NAME,
+    SERVER_VERSION,
+    build_mcp_server,
+    lifecycle,
+    runtime,
+    security_payload,
+)
+
+# 모듈 수준 ASGI 앱 (`uvicorn server_stream:app` 도 동작한다)
+app = build_starlette_app(
+    SERVER_NAME,
+    build_mcp_server(),
+    runtime,
+    lifecycle,
+    version=SERVER_VERSION,
+)
 
 
-runtime = build_runtime()
-lifecycle = build_lifecycle()
+def _install_security_health(starlette_app) -> None:
+    """공통 `/health` 에 이 도메인만의 보안 고지를 덧붙인다.
 
+    인증 없는 파일 서버라 운영자가 허용 루트·바인드 정책을 확인할 창구가 필요하다.
+    공통 빌더는 도메인 고유 필드를 모르므로 라우트만 교체한다(배선은 그대로 재사용).
+    """
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
 
-def build_mcp_server() -> MCPServer:
-    """표준 MCP lowlevel 서버. 도구 실행/검증/오류 변환은 ToolRuntime 이 담당한다."""
-    server: MCPServer = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
-    tool_objects: List[mcp_types.Tool] = runtime.build_tool_objects()
-
-    @server.list_tools()
-    async def _list_tools() -> List[mcp_types.Tool]:
-        return tool_objects
-
-    @server.call_tool(validate_input=False)  # 검증은 ToolRuntime 이 수행
-    async def _call_tool(name: str, arguments: Dict[str, Any]):
-        # 실패는 ToolExecutionError 로 올라가고 SDK 가 isError=True 로 감싼다.
-        return await runtime.dispatch(name, arguments or {})
-
-    return server
-
-
-def build_starlette_app() -> Starlette:
-    mcp_server = build_mcp_server()
-    session_manager = StreamableHTTPSessionManager(
-        app=mcp_server, event_store=None, json_response=False, stateless=False
-    )
-
-    class _StreamableHTTPASGI:
-        def __init__(self, sm):
-            self._sm = sm
-
-        async def __call__(self, scope, receive, send) -> None:
-            await self._sm.handle_request(scope, receive, send)
-
-    handle_streamable_http = _StreamableHTTPASGI(session_manager)
-
-    async def health(_request: StarletteRequest) -> JSONResponse:
+    async def health(_request):
         payload = build_health_payload(
-            SERVER_NAME, runtime, lifecycle,
-            version=SERVER_VERSION, protocol="streamable-http",
+            SERVER_NAME, runtime, lifecycle, version=SERVER_VERSION
         )
         payload["security"] = security_payload()
         return JSONResponse(payload, status_code=health_status_code(payload))
 
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
-            await lifecycle.startup()
-            if lifecycle.errors:
-                logger.error("초기화 실패로 degraded 상태입니다: %s", lifecycle.errors)
-            logger.info(
-                "FileHandler MCP Streamable HTTP 서버 준비 완료 (tools=%d)",
-                len(runtime.tools),
-            )
-            try:
-                yield
-            finally:
-                await lifecycle.shutdown()
-
-    return Starlette(
-        debug=False,
-        routes=[
-            Route("/mcp", endpoint=handle_streamable_http),
-            Route("/health", endpoint=health, methods=["GET"]),
-        ],
-        lifespan=lifespan,
-    )
+    routes = starlette_app.router.routes
+    for index, route in enumerate(routes):
+        if getattr(route, "path", None) == "/health":
+            routes[index] = Route("/health", endpoint=health, methods=["GET"])
+            return
 
 
-app = build_starlette_app()
+_install_security_health(app)
 
 
-def run(host: str = None, port: int = DEFAULT_PORT) -> None:
-    """서버 실행. host 기본값은 loopback (resolve_bind_host 정책)."""
-    import uvicorn
-
-    bind_host = resolve_bind_host(host, server_name=SERVER_NAME)
-    logger.info("Starting FileHandler MCP Streamable HTTP server on %s:%s", bind_host, port)
-    uvicorn.run(app, host=bind_host, port=port, log_level="info")
+def run(host=None, port: int = DEFAULT_PORT) -> None:
+    run_http(app, SERVER_NAME, port, host)
 
 
 if __name__ == "__main__":

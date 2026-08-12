@@ -1,0 +1,122 @@
+# FileHandler MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 주의
+#  - boolean 은 boolean 으로 적는다. enabled/disabled 문자열 enum 변환은
+#    mcp_common/schema_normalize.py 가 담당한다 (CLAUDE.md 규칙).
+#  - 이 도메인은 Graph API 인증이 필요 없다(로컬 파일 처리). 대신 파일/디렉터리
+#    접근이 mcp_common.paths 허용 루트로 제한된다.
+#  - description 은 전부 큰따옴표로 감싼다 (콜론+공백·# 이 들어가도 YAML 이 깨지지 않게).
+#  - targetParam 은 FileManager 메서드의 인자 이름이다. 여기서는 도구 파라미터 이름과
+#    같지만, 구 tool_definition_templates.yaml 이 갖고 있던 매핑 정보라 그대로 옮긴다.
+
+server:
+  name: file_handler
+  version: "1.0.0"
+  port: 5008
+  description: 로컬/OneDrive 파일의 텍스트 변환과 파일 메타데이터 관리. 인증 불필요.
+
+tools:
+  - name: convert_file_to_text
+    description: "Convert a file to text format. Supports various file types including documents, spreadsheets, and PDFs."
+    service: FileManager.process
+    params:
+      - name: input_path
+        type: string
+        required: true
+        expose: tool
+        description: "The path to the file to convert"
+        targetParam: input_path
+
+  - name: process_directory
+    description: "Process all files in a directory recursively and convert them to text"
+    service: FileManager.process_directory
+    params:
+      - name: directory_path
+        type: string
+        required: true
+        expose: tool
+        description: "The path to the directory to process"
+        targetParam: directory_path
+
+  - name: save_file_metadata
+    description: "Save metadata for a file including keywords and additional information"
+    service: FileManager.save_metadata
+    params:
+      - name: file_url
+        type: string
+        required: true
+        expose: tool
+        description: "URL or path to the file"
+        targetParam: file_url
+      - name: keywords
+        type: array
+        required: true
+        expose: tool
+        description: "Keywords associated with the file"
+        items:
+          type: string
+        targetParam: keywords
+      - name: additional_metadata
+        type: object
+        required: false
+        expose: tool
+        description: "Additional metadata as key-value pairs"
+        targetParam: additional_metadata
+
+  # 구 스키마는 `properties: {}` + `additionalProperties: true` 였지만, 실제로 쓰이는
+  # 검색 조건은 keyword/file_url 둘뿐이다(mcp_file_handler/metadata/storage.py:170,174 —
+  # 나머지 키는 조용히 무시된다). 핸들러도 그 둘만 통과시켰으므로 계약을 명시로 바꾼다.
+  - name: search_metadata
+    description: "Search for files based on metadata criteria"
+    service: FileManager.search_metadata
+    params:
+      - name: keyword
+        type: string
+        required: false
+        expose: tool
+        description: "Keyword to match against saved keywords (partial match)"
+        targetParam: keyword
+      - name: file_url
+        type: string
+        required: false
+        expose: tool
+        description: "URL or path to match against saved file URLs (partial match)"
+        targetParam: file_url
+
+  - name: convert_onedrive_to_text
+    description: "Convert a file from OneDrive to text format"
+    service: FileManager.process_onedrive
+    params:
+      - name: url
+        type: string
+        required: true
+        expose: tool
+        description: "The OneDrive URL of the file to convert"
+        targetParam: url
+
+  - name: get_file_metadata
+    description: "Retrieve metadata for a specific file"
+    service: FileManager.get_metadata
+    params:
+      - name: file_url
+        type: string
+        required: true
+        expose: tool
+        description: "URL or path to the file"
+        targetParam: file_url
+
+  - name: delete_file_metadata
+    description: "Delete metadata for a specific file"
+    service: FileManager.delete_metadata
+    params:
+      - name: file_url
+        type: string
+        required: true
+        expose: tool
+        description: "URL or path to the file"
+        targetParam: file_url

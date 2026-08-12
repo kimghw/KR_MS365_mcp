@@ -1,0 +1,23 @@
+# Time MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+
+server:
+  name: time
+  version: "1.0.0"
+  port: 5007
+  description: 현재 시각 조회. 인증 불필요.
+
+tools:
+  - name: get_current_time
+    description: "현재 시간/날짜를 반환합니다. 어떤 입력이든 무시하고 현재 시간만 반환. 기본 timezone은 Asia/Seoul."
+    service: TimeService.get_current_time
+    params:
+      - name: timezone
+        type: string
+        required: false
+        expose: tool
+        description: "IANA timezone 이름 (예: Asia/Seoul, UTC, America/New_York). 생략 시 Asia/Seoul."

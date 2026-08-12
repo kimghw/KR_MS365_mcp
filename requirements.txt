@@ -8,6 +8,6 @@ pydantic>=2
 requests
 PyYAML
 mcp
-fastapi
+# fastapi — REST 서버 폐지로 제거 (2026-08-12)
 starlette
 uvicorn

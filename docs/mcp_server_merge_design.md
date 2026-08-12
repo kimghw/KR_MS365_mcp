@@ -1,5 +1,10 @@
 # MCP 서버 병합(Merge) 기능 설계서
 
+> ⚠️ **2026-08-12 자로 REST 트랜스포트가 폐지되었습니다.** 본 문서의 REST 관련 서술
+> (`server_rest.py`, `--protocol rest`, REST 선택지 등)은 작성 시점의 **이력으로만
+> 유효**하며 현행 구조가 아닙니다. 지원 트랜스포트는 stdio 와 Streamable HTTP 2종이고,
+> 현행 사양은 [spec/spec_MCP트랜스포트.md](../spec/spec_MCP트랜스포트.md) 입니다.
+
 > **작성일**: 2026-01-10
 > **상태**: 작성 완료
 > **관련 파일**: `jinja/universal_server_template.jinja2`, `jinja/generate_universal_server.py`
@@ -44,7 +49,7 @@ mcp_outlook/outlook_service.py          mcp_calendar/calendar_service.py
 mcp_outlook/mcp_server/
 ├─ server_rest.py      # REST API (FastAPI)
 ├─ server_stdio.py     # STDIO 프로토콜
-└─ server_stream.py    # SSE 스트림
+└─ server_stream.py    # Streamable HTTP
 ```
 
 **특징:**
@@ -332,7 +337,7 @@ Step 3: editor_config.json 업데이트
 │                                                             │
 │  Protocol                                                   │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │ All (SSE, Stdio, Streamable HTTP)            ▼      │   │
+│  │ All (Stdio, Streamable HTTP)                 ▼      │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
@@ -360,7 +365,7 @@ def merge_servers():
         "sources": ["outlook", "calendar"],
         "port": 8090,
         "prefix_mode": "auto",  # auto, always, none
-        "protocol": "all"       # all, sse, stdio, streamable_http
+        "protocol": "all"       # all, stdio, stream
     }
 
     Response:
@@ -409,7 +414,7 @@ python jinja/generate_universal_server.py merge \
     --name <병합서버명> \
     --sources <프로필1>,<프로필2>[,...] \
     --port <포트> \
-    --protocol <all|sse|stdio|streamable_http> \
+    --protocol <all|stdio|stream> \
     --prefix-mode <auto|always|none>
 
 # 예시

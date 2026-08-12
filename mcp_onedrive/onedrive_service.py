@@ -28,20 +28,9 @@ def _get_default_user_email() -> Optional[str]:
     return resolve_user_email()
 
 
-# mcp_service 데코레이터는 레지스트리 스캔용 메타데이터일 뿐 런타임에는 불필요하다.
-# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이다.
-try:
-    from mcp_editor.service_registry.python.decorator import mcp_service
-except ImportError:  # mcp_editor 가 설치/배포되지 않은 환경
-    logger.warning(
-        "mcp_editor.service_registry.python.decorator.mcp_service 를 import 하지 못했습니다. "
-        "no-op 데코레이터로 대체합니다 (레지스트리 메타데이터가 수집되지 않습니다)."
-    )
-
-    def mcp_service(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
+# mcp_service 는 메타데이터 표식일 뿐 런타임에는 영향이 없다.
+# 도구의 실제 계약은 spec/param_spec/onedrive.yaml 이며 이 데코레이터의 인자가 아니다.
+from mcp_common.service_meta import mcp_service
 
 
 class OneDriveService:

@@ -11,10 +11,15 @@ mcp_todo/
 ├── graph_todo_client.py   # Facade (인증/초기화/위임)
 ├── todo_service.py        # MCP 도구 레이어 (기본값 처리, list 이름 해석)
 └── mcp_server/
-    └── server_stream.py   # 공식 MCP SDK Streamable HTTP 서버
+    ├── handlers.py        # 도구 계약 로드 + 핸들러 (두 트랜스포트의 유일한 원본)
+    ├── server_stdio.py    # STDIO 트랜스포트 (mcp_common.stdio_transport)
+    └── server_stream.py   # Streamable HTTP 트랜스포트 (mcp_common.http_transport)
 ```
 
-도구 정의(YAML)는 `mcp_editor/mcp_todo/tool_definition_templates.yaml` 입니다.
+도구 계약(이름·설명·파라미터·enum·기본값)의 **단일 원본은 `spec/param_spec/todo.yaml`** 입니다.
+`inputSchema`·기본값·서비스 호출 인자는 기동 시 `mcp_common.param_spec` 가 여기서 파생시킵니다
+(코드 생성물 없음). 도구를 고치려면 그 YAML 만 고치면 됩니다 —
+`mcp_editor` 의 `tool_definition_templates.yaml` 은 더 이상 참조하지 않습니다.
 
 ## 노출되는 MCP 도구
 

@@ -1,0 +1,4 @@
+# sdist 에 도구 계약을 동봉한다 — spec/param_spec/<도메인>.yaml 은 런타임 필수다
+# (도구 계약의 유일한 원본, spec/spec_도구정의.md). wheel 에는 패키지 밖이라 안 들어가며,
+# 설치본 실행 시에는 MCP_PARAM_SPEC_DIR 환경변수로 위치를 지정한다.
+recursive-include spec/param_spec *.yaml

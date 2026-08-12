@@ -1,0 +1,185 @@
+# OneDrive MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 주의
+#  - boolean 은 boolean 으로 적는다. enabled/disabled 문자열 enum 변환은
+#    mcp_common/schema_normalize.py 가 담당한다 (CLAUDE.md 규칙).
+#  - user_email 은 스키마상 선택이지만, 핸들러가 mcp_common.user_resolver 정책으로
+#    해석한다(미지정 시 기본 사용자, 없으면 ToolExecutionError).
+
+server:
+  name: onedrive
+  version: "1.0.0"
+  port: 5004
+  description: OneDrive 파일/폴더 조회·읽기·쓰기·복사·이동. Azure OAuth 인증 필요.
+
+tools:
+  - name: handler_onedrive_get_drive_info
+    description: "OneDrive 드라이브 정보 조회"
+    service: OneDriveService.get_drive_info
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+
+  - name: handler_onedrive_list_files
+    description: "OneDrive 파일/폴더 목록 조회"
+    service: OneDriveService.list_files
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: folder_path
+        type: string
+        required: false
+        expose: tool
+        description: "조회할 폴더 경로 (없으면 루트)"
+      - name: search
+        type: string
+        required: false
+        expose: tool
+        description: "이름 검색어"
+      - name: limit
+        type: integer
+        required: false
+        expose: tool
+        default: 50
+
+  - name: handler_onedrive_get_item
+    description: "OneDrive 파일/폴더 정보 조회"
+    service: OneDriveService.get_item
+    params:
+      - name: file_path
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+
+  - name: handler_onedrive_read_file
+    description: "OneDrive 파일 내용 읽기"
+    service: OneDriveService.read_file
+    params:
+      - name: file_path
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: as_text
+        type: boolean
+        required: false
+        expose: tool
+        default: true
+        description: "True면 텍스트로, False면 바이너리 base64로"
+
+  - name: handler_onedrive_write_file
+    description: "OneDrive 파일 쓰기/업로드"
+    service: OneDriveService.write_file
+    params:
+      - name: file_path
+        type: string
+        required: true
+        expose: tool
+      - name: content
+        type: string
+        required: true
+        expose: tool
+        description: "파일 내용 (텍스트)"
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: content_type
+        type: string
+        required: false
+        expose: tool
+        default: "text/plain"
+      - name: overwrite
+        type: boolean
+        required: false
+        expose: tool
+        default: true
+
+  - name: handler_onedrive_delete_file
+    description: "OneDrive 파일/폴더 삭제"
+    service: OneDriveService.delete_file
+    params:
+      - name: file_path
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+
+  - name: handler_onedrive_create_folder
+    description: "OneDrive 폴더 생성"
+    service: OneDriveService.create_folder
+    params:
+      - name: folder_name
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: parent_path
+        type: string
+        required: false
+        expose: tool
+        description: "상위 폴더 경로 (없으면 루트)"
+
+  - name: handler_onedrive_copy_file
+    description: "OneDrive 파일 복사"
+    service: OneDriveService.copy_file
+    params:
+      - name: source_path
+        type: string
+        required: true
+        expose: tool
+      - name: dest_path
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: new_name
+        type: string
+        required: false
+        expose: tool
+
+  - name: handler_onedrive_move_file
+    description: "OneDrive 파일 이동"
+    service: OneDriveService.move_file
+    params:
+      - name: source_path
+        type: string
+        required: true
+        expose: tool
+      - name: dest_path
+        type: string
+        required: true
+        expose: tool
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+      - name: new_name
+        type: string
+        required: false
+        expose: tool

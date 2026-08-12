@@ -12,12 +12,28 @@ mcp_onedrive/
 ├── graph_onedrive_client.py # Graph API 클라이언트
 ├── onedrive_service.py      # 서비스 레이어 (Facade 패턴)
 ├── mcp_server/              # MCP 서버
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── handlers.py          # 도구 계약 로드 + 핸들러 (두 트랜스포트의 유일한 원본)
+│   ├── server_stdio.py      # stdio 트랜스포트 (얇음)
+│   └── server_stream.py     # Streamable HTTP 트랜스포트 (포트 5004, 얇음)
 ├── tests/                   # 테스트
 │   ├── __init__.py
 │   └── test_onedrive_service.py
 └── README.md
 ```
+
+## 도구 계약 (param_spec)
+
+도구 이름·설명·파라미터·필수여부·기본값은 **`spec/param_spec/onedrive.yaml` 한 곳**에만
+적는다. `inputSchema` 와 서비스 호출 인자는 기동 시 `mcp_common.param_spec` 이 여기서
+파생시킨다 — 코드 생성물도, 서버 파일 안의 도구 정의 리터럴도 없다.
+
+- 파라미터를 늘리거나 필수/선택·기본값을 바꾸려면 YAML 만 고치고 서버를 재기동한다.
+- `boolean` 은 YAML 에 boolean 으로 적는다. 노출 스키마의 `enabled`/`disabled` 문자열
+  enum 변환과 역변환은 `mcp_common/schema_normalize.py` 가 담당한다
+  (`as_text`, `overwrite`).
+- `user_email` 은 스키마상 선택이며, 실제 값은 `mcp_common.user_resolver` 정책으로
+  정해진다(명시값 → `MS365_DEFAULT_USER_EMAIL` → auth.db, 없으면 오류).
 
 ## 기능
 

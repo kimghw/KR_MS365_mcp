@@ -48,18 +48,29 @@ API/툴의 파라미터를 코드·스키마·핸들러에서 각각 파싱하�
 
 | 파일 | 성격 | 규칙 |
 |------|------|------|
-| `mcp_editor/<프로필>/param_spec.yaml` | **손으로 쓰는 원본** | 사람이 확정한 파라미터 계약. 자동 생성기가 덮어쓰지 않는다. |
-| `mcp_editor/<프로필>/tool_definition_templates.yaml` | 자동 생성 | AST 시그니처 추출 결과 + param_spec 적용 결과. 직접 편집 금지. |
+| `spec/param_spec/<도메인>.yaml` | **손으로 쓰는 유일한 원본** | 도구 계약 그 자체. 기동 시 `mcp_common.param_spec` 가 읽어 `inputSchema`·기본값·호출 인자를 파생시킨다. |
 
-- `param_spec.yaml` 이 없는 프로필은 기존 동작(AST 자동 추출) 그대로 둔다. 필요해지는
-  시점에만 만든다.
+- **코드 생성은 폐지됐다**(2026-08-12 사용자 확정). jinja 템플릿·`generate_universal_server.py`·
+  `tool_definition_templates.yaml` 은 없다. 미리 구워 둔 산출물이 없으므로 spec 과 런타임이
+  어긋날 수 없다.
+- 도메인 서버는 `mcp_<도메인>/mcp_server/` 의 3파일이다 — `handlers.py`(배선만),
+  `server_stdio.py`, `server_stream.py`. **도구 정의를 이 파일들에 적지 않는다.**
+- 형식의 정본은 [mcp_common/param_spec.py](mcp_common/param_spec.py) 모듈 docstring 이다.
+  필드를 늘릴 때는 거기와 이 문서를 함께 고친다.
 - 파라미터 이야기를 사양서에 적을 때도 **같은 열 이름**의 표로 적는다(두 벌 어휘 금지).
 
 ## 리스트 한 줄의 필드
 
 ```yaml
+server:
+  name: calendar
+  version: "1.0.0"
+  port: 5002
+
 tools:
   - name: calendar_view            # MCP 도구 이름
+    description: 캘린더 일정 조회   # 필수 — 에이전트가 읽는 도구 설명
+    service: CalendarService.calendar_view   # 필수 — 이 도구가 래핑하는 서비스 함수
     params:
       - name: user_email           # 필수 — 서비스 함수 시그니처의 파라미터 이름
         type: string               # 필수 — string|integer|number|boolean|array|object
@@ -87,28 +98,47 @@ tools:
         description: 내부 조회 필드 지정
 ```
 
-- `expose` 의미 — `tool`: `inputSchema.properties` 에 노출 / `internal`:
-  `mcp_service_factors` 로 나가 서버가 값을 주입(`default` 필수) / `hidden`: 호출에
-  쓰지 않음(시그니처 기본값에 맡김).
-- `order` (선택, 정수): 에디터·스키마에서의 표시 순서.
+- `service` (필수, 도구 레벨): 이 도구가 래핑하는 서비스 함수(`클래스.메서드`,
+  예: `MailService.fetch_search`). **바인딩의 유일한 선언처다** — 도구 이름과 함수
+  이름은 다를 수 있고(1:N 도 가능), 어떤 함수를 부르는지 알려고 `handlers.py` 를
+  열게 만들지 않는다. 핸들러 배선이 이 선언과 다르면 위반이다. 없으면 기동 실패.
+- `expose` 의미 — `tool`: `inputSchema.properties` 에 노출 / `internal`: 노출하지 않고
+  서버가 값을 주입(`default` 또는 `fields` 필수) / `hidden`: 호출에 쓰지 않음(시그니처
+  기본값에 맡김).
+- `order` (선택, 정수): 스키마에서의 표시 순서.
+- `items` (선택): `type: array` 일 때 원소 스키마. JSON Schema 조각을 그대로 싣는다.
+  **적지 않으면 원소 계약이 사라진다** — 실제로 4개 도메인에서 유실된 적이 있다.
+- `fields` (선택): `type: object` 일 때 하위 필드. `expose: tool` 이면 중첩
+  `inputSchema.properties` 가 되고, `expose: internal` 이면 각 필드의 `default` 를 모아
+  주입할 dict 가 된다(핸들러가 그것으로 Pydantic 모델을 만든다). 어느 쪽이든 **필드별
+  설명이 spec 에 남는 것**이 요점이다 — 시그니처에서 복원할 수 없는 정보다.
+- `baseModel` (선택): 그 객체가 대응하는 Pydantic 모델 이름. 표식이며 스키마에 실린다.
+
+**YAML 주의**: 설명에 `: `(콜론+공백)나 `#` 가 들어가면 파싱이 깨진다. `description` 은
+항상 따옴표로 감싼다. `"[claude]"` 처럼 대괄호로 시작하는 기본값도 마찬가지다.
 
 ## 적용 규칙
 
-- **필수/선택 일관성**: `required: true` 인데 `default` 가 있으면 오류로 보고하고 고치기
-  전까지 생성하지 않는다.
+- **로드 시 검증이 기동을 막는다**: `required: true` 인데 `default` 가 있거나,
+  `expose: internal` 인데 주입값(`default`/`fields`)이 없거나, `type`·`expose` 값이
+  틀렸거나, `description` 이 비었거나, 이름이 중복되면 **서버가 뜨지 않는다.** 잘못된
+  스키마를 에이전트에게 노출한 채 도는 것보다 죽는 편이 안전하다.
 - **boolean 은 boolean 으로 적는다**. `enabled`/`disabled` 문자열 enum 변환은 리스트가
-  아니라 [mcp_editor/service_registry/schema_normalize.py](mcp_editor/service_registry/schema_normalize.py)
-  가 담당한다 — 리스트에 직접 enum 을 적어 두면 변환이 두 벌이 되어 드리프트한다.
+  아니라 [mcp_common/schema_normalize.py](mcp_common/schema_normalize.py) 가 담당한다 —
+  리스트에 직접 enum 을 적어 두면 변환이 두 벌이 되어 드리프트한다.
 - **정규화 진입점은 하나**: 스키마 형태 보정·`required` 정규화·boolean 변환은 전부
-  `schema_normalize.py` 를 쓴다. 새 파싱/정규화 함수를 만들지 않는다. 이 모듈을 고치면
-  런타임 사본인 `mcp_editor/jinja/python/_schema_helpers.jinja2` 도 같이 고친다.
-- **충돌 시 리스트가 이긴다**: AST 로 뽑은 시그니처와 `param_spec.yaml` 이 다르면
-  리스트를 따르되, 타입·필수 여부가 어긋나면 **조용히 덮지 말고 차이를 보고**한다.
-- **누락 처리**: 시그니처에 있는데 리스트에 없는 파라미터가 필수면 오류, 선택이면
-  `expose: hidden` 으로 간주한다. 리스트에만 있고 시그니처에 없으면 오류.
-- **추가·변경 순서**: 파라미터를 늘리거나 필수/선택을 바꿀 때는 `param_spec.yaml` 을 먼저
-  고치고 생성기를 돌린다. 생성물(`tool_definition_templates.yaml`, 서버 코드)을 손으로
-  고쳐 앞서 나가지 않는다.
+  `mcp_common/schema_normalize.py` 를 쓴다. 새 파싱/정규화 함수를 만들지 않는다.
+  들어온 인자의 boolean 보정은 [mcp_common/runtime.py](mcp_common/runtime.py) 의
+  `ToolRuntime.call()` 이 **검증 직전에 한 번** 한다 — 도메인 핸들러에 우회 코드를
+  만들지 않는다(실제로 우회가 생겨 걷어낸 적이 있다).
+- **충돌 시 spec 이 이긴다**: 서비스 함수 시그니처와 param_spec 이 다르면 param_spec 을
+  따르되, 타입·필수 여부가 어긋나면 **조용히 덮지 말고 차이를 보고**한다.
+- **누락 처리**: 시그니처에 있는데 spec 에 없는 파라미터가 필수면 오류, 선택이면
+  `expose: hidden` 으로 간주한다. spec 에만 있고 시그니처에 없으면 오류.
+- **추가·변경 순서**: 파라미터를 늘리거나 필수/선택을 바꿀 때는
+  `spec/param_spec/<도메인>.yaml` **만** 고친다. 핸들러의 `SPEC.call_args()` 가 그대로
+  반영한다. **기본값을 핸들러 코드에 적지 않는다** — 그것이 기본값 3중 관리로 되돌아가는
+  경로다.
 
 # 파일 크기 상한 — 1,200줄 초과 금지·900줄 이하 권고
 

@@ -14,19 +14,13 @@ dependencies = [
     "requests",
     "PyYAML",
     "mcp",
-    "fastapi",
+    # fastapi 는 REST 서버(server_rest.py) 폐지로 런타임 의존이 사라졌다 (2026-08-12).
     "starlette",
     "uvicorn",
 ]
 
 [project.optional-dependencies]
-# mcp_editor 웹 UI (tool_editor_web) — 배포 패키지에는 포함하지 않는다(아래 packages.find 주석 참조)
-editor = [
-    "flask",
-    "flask-cors",
-    "jinja2",
-    "psutil",
-]
+# editor extra 는 mcp_editor 삭제(2026-08-12)와 함께 제거됐다.
 # 첨부파일 변환기 (mcp_outlook / mcp_file_handler)
 converters = [
     "python-docx",
@@ -63,7 +57,7 @@ dev = [
 # 아래처럼 include/exclude 를 명시해 탐색 대상을 고정한다.
 #
 # namespaces = true 인 이유:
-#   mcp_outlook/ 과 mcp_editor/ 에는 __init__.py 가 없다(PEP 420 네임스페이스 패키지).
+#   mcp_outlook/ 에는 __init__.py 가 없다(PEP 420 네임스페이스 패키지).
 #   false 로 두면 두 패키지가 통째로 누락된다.
 [tool.setuptools.packages.find]
 where = ["."]
@@ -79,20 +73,9 @@ include = [
     "mcp_todo*",
     "mcp_time*",
     "mcp_file_handler*",
-    # mcp_editor 는 웹 에디터(개발 도구)라 배포에서 제외하지만, 아래 두 갈래만은 런타임 의존이라
-    # 예외적으로 포함한다.
-    #  1) mcp_editor/mcp_*/tool_definition_templates.yaml
-    #     — mcp_outlook/mcp_calendar/mcp_todo/mcp_file_handler 의 서버가 기동 시 읽는 SSOT.
-    #       특히 mcp_file_handler/mcp_server/tool_definitions.py 는 파일이 없으면
-    #       import 시점에 FileNotFoundError 를 던진다.
-    #  2) mcp_editor/service_registry
-    #     — mcp_calendar/calendar_service.py 의 @mcp_service 데코레이터 원본.
-    "mcp_editor.mcp_asset_management",
-    "mcp_editor.mcp_calendar",
-    "mcp_editor.mcp_file_handler",
-    "mcp_editor.mcp_outlook",
-    "mcp_editor.mcp_todo",
-    "mcp_editor.service_registry*",
+    # mcp_editor 는 2026-08-12 자로 삭제됐다(코드 생성 폐지). 도구 계약은
+    # spec/param_spec/<도메인>.yaml 이 갖고, @mcp_service 와 schema_normalize 는
+    # mcp_common 으로 이관했다. 자세한 건 spec/spec_도구정의.md 참조.
 ]
 exclude = [
     # 테스트
@@ -105,11 +88,6 @@ exclude = [
     "*.backup", "*.backup.*",
     "*.legacy_backup", "*.legacy_backup.*",
     "*__pycache__*",
-    # mcp_editor 웹 UI 본체 (flask/jinja2/psutil 필요, 런타임 비의존)
-    "mcp_editor.jinja*",
-    "mcp_editor.templates*",
-    "mcp_editor.static*",
-    "mcp_editor.tool_editor_core*",
 ]
 namespaces = true
 
@@ -119,12 +97,10 @@ namespaces = true
 py-modules = ["callback_server"]
 
 # 코드가 런타임에 읽는 데이터 파일 (wheel/sdist 에 동봉)
+# 주의: spec/param_spec/<도메인>.yaml 은 **런타임 필수**다(도구 계약의 유일한 원본).
+# 패키지 밖에 있어 wheel 에 동봉되지 않으므로, 설치본으로 돌릴 때는 환경변수
+# MCP_PARAM_SPEC_DIR 로 위치를 알려줘야 한다. 소스 트리에서 실행하면 자동 해석된다.
 [tool.setuptools.package-data]
-"mcp_editor.mcp_asset_management" = ["*.yaml"]
-"mcp_editor.mcp_calendar" = ["*.yaml"]
-"mcp_editor.mcp_file_handler" = ["*.yaml"]
-"mcp_editor.mcp_outlook" = ["*.yaml"]
-"mcp_editor.mcp_todo" = ["*.yaml"]
 "mcp_outlook" = ["graph_api_schemas/*.json"]
 "mcp_onenote" = ["*.yaml"]
 
@@ -134,10 +110,6 @@ py-modules = ["callback_server"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = [
-    "mcp_editor/test",
-    # 스키마 SSOT ↔ Jinja 헬퍼 드리프트 가드. 여기 없으면 일반 pytest 실행에서
-    # 수집되지 않아 두 구현이 조용히 갈라진다.
-    "mcp_editor/service_registry",
     "mcp_outlook/tests",
     "mcp_onedrive/tests",
     "mcp_onenote/tests",
@@ -171,8 +143,6 @@ extend-exclude = [
     "venv",
     "output",
     "downloads",
-    "mcp_editor/jinja/backup",
-    "mcp_editor/templates/backup",
 ]
 
 [tool.ruff.lint]

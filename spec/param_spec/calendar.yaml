@@ -1,0 +1,242 @@
+# Calendar MCP — 도구 계약의 단일 원본.
+#
+# 이 파일이 곧 API 사양이다. inputSchema·기본값·필수여부는 기동 시
+# mcp_common.param_spec 가 여기서 파생시킨다 (미리 구워 둔 산출물 없음).
+# 형식 설명: mcp_common/param_spec.py 모듈 docstring
+# 사양서: spec/spec_도구정의.md
+#
+# 주의
+#  - boolean 은 boolean 으로 적는다. enabled/disabled 문자열 enum 변환은
+#    mcp_common/schema_normalize.py 가 담당한다 (CLAUDE.md 규칙).
+#  - `targetParam` 은 구 tool_definition_templates.yaml 의 property 내 targetParam 을
+#    그대로 이관한 것이다. calendar 는 7개 도구 전부 도구 파라미터 이름과 서비스 인자
+#    이름이 같다(항등 매핑).
+#  - user_email 은 스키마상 선택이지만, 핸들러가 mcp_common.user_resolver 정책으로
+#    해석한다(명시값 → 환경변수 → auth.db, 끝내 없으면 ToolExecutionError).
+#    구 tool_definition_templates.yaml 에는 "재생성 시 다시 필수화되지 않도록
+#    is_required: false" 라는 방어 주석이 도구마다 붙어 있었다. 재생성이 사라졌으므로
+#    아래 `required: false` 가 그 의도를 그대로 담은 유일한 원본이다.
+#  - 구 YAML 의 `mcp_service_factors` 는 7개 도구 모두 비어 있었다({}). 서버가 주입하던
+#    값이 없으므로 `expose: internal` 파라미터도 없다.
+#  - 서비스 시그니처에는 있으나 도구로 노출하지 않는 파라미터(select_params,
+#    filter_params 등)는 여기 적지 않는다 — 서비스 함수의 기본값에 맡긴다
+#    (CLAUDE.md: 리스트에 없는 선택 파라미터는 expose: hidden 으로 간주).
+
+server:
+  name: calendar
+  version: "1.0.0"
+  port: 5002
+  description: 캘린더 일정 조회·생성·수정·삭제 및 가용성(Free/Busy) 조회. Azure OAuth 인증 필요.
+
+tools:
+  # 시그니처의 select_params/top/orderby 는 노출하지 않는다 (구 스키마와 동일).
+  - name: calendar_view
+    description: "지정된 기간의 캘린더 일정을 조회합니다. 반복 일정의 개별 인스턴스도 포함되어 실제 일정을 정확히 파악할 수 있습니다."
+    service: CalendarService.calendar_view
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "조회할 사용자의 이메일 주소"
+      - name: start_datetime
+        type: string
+        required: true
+        expose: tool
+        targetParam: start_datetime
+        description: "조회 시작 날짜/시간 (ISO 8601 형식, 예: 2024-01-01T00:00:00)"
+      - name: end_datetime
+        type: string
+        required: true
+        expose: tool
+        targetParam: end_datetime
+        description: "조회 종료 날짜/시간 (ISO 8601 형식, 예: 2024-01-31T23:59:59)"
+
+  # 시그니처의 select_params 는 노출하지 않는다.
+  - name: get_event
+    description: "특정 이벤트의 상세 정보를 조회합니다. 이벤트 ID를 알고 있을 때 사용합니다."
+    service: CalendarService.get_event
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "사용자 이메일 주소"
+      - name: event_id
+        type: string
+        required: true
+        expose: tool
+        targetParam: event_id
+        description: "조회할 이벤트의 ID"
+
+  - name: create_event
+    description: "새로운 캘린더 이벤트를 생성합니다. 제목, 시작/종료 시간은 필수입니다."
+    service: CalendarService.create_event
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "이벤트를 생성할 사용자 이메일"
+      - name: subject
+        type: string
+        required: true
+        expose: tool
+        targetParam: subject
+        description: "이벤트 제목"
+      - name: start
+        type: string
+        required: true
+        expose: tool
+        targetParam: start
+        description: "시작 날짜/시간 (ISO 8601 형식)"
+      - name: end
+        type: string
+        required: true
+        expose: tool
+        targetParam: end
+        description: "종료 날짜/시간 (ISO 8601 형식)"
+      - name: body
+        type: string
+        required: false
+        expose: tool
+        targetParam: body
+        description: "이벤트 본문/설명"
+      - name: location
+        type: string
+        required: false
+        expose: tool
+        targetParam: location
+        description: "장소"
+
+  # 시그니처의 filter_params/select_params 는 노출하지 않는다.
+  - name: list_events
+    description: "캘린더 이벤트 목록을 조회합니다. 기간 제한 없이 최근 이벤트를 정렬하여 가져올 때 사용합니다."
+    service: CalendarService.list_events
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "조회할 사용자의 이메일 주소"
+      - name: top
+        type: integer
+        required: false
+        expose: tool
+        default: 50
+        targetParam: top
+        description: "최대 결과 수"
+      - name: orderby
+        type: string
+        required: false
+        expose: tool
+        targetParam: orderby
+        description: "정렬 순서 (예: start/dateTime desc)"
+
+  - name: update_event
+    description: "기존 캘린더 이벤트를 수정합니다. 이벤트 ID는 필수이며 수정할 필드만 전달합니다."
+    service: CalendarService.update_event
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "사용자 이메일 주소"
+      - name: event_id
+        type: string
+        required: true
+        expose: tool
+        targetParam: event_id
+        description: "수정할 이벤트의 ID"
+      - name: subject
+        type: string
+        required: false
+        expose: tool
+        targetParam: subject
+        description: "이벤트 제목 (수정할 경우)"
+      - name: start
+        type: string
+        required: false
+        expose: tool
+        targetParam: start
+        description: "시작 날짜/시간 (ISO 8601 형식, 수정할 경우)"
+      - name: end
+        type: string
+        required: false
+        expose: tool
+        targetParam: end
+        description: "종료 날짜/시간 (ISO 8601 형식, 수정할 경우)"
+      - name: body
+        type: string
+        required: false
+        expose: tool
+        targetParam: body
+        description: "이벤트 본문/설명 (수정할 경우)"
+      - name: location
+        type: string
+        required: false
+        expose: tool
+        targetParam: location
+        description: "장소 (수정할 경우)"
+
+  - name: get_schedule
+    description: "여러 사용자의 일정 가용성(Free/Busy)을 한 번에 조회합니다. 회의 시간 조율 시 사용합니다."
+    service: CalendarService.get_schedule
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "요청하는 사용자의 이메일 주소"
+      # 구 스키마에는 items({type: string}) 가 있었으나 param_spec 은 배열 원소 스키마를
+      # 표현하지 않는다(teams/todo 도 동일). 원소 형식은 아래 description 이 설명한다.
+      - name: schedules
+        type: array
+        required: true
+        expose: tool
+        targetParam: schedules
+        description: "가용성을 조회할 사용자 이메일 목록"
+        items:
+          type: string
+      - name: start_time
+        type: string
+        required: true
+        expose: tool
+        targetParam: start_time
+        description: "조회 시작 시간 (ISO 8601 형식, 예: 2024-01-01T09:00:00)"
+      - name: end_time
+        type: string
+        required: true
+        expose: tool
+        targetParam: end_time
+        description: "조회 종료 시간 (ISO 8601 형식, 예: 2024-01-01T18:00:00)"
+      - name: availability_view_interval
+        type: integer
+        required: false
+        expose: tool
+        default: 30
+        targetParam: availability_view_interval
+        description: "가용성 뷰 간격 (분)"
+
+  - name: delete_event
+    description: "지정된 이벤트를 삭제합니다."
+    service: CalendarService.delete_event
+    params:
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        targetParam: user_email
+        description: "사용자 이메일 주소"
+      - name: event_id
+        type: string
+        required: true
+        expose: tool
+        targetParam: event_id
+        description: "삭제할 이벤트의 ID"

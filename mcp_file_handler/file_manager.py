@@ -25,16 +25,6 @@ from .metadata.manager import MetadataManager
 from .onedrive.processor import OneDriveProcessor
 from .config.settings import Settings
 
-# mcp_service decorator is only needed for registry scanning, not runtime
-try:
-    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
-except ImportError:
-    # Define a no-op decorator for runtime when mcp_editor is not available
-    def mcp_service(**kwargs):
-        def decorator(func):
-            return func
-        return decorator
-
 logger = setup_logger('file_manager')
 
 # 로컬 경로가 아니라 원격 참조로 취급할 접두사 (경로 검증 대상 아님)
@@ -123,16 +113,6 @@ class FileManager:
             return file_url
         return str(resolve_safe_path(file_url, must_exist=False))
 
-    @mcp_service(
-        tool_name="convert_file_to_text",
-        server_name="file_handler",
-        service_name="process",
-        category="file_conversion",
-        tags=["file", "conversion", "text-extraction"],
-        priority=10,
-        description="Process file or URL for text extraction with support for PDF, DOCX, HWP, Excel, Images, and OneDrive URLs",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def process(self, input_path: str, **kwargs) -> Dict[str, Any]:
         """Process file or URL for text extraction.
 
@@ -325,16 +305,6 @@ class FileManager:
 
         return result
 
-    @mcp_service(
-        tool_name="process_directory",
-        server_name="file_handler",
-        service_name="process_directory",
-        category="file_conversion",
-        tags=["directory", "batch", "conversion"],
-        priority=8,
-        description="Process all files in a directory with optional recursive scanning",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def process_directory(self, directory_path: str, **kwargs) -> List[Dict[str, Any]]:
         """Process all files in a directory.
 
@@ -391,16 +361,6 @@ class FileManager:
 
         return results
 
-    @mcp_service(
-        tool_name="save_file_metadata",
-        server_name="file_handler",
-        service_name="save_metadata",
-        category="metadata",
-        tags=["metadata", "storage", "keywords"],
-        priority=5,
-        description="Save metadata for a processed file with keywords and additional information",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def save_metadata(self, file_url: str, keywords: List[str],
                       additional_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Save metadata for a file.
@@ -423,16 +383,6 @@ class FileManager:
             logger.error(f"Failed to save metadata: {e}")
             return False
 
-    @mcp_service(
-        tool_name="search_metadata",
-        server_name="file_handler",
-        service_name="search_metadata",
-        category="metadata",
-        tags=["metadata", "search", "query"],
-        priority=5,
-        description="Search file metadata by various criteria (keywords, date, file type, etc.)",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def search_metadata(self, **search_criteria) -> List[Dict[str, Any]]:
         """Search metadata.
 
@@ -446,16 +396,6 @@ class FileManager:
         # 반환하며, 실제 DB 예외는 상위 런타임에서 isError 로 승격되도록 전파한다.
         return self.metadata_manager.search(**search_criteria)
 
-    @mcp_service(
-        tool_name="convert_onedrive_to_text",
-        server_name="file_handler",
-        service_name="process_onedrive",
-        category="file_conversion",
-        tags=["onedrive", "cloud", "conversion"],
-        priority=9,
-        description="Convert OneDrive file or folder to text",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def process_onedrive(self, url: str, **kwargs) -> Dict[str, Any]:
         """Process OneDrive URL for text extraction.
 
@@ -468,16 +408,6 @@ class FileManager:
         """
         return self._process_onedrive_url(url, **kwargs)
 
-    @mcp_service(
-        tool_name="get_file_metadata",
-        server_name="file_handler",
-        service_name="get_metadata",
-        category="metadata",
-        tags=["metadata", "retrieval"],
-        priority=5,
-        description="Get metadata for a specific file by URL",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def get_metadata(self, file_url: str) -> Optional[Dict[str, Any]]:
         """Get metadata for a file.
 
@@ -494,16 +424,6 @@ class FileManager:
         # 미존재는 None(정상 "결과 없음"), 실제 DB 예외는 실패로 전파한다.
         return self.metadata_manager.get(file_url)
 
-    @mcp_service(
-        tool_name="delete_file_metadata",
-        server_name="file_handler",
-        service_name="delete_metadata",
-        category="metadata",
-        tags=["metadata", "deletion"],
-        priority=3,
-        description="Delete metadata for a specific file",
-        related_objects=["mcp_file_handler.file_manager.FileManager"]
-    )
     def delete_metadata(self, file_url: str) -> bool:
         """Delete metadata for a file.
 

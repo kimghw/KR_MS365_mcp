@@ -21,23 +21,9 @@ from .calendar_types import (
 
 logger = logging.getLogger(__name__)
 
-# mcp_service decorator 는 registry 스캔용 메타데이터일 뿐 런타임 동작에는 영향이 없다.
-# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이며,
-# 임포트에 실패하면(에디터 미배포 등) no-op 으로 대체하되 반드시 경고를 남긴다.
-try:
-    from mcp_editor.service_registry.python.decorator import mcp_service
-except Exception as _decorator_import_error:  # pragma: no cover - 환경 의존
-    logger.warning(
-        "mcp_editor.service_registry.python.decorator import 실패 (%s) — "
-        "mcp_service 를 no-op 으로 대체합니다. 서비스 메타데이터가 레지스트리에 등록되지 않습니다.",
-        _decorator_import_error,
-    )
-
-    def mcp_service(**kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
+# mcp_service 는 메타데이터 표식일 뿐 런타임 동작에는 영향이 없다.
+# 도구의 실제 계약은 spec/param_spec/calendar.yaml 이며 이 데코레이터의 인자가 아니다.
+from mcp_common.service_meta import mcp_service
 
 
 def _resolve_user_email(user_email: Optional[str]) -> str:

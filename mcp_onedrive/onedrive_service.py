@@ -4,36 +4,40 @@ OneDrive Service - GraphOneDriveClient Facade
 (mcp_outlook/outlook_service.py 구조 참조)
 """
 
+import logging
 from typing import Dict, Any, Optional, List
+
+from mcp_common.user_resolver import resolve_user_email
 
 from .graph_onedrive_client import GraphOneDriveClient
 from .onedrive_types import (
     ConflictBehavior,
 )
 
-# Default user email helper
+logger = logging.getLogger(__name__)
+
+
+# 기본 사용자 선택은 mcp_common.user_resolver 정책(SSOT)에 위임한다.
 def _get_default_user_email() -> Optional[str]:
     """
-    auth.db의 azure_user_info 테이블에서 첫 번째 user_email을 가져옴
+    기본 사용자 이메일 반환.
 
     Returns:
-        첫 번째 사용자 이메일 또는 None
+        결정된 사용자 이메일 또는 None
     """
-    try:
-        from session.auth_database import AuthDatabase
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception:
-        return None
+    return resolve_user_email()
 
-# mcp_service decorator is only needed for registry scanning, not runtime
+
+# mcp_service 데코레이터는 레지스트리 스캔용 메타데이터일 뿐 런타임에는 불필요하다.
+# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이다.
 try:
-    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
-except ImportError:
-    # Define a no-op decorator for runtime when mcp_editor is not available
+    from mcp_editor.service_registry.python.decorator import mcp_service
+except ImportError:  # mcp_editor 가 설치/배포되지 않은 환경
+    logger.warning(
+        "mcp_editor.service_registry.python.decorator.mcp_service 를 import 하지 못했습니다. "
+        "no-op 데코레이터로 대체합니다 (레지스트리 메타데이터가 수집되지 않습니다)."
+    )
+
     def mcp_service(**kwargs):
         def decorator(func):
             return func

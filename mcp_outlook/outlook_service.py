@@ -3,6 +3,7 @@ Mail Service - GraphMailClient Facade
 인자를 그대로 위임하고, 필요시 일부 값만 조정하는 서비스 레이어
 """
 
+import logging
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timedelta
 
@@ -12,11 +13,20 @@ from .outlook_types import (
     build_filter_query, build_select_query
 )
 
-# mcp_service decorator is only needed for registry scanning, not runtime
+logger = logging.getLogger(__name__)
+
+# mcp_service 데코레이터는 registry 스캐닝용이며 런타임 동작에는 필수가 아니다.
+# 실제 구현 위치: mcp_editor/service_registry/python/decorator.py
 try:
-    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
-except ImportError:
-    # Define a no-op decorator for runtime when mcp_editor is not available
+    from mcp_editor.service_registry.python.decorator import mcp_service
+except ImportError as _mcp_service_import_error:
+    # mcp_editor 가 없는 배포에서는 no-op 으로 폴백하되, 조용히 넘어가지 않고 경고를 남긴다.
+    logger.warning(
+        "mcp_editor.service_registry.python.decorator import 실패 (%s). "
+        "no-op mcp_service 데코레이터로 폴백합니다 — 서비스 메타데이터가 registry 에 등록되지 않습니다.",
+        _mcp_service_import_error,
+    )
+
     def mcp_service(**kwargs):
         def decorator(func):
             return func
@@ -98,9 +108,14 @@ class MailService:
         # 반환 형식 변환: value -> emails
         if "value" in result:
             result["emails"] = result.pop("value")
-            result["success"] = True
             result["user"] = user_email
             result["method"] = query_method.value
+            # 실제 결과 반영: 오류/인증필요 상태를 무조건 success=True 로 덮어쓰지 않는다
+            # (status:"partial" 은 성공분이 있으므로 success 유지 — is_failure 오판 방지)
+            result["success"] = (
+                result.get("status") not in ("error", "failed", "auth_required")
+                and not result.get("error")
+            )
 
         return result
 

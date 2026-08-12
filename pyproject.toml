@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kr-ms365-mcp"
 version = "0.1.0"
@@ -16,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# mcp_editor 웹 UI (tool_editor_web)
+# mcp_editor 웹 UI (tool_editor_web) — 배포 패키지에는 포함하지 않는다(아래 packages.find 주석 참조)
 editor = [
     "flask",
     "flask-cors",
@@ -32,20 +36,163 @@ converters = [
     "olefile",
     "Pillow",
     "pytesseract",
+    # 아래 4개는 코드에서 실제로 import 하지만 기존 목록에 누락돼 있었다.
+    "pdfplumber",   # mcp_file_handler, mcp_outlook
+    "pdf2image",    # mcp_file_handler
+    "pyhwp",        # mcp_file_handler (HWP 변환)
+    "pyhwpx",       # mcp_outlook (HWP 변환)
+]
+# mcp_onenote/onenote_agent.py 의 요약 기능. try/except ImportError 로 감싸져 있어 선택 사항이다.
+agent = [
+    "claude-code-sdk",
 ]
 dev = [
     "pytest",
+    # 다수 테스트가 @pytest.mark.asyncio 를 쓴다. --strict-markers 와 함께면
+    # 이 패키지가 없을 때 수집 단계에서 "unknown marker asyncio" 로 실패한다.
+    "pytest-asyncio",
     "ruff",
     "black",
+]
+
+# ---------------------------------------------------------------------------
+# 패키지 탐색
+# ---------------------------------------------------------------------------
+# flat-layout(프로젝트 루트에 top-level 패키지가 여러 개) 이므로 setuptools 자동 탐색이
+# "Multiple top-level packages discovered in a flat-layout" 오류로 중단된다.
+# 아래처럼 include/exclude 를 명시해 탐색 대상을 고정한다.
+#
+# namespaces = true 인 이유:
+#   mcp_outlook/ 과 mcp_editor/ 에는 __init__.py 가 없다(PEP 420 네임스페이스 패키지).
+#   false 로 두면 두 패키지가 통째로 누락된다.
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "core*",
+    "session*",
+    "mcp_common*",
+    "mcp_outlook*",
+    "mcp_calendar*",
+    "mcp_teams*",
+    "mcp_onedrive*",
+    "mcp_onenote*",
+    "mcp_todo*",
+    "mcp_time*",
+    "mcp_file_handler*",
+    # mcp_editor 는 웹 에디터(개발 도구)라 배포에서 제외하지만, 아래 두 갈래만은 런타임 의존이라
+    # 예외적으로 포함한다.
+    #  1) mcp_editor/mcp_*/tool_definition_templates.yaml
+    #     — mcp_outlook/mcp_calendar/mcp_todo/mcp_file_handler 의 서버가 기동 시 읽는 SSOT.
+    #       특히 mcp_file_handler/mcp_server/tool_definitions.py 는 파일이 없으면
+    #       import 시점에 FileNotFoundError 를 던진다.
+    #  2) mcp_editor/service_registry
+    #     — mcp_calendar/calendar_service.py 의 @mcp_service 데코레이터 원본.
+    "mcp_editor.mcp_asset_management",
+    "mcp_editor.mcp_calendar",
+    "mcp_editor.mcp_file_handler",
+    "mcp_editor.mcp_outlook",
+    "mcp_editor.mcp_todo",
+    "mcp_editor.service_registry*",
+]
+exclude = [
+    # 테스트
+    "tests*", "test*",
+    "*.tests", "*.tests.*",
+    "*.test", "*.test.*",
+    # 문서 / 산출물 / 백업
+    "docs*", "*.docs", "*.docs.*",
+    "output*", "downloads*", "database*", "cloudflare*", "venv*",
+    "*.backup", "*.backup.*",
+    "*.legacy_backup", "*.legacy_backup.*",
+    "*__pycache__*",
+    # mcp_editor 웹 UI 본체 (flask/jinja2/psutil 필요, 런타임 비의존)
+    "mcp_editor.jinja*",
+    "mcp_editor.templates*",
+    "mcp_editor.static*",
+    "mcp_editor.tool_editor_core*",
+]
+namespaces = true
+
+# session/auth_manager.py 가 `from callback_server import CallbackServer` 로 참조하는
+# 루트 단일 모듈. 패키지가 아니므로 py-modules 로 따로 선언해야 설치본에 들어간다.
+[tool.setuptools]
+py-modules = ["callback_server"]
+
+# 코드가 런타임에 읽는 데이터 파일 (wheel/sdist 에 동봉)
+[tool.setuptools.package-data]
+"mcp_editor.mcp_asset_management" = ["*.yaml"]
+"mcp_editor.mcp_calendar" = ["*.yaml"]
+"mcp_editor.mcp_file_handler" = ["*.yaml"]
+"mcp_editor.mcp_outlook" = ["*.yaml"]
+"mcp_editor.mcp_todo" = ["*.yaml"]
+"mcp_outlook" = ["graph_api_schemas/*.json"]
+"mcp_onenote" = ["*.yaml"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = [
+    "mcp_editor/test",
+    # 스키마 SSOT ↔ Jinja 헬퍼 드리프트 가드. 여기 없으면 일반 pytest 실행에서
+    # 수집되지 않아 두 구현이 조용히 갈라진다.
+    "mcp_editor/service_registry",
+    "mcp_outlook/tests",
+    "mcp_onedrive/tests",
+    "mcp_onenote/tests",
+    "mcp_teams/tests",
+    "mcp_file_handler/tests",
+]
+addopts = "-ra --strict-markers"
+# @pytest.mark.asyncio 를 매 테스트에 붙이지 않아도 코루틴 테스트가 실행되도록.
+asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Windows 인코딩 대응
+#  - 소스/리포트 파일은 UTF-8 로 고정한다.
+#  - 콘솔(stdout/stderr) 인코딩은 pytest 설정으로 바꿀 수 없어서
+#    루트 conftest.py 에서 sys.stdout.reconfigure(encoding="utf-8") 로 처리한다.
+#    (기본 cp949/cp1252 콘솔에서 테스트가 한글을 print 하면 UnicodeEncodeError 로 죽는다.)
+#  - 위 conftest.py 없이 실행할 때는 PYTHONUTF8=1 환경변수를 쓸 것.
+#  (pytest 는 `encoding` 옵션을 모른다 — 넣으면 매 실행 경고가 뜨므로 두지 않는다.)
+
+filterwarnings = [
+    "default",
+    "ignore::DeprecationWarning",
 ]
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = [
+    "venv",
+    "output",
+    "downloads",
+    "mcp_editor/jinja/backup",
+    "mcp_editor/templates/backup",
+]
 
 [tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort (import 정렬)
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
 # E402: sys.path 수정 후 import하는 패턴이 필요한 경우 허용
-ignore = ["E402"]
+# E501: line-length 는 formatter 에 맡긴다
+# B008: FastAPI/Depends 스타일의 기본 인자 호출 허용
+ignore = ["E402", "E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# 테스트는 sys.path 조작 + 미사용 import 가 흔하다
+"**/test/**" = ["E402", "F401"]
+"**/tests/**" = ["E402", "F401"]
 
 [tool.black]
 line-length = 120

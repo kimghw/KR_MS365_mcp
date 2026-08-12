@@ -3,6 +3,7 @@ Calendar Service - GraphCalendarClient Facade
 인자를 그대로 위임하고, 필요시 일부 값만 조정하는 서비스 레이어
 """
 
+import logging
 from typing import Dict, Any, Optional, List, Union
 
 from .graph_calendar_client import GraphCalendarClient
@@ -18,11 +19,20 @@ from .calendar_types import (
     build_event_select_query,
 )
 
-# mcp_service decorator is only needed for registry scanning, not runtime
+logger = logging.getLogger(__name__)
+
+# mcp_service decorator 는 registry 스캔용 메타데이터일 뿐 런타임 동작에는 영향이 없다.
+# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이며,
+# 임포트에 실패하면(에디터 미배포 등) no-op 으로 대체하되 반드시 경고를 남긴다.
 try:
-    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
-except ImportError:
-    # Define a no-op decorator for runtime when mcp_editor is not available
+    from mcp_editor.service_registry.python.decorator import mcp_service
+except Exception as _decorator_import_error:  # pragma: no cover - 환경 의존
+    logger.warning(
+        "mcp_editor.service_registry.python.decorator import 실패 (%s) — "
+        "mcp_service 를 no-op 으로 대체합니다. 서비스 메타데이터가 레지스트리에 등록되지 않습니다.",
+        _decorator_import_error,
+    )
+
     def mcp_service(**kwargs):
         def decorator(func):
             return func
@@ -30,24 +40,16 @@ except ImportError:
         return decorator
 
 
-def get_default_user_email() -> Optional[str]:
+def _resolve_user_email(user_email: Optional[str]) -> str:
     """
-    auth.db에서 첫 번째 사용자 이메일 조회
+    사용자 이메일 결정 (mcp_common.user_resolver 단일 정책).
 
-    user_email이 제공되지 않은 경우 기본값으로 사용
-
-    Returns:
-        첫 번째 사용자 이메일 또는 None
+    명시값 > MS365_DEFAULT_USER_EMAIL > auth.db 결정적 선택 순서이며,
+    인증된 사용자가 하나도 없으면 ToolExecutionError 를 던진다.
     """
-    try:
-        from session.auth_database import AuthDatabase
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-    except Exception:
-        pass
-    return None
+    from mcp_common.user_resolver import resolve_user_email
+
+    return resolve_user_email(user_email, required=True)
 
 
 class CalendarService:
@@ -114,11 +116,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         # 기본 정렬 순서
         if orderby is None:
@@ -176,11 +175,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         # 기본 정렬 순서
         if orderby is None:
@@ -235,11 +231,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         result = await self._client.get_event(
             user_email=user_email,
@@ -313,11 +306,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         # start/end 타입 변환
         start_dt = self._convert_to_datetime_timezone(start)
@@ -457,11 +447,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         # start/end 타입 변환 (None 허용)
         start_dt = self._convert_to_datetime_timezone(start) if start else None
@@ -533,11 +520,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         result = await self._client.delete_event(
             user_email=user_email,
@@ -589,11 +573,8 @@ class CalendarService:
         """
         self._ensure_initialized()
 
-        # user_email이 None인 경우 기본 사용자 이메일 조회
-        if not user_email:
-            user_email = get_default_user_email()
-            if not user_email:
-                return {"error": "No user_email provided and no default user found in database"}
+        # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
+        user_email = _resolve_user_email(user_email)
 
         # schedules가 None이면 빈 리스트로 초기화
         if schedules is None:

@@ -121,8 +121,8 @@ def get_server_dashboard():
             {
                 "profile": "outlook",
                 "server_name": "mcp_outlook",
-                "host": "0.0.0.0",
-                "port": 8091,
+                "host": "127.0.0.1",
+                "port": 5001,
                 "protocols": {
                     "rest": {"running": true, "pid": 12345},
                     "stdio": {"running": false, "pid": null},
@@ -180,7 +180,7 @@ def get_server_dashboard():
             profile_data = {
                 "profile": profile_name,
                 "server_name": server_name,
-                "host": profile_config.get("host", "0.0.0.0"),
+                "host": profile_config.get("host", "127.0.0.1"),
                 "port": profile_config.get("port", 8080),
                 "running": any_running,  # True if any protocol is running
                 "pids": running_pids,

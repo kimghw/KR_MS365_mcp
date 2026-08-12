@@ -38,11 +38,13 @@ class GraphTeamsClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 session.AuthManager 사용)
+            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
         """
         if token_provider is None:
-            from session import AuthManager
-            token_provider = AuthManager()
+            # AuthManager 를 새로 만들면 per-email refresh lock 이 인스턴스별로 갈려
+            # 무의미해진다. 프로세스 단일 인스턴스를 공유한다.
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._session: Optional[aiohttp.ClientSession] = None
         self._initialized = False

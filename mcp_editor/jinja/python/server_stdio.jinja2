@@ -6,6 +6,23 @@
 # All common imports and utilities are defined in the parent template
 # .env loading and stdout redirect are done in the parent template
 # BEFORE module imports to ensure env vars are available early.
+#
+# ------------------------------------------------------------
+# dispatch / 기본값 주입 / 입력 검증 / 오류 정규화 / 서비스 lifecycle 은
+# 직접 구현하지 않고 `mcp_common` 의 공통 구현에 위임한다 (SSOT).
+# 예전 버전이 모든 도메인 서버에 복제했던 결함:
+#   - tools/list 가 raw MCP_TOOLS 를 그대로 반환해 내부 메타데이터
+#     (mcp_service, mcp_service_factors, targetParam ...)를 클라이언트에 노출
+#   - 로컬 apply_schema_defaults 복사본 (스키마 required 를 검증하지 않음)
+#   - 서비스 close() 미호출
+#   - 초기화 실패 시 그대로 예외가 나거나 조용히 무시됨
+# ------------------------------------------------------------
+
+from mcp_common.errors import ToolExecutionError
+from mcp_common.runtime import ToolRuntime, ServiceLifecycle
+
+SERVER_NAME = "{{ server_name }}"
+SERVER_VERSION = "1.0.0"
 
 # Configure logging for STDIO (stderr to avoid interfering with stdout)
 import sys
@@ -15,6 +32,29 @@ logging.basicConfig(
     stream=sys.stderr
 )
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 공통 런타임 (기본값 주입 + 입력 검증 + 오류 정규화 + 서비스 lifecycle)
+# ============================================================
+
+TOOL_HANDLERS = {
+{%- for tool in tools %}
+    "{{ tool.name }}": handle_{{ tool.tool_name or tool.name }},
+{%- endfor %}
+}
+
+RUNTIME = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+LIFECYCLE = ServiceLifecycle(SERVER_NAME, [
+{%- for key, service_info in unique_services.items() %}
+    {{ service_info.instance }},
+{%- endfor %}
+])
+
+
+def coerce_boolean_enums(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """구형 클라이언트가 보낸 실제 bool 을 검증 전에 enabled/disabled 로 정규화."""
+    return coerce_boolean_enums_for_schema(RUNTIME.input_schema(tool_name), arguments)
 
 class StdioMCPServer:
     """MCP STDIO Protocol Server
@@ -89,91 +129,52 @@ class StdioMCPServer:
                 "tools": {}
             },
             "serverInfo": {
-                "name": "{{ server_name }}",
-                "version": "1.0.0"
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION
             }
         }
 
     async def handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/list request"""
-        return {"tools": MCP_TOOLS}
+        """Handle tools/list request
 
-    def apply_schema_defaults(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply default values from inputSchema to arguments if not provided."""
-        tool_config = get_tool_config(tool_name)
-        if not tool_config:
-            return arguments
-
-        input_schema = tool_config.get("inputSchema", {})
-        properties = input_schema.get("properties", {})
-
-        # Create a copy of arguments to avoid modifying the original
-        merged_args = dict(arguments) if arguments else {}
-
-        # Apply defaults for properties that have them and are not in arguments
-        for prop_name, prop_def in properties.items():
-            if prop_name not in merged_args and "default" in prop_def:
-                merged_args[prop_name] = prop_def["default"]
-                logger.debug(f"Applied default for {prop_name}: {prop_def['default']}")
-
-        return merged_args
+        MCP 스펙 필드(name/description/inputSchema)만 노출한다.
+        (mcp_service / mcp_service_factors / targetParam 같은 내부 메타데이터는
+        내보내지 않는다 — 예전에는 raw MCP_TOOLS 를 그대로 반환해서 전부 샜다)
+        """
+        return {
+            "tools": [
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "inputSchema": RUNTIME.input_schema(tool["name"]),
+                }
+                for tool in RUNTIME.tools
+            ]
+        }
 
     async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/call request"""
+        """Handle tools/call request
+
+        기본값 주입 / 입력 검증 / 핸들러 호출 / 오류 정규화는 ToolRuntime 이 담당한다.
+        도구 실행 실패는 JSON-RPC error 가 아니라 result.isError=True 로 표현한다
+        (MCP 스펙: 프로토콜 오류와 도구 실행 오류를 구분).
+        """
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
 
         if not tool_name:
             raise ValueError("Tool name is required")
 
-        # Apply default values from inputSchema
-        arguments = self.apply_schema_defaults(tool_name, arguments)
-
-        # Look up the handler function
-        handler_name = f"handle_{tool_name.replace('-', '_')}"
-        if handler_name not in globals():
-            raise ValueError(f"Unknown tool: {tool_name}")
-
         try:
-            # Call the tool handler
-            result = await globals()[handler_name](arguments)
+            blocks = await RUNTIME.call(tool_name, coerce_boolean_enums(tool_name, arguments or {}))
+        except ToolExecutionError as exc:
+            logger.error(f"Tool {tool_name} failed: {exc}")
+            return {
+                "content": [{"type": "text", "text": str(exc)}],
+                "isError": True,
+            }
 
-            # Check for auth_required response (login URL for LLM)
-            if isinstance(result, dict) and result.get("status") == "auth_required":
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False, indent=2)
-                        }
-                    ],
-                    "isError": True
-                }
-
-            # Format result for MCP
-            if isinstance(result, dict) and "content" in result:
-                return result
-            elif isinstance(result, str):
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": result
-                        }
-                    ]
-                }
-            else:
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False, indent=2)
-                        }
-                    ]
-                }
-        except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {e}")
-            raise
+        return {"content": blocks}
 
     async def handle_request(self, request: Dict[str, Any]):
         """Handle a single JSON-RPC request"""
@@ -232,12 +233,10 @@ class StdioMCPServer:
         """Main server loop"""
         self.running = True
 
-        # Initialize services before starting
-        {%- for key, service_info in unique_services.items() %}
-        if hasattr({{ service_info.instance }}, 'initialize'):
-            await {{ service_info.instance }}.initialize()
-            logger.info("{{ service_info.class_name }} initialized")
-        {%- endfor %}
+        # 서비스 초기화 (실패해도 서버는 떠 있고, 도구 호출 시 오류로 표면화된다)
+        await LIFECYCLE.startup()
+        if LIFECYCLE.errors:
+            logger.error(f"Service startup errors: {LIFECYCLE.errors}")
 
         logger.info(f"{{ server_title }} STDIO Server started")
         logger.info("Waiting for messages on stdin...")
@@ -265,6 +264,8 @@ class StdioMCPServer:
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
         finally:
+            # close() 누락 방지 — 종료 시 서비스 리소스를 반드시 정리한다
+            await LIFECYCLE.shutdown()
             logger.info("{{ server_title }} STDIO Server stopped")
 
 # Main entry point for STDIO protocol

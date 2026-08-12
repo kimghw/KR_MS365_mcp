@@ -123,10 +123,14 @@ Run script for {server_name} MCP server
 """
 import uvicorn
 
+from mcp_common.net import resolve_bind_host
+
 if __name__ == "__main__":
+    # 바인드 기본값은 loopback(127.0.0.1). 외부 노출은
+    # MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 명시적으로 옵트인해야 한다.
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
+        host=resolve_bind_host(server_name="{server_name}"),
         port={port},
         reload=True,
         log_level="info"
@@ -253,7 +257,9 @@ MCP_TOOLS: List[Dict[str, Any]] = [
             "tool_definitions_path": f"../mcp_{server_name}/mcp_server/tool_definitions.py",
             "backup_dir": "backups",
             "graph_types_files": [],
-            "host": "0.0.0.0",
+            # 바인드 기본값은 loopback. 외부 노출은 MCP_BIND_HOST +
+            # MCP_ALLOW_PUBLIC_BIND=1 로 옵트인한다 (mcp_common/net.py 가 SSOT).
+            "host": "127.0.0.1",
             "port": port + 10  # Web editor port offset
         }
 

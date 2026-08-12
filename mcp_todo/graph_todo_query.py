@@ -78,8 +78,10 @@ class GraphTodoQuery:
 
     def __init__(self, token_provider: Optional["TokenProviderProtocol"] = None):
         if token_provider is None:
-            from session.auth_manager import AuthManager
-            token_provider = AuthManager()
+            # AuthManager 를 새로 만들면 per-email refresh lock 이 인스턴스별로 갈려
+            # 무의미해진다. 프로세스 단일 인스턴스를 공유한다.
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._url_builder: Optional[GraphTodoUrlBuilder] = None
 
@@ -247,9 +249,22 @@ class GraphTodoQuery:
                 if item.get("wellknownListName") == "defaultList":
                     return {"status": "success", "list_id": item["id"]}
 
+        # 리스트 이름 불일치는 LLM 이 가장 흔히 틀리는 입력이다. 하드 실패로 올리지
+        # 않고 not_found 로 표시해, 상위 도구가 "사용 가능한 리스트 목록"과 함께
+        # soft(success:True, found:False) 로 안내하도록 한다.
         return {
-            "status": "error",
-            "error": f"Task list not found: {list_id_or_name!r}",
+            "status": "not_found",
+            "list_id": None,
+            "requested": list_id_or_name,
+            "available_lists": [
+                {
+                    "id": item.get("id"),
+                    "displayName": item.get("displayName"),
+                    "wellknownListName": item.get("wellknownListName"),
+                }
+                for item in items
+            ],
+            "message": f"Task list not found: {list_id_or_name!r}",
         }
 
     # ============================================================
@@ -393,7 +408,8 @@ class GraphTodoQuery:
         url = self._get_url_builder(user_email).task_url(list_id, task_id)
         body = self._build_update_body(params)
         if not body:
-            return {"status": "error", "error": "No fields to update"}
+            # 갱신할 필드가 없는 것은 실패가 아니라 no-op 이다.
+            return {"status": "success", "updated": False, "reason": "no_fields"}
         result = await self._patch(access_token, url, body)
         if result["status"] == "success":
             return {

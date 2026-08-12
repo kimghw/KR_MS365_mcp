@@ -23,7 +23,9 @@ grandparent_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, grandparent_dir)
 sys.path.insert(0, parent_dir)
 
-from auth import AuthManager, AuthDatabase
+# session/auth.py 는 auth_manager.py / auth_database.py 로 분리됐다.
+from session.auth_manager import AuthManager
+from session.auth_database import AuthDatabase
 
 
 def check_db_state(step_name: str, email: str = None):

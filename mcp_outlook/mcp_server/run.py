@@ -18,6 +18,9 @@ sys.path.insert(0, current_dir)  # For server module
 sys.path.insert(0, parent_dir)  # For mcp_outlook modules
 sys.path.insert(0, grandparent_dir)  # For root modules (session_manager)
 
+# 바인드 주소 정책 SSOT
+from mcp_common.net import resolve_bind_host
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,7 +67,14 @@ def main():
     print("=" * 60)
 
     # Run the server
-    uvicorn.run("server:app", host="0.0.0.0", port=3000, reload=True, log_level="info")
+    # 기본 바인드는 loopback. 외부 노출은 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND 옵트인.
+    uvicorn.run(
+        "server:app",
+        host=resolve_bind_host(server_name="outlook"),
+        port=3000,
+        reload=True,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

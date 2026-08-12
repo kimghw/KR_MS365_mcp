@@ -34,6 +34,7 @@ from ..tool_saver import save_tool_definitions
 from ..backup_utils import backup_file, cleanup_old_backups
 from ..schema_utils import prune_internal_properties
 from ..tool_mover import ToolMover
+from ..safe_paths import PathNotAllowedError, path_error_payload
 
 
 @tool_bp.route("/api/tools", methods=["GET"])
@@ -41,12 +42,32 @@ def get_tools():
     """API endpoint to get current tool definitions + internal args + signature defaults"""
     profile = request.args.get("profile")
     profile_conf = get_profile_config(profile)
-    paths = resolve_paths(profile_conf)
+    try:
+        paths = resolve_paths(profile_conf)
+    except PathNotAllowedError as e:
+        # editor_config.json 의 경로가 허용 루트 밖 (설정 주입/오염) -> 400 으로 명시
+        return jsonify(path_error_payload(e)), 400
 
     # 1. Load tool definitions (templates)
     tools = load_tool_definitions(paths)
-    if isinstance(tools, dict) and "error" in tools:
-        return jsonify(tools), 500
+    if isinstance(tools, dict):
+        if tools.get("no_definitions"):
+            # 편집용 정의 파일이 없는 프로필(teams/onedrive/onenote/time 등):
+            # 500 대신 빈 목록 + 안내 메시지를 돌려줘 UI 가 "편집 불가" 상태를 표시하게 한다.
+            actual_profile = profile or (list_profile_names()[0] if list_profile_names() else "default")
+            return jsonify(
+                {
+                    "tools": [],
+                    "internal_args": {},
+                    "signature_defaults": {},
+                    "profile": actual_profile,
+                    "file_mtimes": {},
+                    "editable": False,
+                    "message": tools.get("error", "편집 가능한 도구 정의가 없습니다."),
+                }
+            )
+        if "error" in tools:
+            return jsonify(tools), 500
 
     # 2. Extract internal_args and signature_defaults from mcp_service_factors
     # (단순화: 중간 JSON 파일 없이 tool_definition_templates.py에서 직접 추출)
@@ -94,6 +115,9 @@ def delete_tool(tool_index):
         # Load current tools
         tools = load_tool_definitions(paths)
         if isinstance(tools, dict) and "error" in tools:
+            if tools.get("no_definitions"):
+                # 편집용 정의 파일이 없는 프로필은 삭제할 대상 자체가 없다 -> 404
+                return jsonify(tools), 404
             return jsonify(tools), 500
 
         if tool_index >= len(tools) or tool_index < 0:

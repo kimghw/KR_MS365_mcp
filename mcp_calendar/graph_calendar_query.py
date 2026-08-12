@@ -202,9 +202,10 @@ class GraphCalendarQuery:
             token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
         """
         if token_provider is None:
-            # 하위 호환성: 기본 AuthManager 사용
-            from session.auth_manager import AuthManager
-            token_provider = AuthManager()
+            # 하위 호환성: 프로세스 공유 AuthManager 사용
+            # (인스턴스를 새로 만들면 per-email refresh lock 이 분리돼 무의미해진다)
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._url_builder: Optional[GraphCalendarUrlBuilder] = None
 

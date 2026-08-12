@@ -16,6 +16,22 @@ EDITOR_DIR = SCRIPT_DIR.parent                 # mcp_editor/
 PROJECT_ROOT = Path(os.environ.get("MCP_EDITOR_ROOT", EDITOR_DIR.parent))  # Connector_auth/
 EDITOR_CONFIG_PATH = EDITOR_DIR / "editor_config.json"
 
+# 스키마 정규화/boolean 변환의 단일 기준(SSOT).
+# jinja/ 는 패키지가 아니라 스크립트 디렉터리이므로 프로젝트 루트를 sys.path 에 올린다.
+_REPO_ROOT = str(EDITOR_DIR.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from mcp_editor.service_registry.schema_normalize import (  # noqa: E402
+    convert_bool_to_enabled,
+    convert_boolean_schema_to_enabled_disabled,
+    normalize_input_schema,
+    normalize_tool_list,
+)
+
+# 하위 호환 별칭: 이 파일에 있던 중복 구현을 대체한다.
+convert_boolean_to_enabled_disabled = convert_boolean_schema_to_enabled_disabled
+
 
 def load_editor_config() -> Dict[str, Any]:
     """Load editor_config.json"""
@@ -180,52 +196,9 @@ def to_python_repr(value: Any) -> str:
         return repr(value)
 
 
-def convert_boolean_to_enabled_disabled(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert boolean type properties to enabled/disabled enum for OpenAI compatibility.
-
-    OpenAI API does not support boolean type in function parameters.
-    This converts:
-        type: boolean, default: true  -> type: string, enum: ["enabled", "disabled"], default: "enabled"
-        type: boolean, default: false -> type: string, enum: ["enabled", "disabled"], default: "disabled"
-
-    Args:
-        schema: JSON Schema dict with properties
-
-    Returns:
-        Modified schema with boolean types converted to enabled/disabled enums
-    """
-    if not isinstance(schema, dict):
-        return schema
-
-    result = dict(schema)
-
-    # Process 'properties' if present
-    if 'properties' in result:
-        new_properties = {}
-        for prop_name, prop_def in result['properties'].items():
-            if isinstance(prop_def, dict) and prop_def.get('type') == 'boolean':
-                # Convert boolean to enabled/disabled enum
-                new_prop = dict(prop_def)
-                new_prop['type'] = 'string'
-                new_prop['enum'] = ['enabled', 'disabled']
-
-                # Convert default value
-                if 'default' in new_prop:
-                    new_prop['default'] = 'enabled' if new_prop['default'] else 'disabled'
-
-                # Update description to clarify the values
-                if 'description' in new_prop:
-                    new_prop['description'] = f"{new_prop['description']} (enabled=true, disabled=false)"
-
-                new_properties[prop_name] = new_prop
-            elif isinstance(prop_def, dict) and prop_def.get('type') == 'object':
-                # Recursively process nested objects
-                new_properties[prop_name] = convert_boolean_to_enabled_disabled(prop_def)
-            else:
-                new_properties[prop_name] = prop_def
-        result['properties'] = new_properties
-
-    return result
+# NOTE: boolean -> enabled/disabled 스키마 변환 구현은
+# mcp_editor/service_registry/schema_normalize.py 로 옮겼다(SSOT).
+# 위쪽에서 convert_boolean_to_enabled_disabled 별칭으로 import 한다.
 
 
 def convert_enabled_disabled_default(value: Any, param_type: str) -> str:
@@ -239,8 +212,8 @@ def convert_enabled_disabled_default(value: Any, param_type: str) -> str:
         Python code representation
     """
     if param_type == 'boolean' or isinstance(value, bool):
-        # Convert bool to enabled/disabled string
-        return repr('enabled' if value else 'disabled')
+        # bool -> "enabled"/"disabled" 문자열 (변환 규칙은 schema_normalize 가 SSOT)
+        return repr(convert_bool_to_enabled(value))
     return to_python_repr(value)
 
 
@@ -437,7 +410,35 @@ def extract_internal_args_from_tools(tools: List[Dict[str, Any]]) -> Dict[str, A
 
 
 def load_tool_definitions(tool_def_path: str) -> List[Dict[str, Any]]:
-    """Load tool definitions from Python module, JSON, or YAML file"""
+    """도구 정의를 로드하고 곧바로 정규화한다.
+
+    로더 경로가 여러 갈래(py / json / yaml / yaml companion)라 예전에는 어떤
+    경로로 들어오느냐에 따라 `inputSchema` 의 모양이 제각각이었다.
+    여기서 한 번에 정규화해서 이후 단계가 항상 같은 형태를 보게 한다:
+      - `inputSchema` 는 항상 {"type": "object", "properties": {...}}
+      - `required` 는 보존 (리스트로 정규화만)
+
+    주의: 여기서는 boolean -> enabled/disabled 변환을 **하지 않는다**
+    (convert_booleans=False). 변환은 prepare_context() 가 담당한다. 그쪽에서
+    원본 `type: boolean` 을 보고 어떤 파라미터에 convert_enabled_to_bool()
+    호출을 심을지(`boolean_params`) 결정하기 때문에, 여기서 미리 변환하면
+    그 탐지가 전부 실패한다.
+    """
+    tools = _load_tool_definitions_raw(tool_def_path)
+
+    # 로더가 리스트가 아닌 dict 전체를 돌려주는 경우(키가 없을 때)를 방어한다.
+    if isinstance(tools, dict):
+        tools = tools.get('tools') or tools.get('MCP_TOOLS') or []
+    if not isinstance(tools, list):
+        raise ValueError(
+            f"Tool definitions must be a list, got {type(tools).__name__}: {tool_def_path}"
+        )
+
+    return normalize_tool_list(tools, convert_booleans=False)
+
+
+def _load_tool_definitions_raw(tool_def_path: str) -> Any:
+    """Load tool definitions from Python module, JSON, or YAML file (정규화 전 원본)"""
     import yaml
     path = Path(tool_def_path)
 
@@ -822,14 +823,15 @@ def prepare_context(registry: Dict[str, Any], tools: List[Dict[str, Any]], serve
         call_params = {}
         boolean_params = []  # Track boolean params for conversion
 
-        # First, get the inputSchema to understand the mappings
-        input_schema = tool.get('inputSchema', {})
-        properties = input_schema.get('properties', {})
+        # First, get the inputSchema to understand the mappings.
+        # 항상 {"type": "object", "properties": {...}} 형태로 정규화한다(required 보존).
+        input_schema = normalize_input_schema(tool.get('inputSchema'))
+        properties = input_schema['properties']
 
-        # Convert boolean properties to enabled/disabled for OpenAI compatibility
-        converted_input_schema = convert_boolean_to_enabled_disabled(input_schema)
+        # Convert boolean properties to enabled/disabled for OpenAI compatibility.
+        # 변환 전 스키마(properties)에서 boolean 파라미터를 먼저 수집해야 한다.
+        converted_input_schema = convert_boolean_schema_to_enabled_disabled(input_schema)
         tool_with_internal['inputSchema'] = converted_input_schema
-        converted_properties = converted_input_schema.get('properties', {})
 
         # Create a mapping from inputSchema property name to targetParam (service method param name)
         param_mappings = {}
@@ -914,6 +916,11 @@ def prepare_context(registry: Dict[str, Any], tools: List[Dict[str, Any]], serve
                     class_name = schema_base_model or param_class_name or param_type
                     # Strip Optional[...] legacy wrappers if present
                     class_name = class_name.replace('Optional[', '').replace(']', '')
+                    # Dict[str, Any] 같은 제네릭 표기는 위 strip 을 거치면 'Dict[str, Any'
+                    # 처럼 깨진 식별자가 되어 생성 코드가 SyntaxError 로 죽는다.
+                    # 유효한 식별자가 아니면 dict 로 폴백한다 (생성 결과: dict(**data)).
+                    if not class_name.isidentifier():
+                        class_name = 'dict'
 
                     # Get the targetParam for this input param
                     target_param = param_mappings.get(input_param_name, param_name)
@@ -951,8 +958,9 @@ def prepare_context(registry: Dict[str, Any], tools: List[Dict[str, Any]], serve
 
         # Fallback: extract from inputSchema if no mcp_service parameters
         if not params:
-            input_schema = tool.get('inputSchema', {})
-            properties = input_schema.get('properties', {})
+            # 정규화된 스키마를 쓴다: properties 가 항상 존재하고 required 도 보존된다.
+            input_schema = normalize_input_schema(tool.get('inputSchema'))
+            properties = input_schema['properties']
             required = input_schema.get('required', [])
 
             for prop_name, prop_def in properties.items():
@@ -988,8 +996,13 @@ def prepare_context(registry: Dict[str, Any], tools: List[Dict[str, Any]], serve
                             sig_defaults_values = factor_info.get('value', {})
                             break
 
+                    # baseModel 이 'Dict[str, Any]' 같은 제네릭 표기면 생성 코드에서
+                    # 생성자로 쓸 수 없으므로 dict 로 폴백한다.
+                    fallback_class = base_model or 'dict'
+                    if not fallback_class.isidentifier():
+                        fallback_class = 'dict'
                     object_params[prop_name] = {
-                        'class_name': base_model or 'dict',
+                        'class_name': fallback_class,
                         'is_optional': not is_required,
                         'has_default': default is not None,
                         'default_json': to_python_repr(default) if default is not None else None,
@@ -1572,7 +1585,9 @@ def update_editor_config_for_merge(merged_name: str, source_profiles: List[str],
         "template_definitions_path": f"mcp_{merged_name}/tool_definition_templates.yaml",
         "tool_definitions_path": f"../mcp_{merged_name}/mcp_server/tool_definitions.py",
         "backup_dir": f"mcp_{merged_name}/backups",
-        "host": "0.0.0.0",
+        # 바인드 기본값은 loopback. 외부 노출은 MCP_BIND_HOST +
+        # MCP_ALLOW_PUBLIC_BIND=1 로 옵트인한다 (mcp_common/net.py 가 SSOT).
+        "host": "127.0.0.1",
         "port": port,
         "is_merged": True,
         "source_profiles": source_profiles,

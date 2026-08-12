@@ -144,6 +144,9 @@ class OneNoteService:
                 return {"success": False, "error": "get_summary action에는 page_id가 필요합니다."}
             return await self._reader.get_summary(user_email, page_id)
 
+        # ReadAction 이 추가됐는데 분기가 누락된 경우 — None 이 성공처럼 나가지 않도록 방어
+        return {"success": False, "error": f"처리되지 않은 action: {action}"}
+
     async def write_onenote(
         self,
         user_email: str,
@@ -184,6 +187,9 @@ class OneNoteService:
             if not notebook_id or not title:
                 return {"success": False, "error": "create_section action에는 notebook_id, title이 필요합니다."}
             return await self._writer.create_section(user_email, notebook_id, title)
+
+        # WriteAction 이 추가됐는데 분기가 누락된 경우 — None 이 성공처럼 나가지 않도록 방어
+        return {"success": False, "error": f"처리되지 않은 action: {action}"}
 
     async def delete_onenote(
         self,

@@ -36,25 +36,26 @@ sys.path.insert(0, parent_dir)  # For direct module imports
 from mcp_outlook.outlook_types import ExcludeParams, FilterParams, SelectParams
 from mcp_outlook.graph_mail_client import ProcessingMode, QueryMethod
 
-# Import AuthDatabase for default user_email lookup
-from session.auth_database import AuthDatabase
+# 공통 런타임 기반 (바인드 주소/사용자 선택/검증/오류 계약/lifecycle SSOT)
+from mcp_common.net import resolve_bind_host
+from mcp_common.user_resolver import resolve_user_email
+from mcp_common.errors import ToolExecutionError
+from mcp_common.runtime import (
+    ToolRuntime,
+    ServiceLifecycle,
+    build_health_payload,
+    health_status_code,
+)
+
+SERVER_NAME = "outlook"
 
 
-def get_default_user_email() -> Optional[str]:
-    """Get default user email from auth.db when not provided.
+def resolve_request_user(args: Dict[str, Any]) -> str:
+    """요청 인자의 user_email 우선, 없으면 공통 resolver 가 결정적으로 선택한다.
 
-    Returns the first user's email from azure_user_info table.
-    Used for authentication/token-related operations when user_email is not specified.
+    인증된 사용자가 하나도 없으면 ToolExecutionError 가 올라가 isError 응답이 된다.
     """
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        print(f"Failed to get default user email from auth.db: {e}")
-        return None
+    return resolve_user_email(args.get("user_email"), required=True)
 
 # Load tool definitions from YAML (Single Source of Truth)
 def _convert_boolean_schema_to_enabled_disabled(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -568,11 +569,7 @@ async def handle_mail_list_period(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     DatePeriodFilter_sig = args.get("DatePeriodFilter")
     DatePeriodFilter = DatePeriodFilter_sig if DatePeriodFilter_sig is not None else None
 
@@ -648,11 +645,7 @@ async def handle_mail_list_keyword(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     search_keywords = args["search_keywords"]
     top_sig = args.get("top")
     top = top_sig if top_sig is not None else 50
@@ -677,11 +670,7 @@ async def handle_mail_query_if_emaidID(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     message_ids = args["message_ids"]
 
     # ========================================
@@ -703,11 +692,7 @@ async def handle_mail_attachment_meta(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     message_ids = args["message_ids"]
 
     # ========================================
@@ -729,11 +714,7 @@ async def handle_mail_attachment_download(args: Dict[str, Any]) -> Dict[str, Any
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     message_attachment_ids = args["message_attachment_ids"]
     save_directory_sig = args.get("save_directory")
     save_directory = save_directory_sig if save_directory_sig is not None else 'downloads'
@@ -785,11 +766,7 @@ async def handle_mail_fetch_filter(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     filter_params_sig = args.get("filter_params")
     filter_params = filter_params_sig if filter_params_sig is not None else None
     exclude_params_sig = args.get("exclude_params")
@@ -833,11 +810,7 @@ async def handle_mail_fetch_search(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     search_term = args["search_term"]
     select_params_sig = args.get("select_params")
     select_params = select_params_sig if select_params_sig is not None else None
@@ -877,11 +850,7 @@ async def handle_mail_process_with_download(args: Dict[str, Any]) -> Dict[str, A
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     filter_params_sig = args.get("filter_params")
     filter_params = filter_params_sig if filter_params_sig is not None else None
     search_term_sig = args.get("search_term")
@@ -925,11 +894,7 @@ async def handle_mail_query_url(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     url = args["url"]
     filter_params_sig = args.get("filter_params")
     filter_params = filter_params_sig if filter_params_sig is not None else None
@@ -1034,17 +999,53 @@ async def handle_test_handler (args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 4: Internal 파라미터 추가
     # - LLM에 노출되지 않는 내부 고정값
     # ========================================
-    user_email = args.get("user_email")
-    if not user_email:
-        user_email = get_default_user_email()
-        if not user_email:
-            return {"status": "error", "error": "user_email not provided and no default user found in auth.db"}
+    user_email = resolve_request_user(args)
     call_args["user_email"] = user_email
 
     # ========================================
     # Step 5: 서비스 메서드 호출
     # ========================================
     return await mail_service.fetch_filter(**call_args)
+
+
+# ============================================================
+# Tool dispatch (공통 런타임으로 수렴)
+# ============================================================
+
+TOOL_HANDLERS = {
+    "mail_list_period": handle_mail_list_period,
+    "mail_list_keyword": handle_mail_list_keyword,
+    "mail_query_if_emaidID": handle_mail_query_if_emaidID,
+    "mail_attachment_meta": handle_mail_attachment_meta,
+    "mail_attachment_download": handle_mail_attachment_download,
+    "mail_fetch_filter": handle_mail_fetch_filter,
+    "mail_fetch_search": handle_mail_fetch_search,
+    "mail_process_with_download": handle_mail_process_with_download,
+    "mail_query_url": handle_mail_query_url,
+    "test_handler": handle_test_handler,
+}
+
+runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+lifecycle = ServiceLifecycle(SERVER_NAME, [mail_service])
+
+
+def coerce_boolean_enums(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    YAML boolean 파라미터는 OpenAI 호환을 위해 enabled/disabled 문자열 enum 으로 노출된다.
+    구형 클라이언트가 실제 bool 을 보내면 검증에 걸리므로 검증 전에 enum 표현으로 정규화한다.
+    """
+    schema = runtime.input_schema(tool_name) or {}
+    properties = schema.get("properties") or {}
+    coerced = dict(arguments or {})
+    for name, value in list(coerced.items()):
+        prop = properties.get(name)
+        if not isinstance(prop, dict) or not isinstance(value, bool):
+            continue
+        if prop.get("type") == "string" and prop.get("enum") == ["enabled", "disabled"]:
+            coerced[name] = convert_bool_to_enabled(value)
+    return coerced
+
+
 # ============================================================
 # REST API Protocol Handlers for MCP
 # ============================================================
@@ -1056,16 +1057,15 @@ app = FastAPI(title="Outlook MCP Server", version="1.0.0")
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on server startup"""
-    if hasattr(mail_service, 'initialize'):
-        await mail_service.initialize()
-        logger.info("MailService initialized")
+    """Initialize services on server startup (실패는 health 에 degraded 로 반영)"""
+    await lifecycle.startup()
     logger.info("Outlook MCP Server started")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on server shutdown"""
+    """Cleanup on server shutdown — 서비스 close() 호출 (기존에는 누락)"""
+    await lifecycle.shutdown()
     logger.info("Outlook MCP Server stopped")
 
 
@@ -1086,8 +1086,9 @@ async def mcp_request_root(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "server": "outlook"}
+    """Health check endpoint — 초기화 실패 시 degraded/503 (기존에는 항상 healthy)"""
+    payload = build_health_payload(SERVER_NAME, runtime, lifecycle, protocol="rest")
+    return JSONResponse(payload, status_code=health_status_code(payload))
 
 
 @app.post("/mcp/v1")
@@ -1155,11 +1156,11 @@ async def _handle_tools_list(data: dict):
     request_id = data.get('id')
 
     tools_list = []
-    for tool in MCP_TOOLS:
+    for tool in runtime.tools:
         tools_list.append({
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "inputSchema": tool.get("inputSchema", {})
+            "inputSchema": runtime.input_schema(tool["name"])
         })
 
     return JSONResponse(content={
@@ -1183,25 +1184,14 @@ async def _handle_tools_call(data: dict):
             content={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Tool name is required"}}
         )
 
-    arguments = apply_schema_defaults(tool_name, arguments)
-
-    handler_name = f"handle_{tool_name.replace('-', '_')}"
-    handler = globals().get(handler_name)
-    if not handler:
+    if tool_name not in TOOL_HANDLERS:
         return JSONResponse(
             content={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}}
         )
 
     try:
-        result = await handler(arguments)
-
-        if isinstance(result, dict) and "content" in result:
-            content = result["content"]
-        elif isinstance(result, str):
-            content = [{"type": "text", "text": result}]
-        else:
-            content = [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]
-
+        # 기본값 주입 / 입력 검증 / 오류 정규화는 ToolRuntime 이 담당
+        content = await runtime.call(tool_name, coerce_boolean_enums(tool_name, arguments or {}))
         return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": request_id,
@@ -1209,9 +1199,19 @@ async def _handle_tools_call(data: dict):
                 "content": content
             }
         })
+    except ToolExecutionError as e:
+        # MCP 계약: 도구 실행 실패는 result.isError=True 로 전달 (성공처럼 보이지 않게)
+        logger.error(f"Tool {tool_name} failed: {e}")
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": [{"type": "text", "text": str(e)}],
+                "isError": True
+            }
+        })
     except Exception as e:
         logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
-        # MCP 프로토콜: 에러도 HTTP 200으로 응답, JSON-RPC error로 전달
         return JSONResponse(
             content={"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": str(e)}}
         )
@@ -1231,27 +1231,6 @@ async def list_tools(request: Request):
     return await _handle_tools_list(data)
 
 
-def apply_schema_defaults(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply default values from inputSchema to arguments if not provided."""
-    tool_config = get_tool_config(tool_name)
-    if not tool_config:
-        return arguments
-
-    input_schema = tool_config.get("inputSchema", {})
-    properties = input_schema.get("properties", {})
-
-    # Create a copy of arguments to avoid modifying the original
-    merged_args = dict(arguments) if arguments else {}
-
-    # Apply defaults for properties that have them and are not in arguments
-    for prop_name, prop_def in properties.items():
-        if prop_name not in merged_args and "default" in prop_def:
-            merged_args[prop_name] = prop_def["default"]
-            logger.debug(f"Applied default for {prop_name}: {prop_def['default']}")
-
-    return merged_args
-
-
 @app.post("/mcp/v1/tools/call")
 async def call_tool(request: Request):
     """Execute an MCP tool - JSON-RPC 2.0"""
@@ -1262,4 +1241,5 @@ if __name__ == "__main__":
     import uvicorn
     # Port can be set via environment variable or defaults to template value
     port = int(os.environ.get("MCP_SERVER_PORT", 5001))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 기본 바인드는 loopback. 외부 노출은 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND 옵트인.
+    uvicorn.run(app, host=resolve_bind_host(server_name=SERVER_NAME), port=port)

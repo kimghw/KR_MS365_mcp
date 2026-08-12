@@ -6,7 +6,6 @@ Exposes TeamsService methods as MCP tools over Streamable HTTP transport
 but uses inline tool definitions instead of a separate YAML file because
 mcp_editor/mcp_teams/ does not exist yet.
 """
-import json
 from typing import Dict, Any, List, Optional
 import sys
 import os
@@ -37,7 +36,14 @@ sys.path.insert(0, grandparent_dir)
 sys.path.insert(0, parent_dir)
 
 from mcp_teams.teams_service import TeamsService
-from session.auth_database import AuthDatabase
+from mcp_common.net import resolve_bind_host
+from mcp_common.runtime import (
+    ServiceLifecycle,
+    ToolRuntime,
+    build_health_payload,
+    health_status_code,
+)
+from mcp_common.user_resolver import resolve_user_email
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,17 +52,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def get_default_user_email() -> Optional[str]:
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to get default user email from auth.db: {e}")
-        return None
+SERVER_NAME = "teams"
+SERVER_VERSION = "1.0.0"
+DEFAULT_PORT = 5003
 
 
 # ============================================================
@@ -250,10 +248,8 @@ teams_service = TeamsService()
 
 
 def _resolve_user_email(args: Dict[str, Any]) -> Optional[str]:
-    user_email = args.get("user_email")
-    if user_email:
-        return user_email
-    return get_default_user_email()
+    """사용자 선택은 mcp_common 정책(SSOT)에 위임한다."""
+    return resolve_user_email(args.get("user_email"), required=True)
 
 
 # ============================================================
@@ -385,24 +381,9 @@ TOOL_HANDLERS = {
 }
 
 
-def get_tool_config(tool_name: str) -> Optional[dict]:
-    for tool in MCP_TOOLS:
-        if tool.get("name") == tool_name:
-            return tool
-    return None
-
-
-def apply_schema_defaults(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    tool_config = get_tool_config(tool_name)
-    if not tool_config:
-        return arguments
-    input_schema = tool_config.get("inputSchema", {})
-    properties = input_schema.get("properties", {})
-    merged_args = dict(arguments) if arguments else {}
-    for prop_name, prop_def in properties.items():
-        if prop_name not in merged_args and "default" in prop_def:
-            merged_args[prop_name] = prop_def["default"]
-    return merged_args
+# 기본값 주입 / 입력 검증 / 오류 정규화는 모두 ToolRuntime 이 담당한다.
+runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+lifecycle = ServiceLifecycle(SERVER_NAME, [teams_service])
 
 
 # ============================================================
@@ -417,63 +398,19 @@ from starlette.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
 
-def _build_tool_objects() -> List[mcp_types.Tool]:
-    tools: List[mcp_types.Tool] = []
-    for raw in MCP_TOOLS:
-        name = raw.get("name")
-        if not name:
-            continue
-        input_schema = raw.get("inputSchema") or {"type": "object", "properties": {}}
-        if "type" not in input_schema:
-            input_schema = {"type": "object", **input_schema}
-        tools.append(
-            mcp_types.Tool(
-                name=name,
-                description=raw.get("description") or "",
-                inputSchema=input_schema,
-            )
-        )
-    return tools
-
-
 def build_mcp_server() -> MCPServer:
-    server: MCPServer = MCPServer(name="teams", version="1.0.0")
-    tool_objects = _build_tool_objects()
+    server: MCPServer = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
+    tool_objects = runtime.build_tool_objects()
 
     @server.list_tools()
     async def _list_tools() -> List[mcp_types.Tool]:
         return tool_objects
 
+    # SDK 검증은 끄고(validate_input=False) ToolRuntime 이 검증/디스패치를 수행한다.
+    # 실패는 ToolExecutionError 로 올라가 SDK 가 CallToolResult(isError=True) 로 감싼다.
     @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: Dict[str, Any]):
-        handler = TOOL_HANDLERS.get(name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {name}")
-
-        merged_args = apply_schema_defaults(name, arguments or {})
-
-        try:
-            result = await handler(merged_args)
-        except Exception as e:
-            logger.exception(f"Error executing tool {name}: {e}")
-            return [mcp_types.TextContent(
-                type="text",
-                text=json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False),
-            )]
-
-        if isinstance(result, dict) and result.get("status") == "auth_required":
-            return [mcp_types.TextContent(
-                type="text",
-                text=json.dumps(result, ensure_ascii=False, indent=2),
-            )]
-
-        if isinstance(result, str):
-            return [mcp_types.TextContent(type="text", text=result)]
-
-        return [mcp_types.TextContent(
-            type="text",
-            text=json.dumps(result, ensure_ascii=False, indent=2, default=str),
-        )]
+        return await runtime.dispatch(name, arguments)
 
     return server
 
@@ -498,30 +435,23 @@ def build_starlette_app() -> Starlette:
     handle_streamable_http = _StreamableHTTPASGI(session_manager)
 
     async def health(_request: StarletteRequest) -> JSONResponse:
-        return JSONResponse({
-            "status": "healthy",
-            "server": "teams",
-            "protocol": "streamable-http",
-            "version": "1.0.0",
-            "tool_count": len(MCP_TOOLS),
-        })
+        # 초기화 실패 시 degraded/503 을 반환한다 (예전에는 항상 healthy 였다).
+        payload = build_health_payload(
+            SERVER_NAME, runtime, lifecycle, version=SERVER_VERSION
+        )
+        return JSONResponse(payload, status_code=health_status_code(payload))
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         async with session_manager.run():
-            try:
-                await teams_service.initialize()
-                logger.info("TeamsService initialized")
-            except Exception as e:
-                logger.warning(f"TeamsService initialize() failed: {e}")
-            logger.info(f"Teams MCP Streamable HTTP server ready with {len(MCP_TOOLS)} tools")
+            await lifecycle.startup()
+            logger.info(
+                f"Teams MCP Streamable HTTP server ready with {len(runtime.tools)} tools"
+            )
             try:
                 yield
             finally:
-                try:
-                    await teams_service.close()
-                except Exception:
-                    pass
+                await lifecycle.shutdown()
 
     return Starlette(
         debug=False,
@@ -536,12 +466,14 @@ def build_starlette_app() -> Starlette:
 app = build_starlette_app()
 
 
-def run(host: str = "0.0.0.0", port: int = 5003) -> None:
+def run(host: Optional[str] = None, port: int = DEFAULT_PORT) -> None:
     import uvicorn
-    logger.info(f"Starting Teams MCP Streamable HTTP server on {host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # 기본 바인드는 loopback. 외부 노출은 MCP_BIND_HOST/MCP_ALLOW_PUBLIC_BIND 옵트인 필요.
+    bind_host = resolve_bind_host(host, server_name=SERVER_NAME)
+    logger.info(f"Starting Teams MCP Streamable HTTP server on {bind_host}:{port}")
+    uvicorn.run(app, host=bind_host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("MCP_SERVER_PORT", 5003))
-    run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("MCP_SERVER_PORT", DEFAULT_PORT))
+    run(port=port)

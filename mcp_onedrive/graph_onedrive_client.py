@@ -37,11 +37,15 @@ class GraphOneDriveClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 session.AuthManager 사용)
+            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
+
+        Note:
+            per-email refresh lock 이 인스턴스마다 분리되지 않도록 반드시
+            mcp_common.auth.get_shared_auth_manager() 의 단일 인스턴스를 쓴다.
         """
         if token_provider is None:
-            from session import AuthManager
-            token_provider = AuthManager()
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._session: Optional[aiohttp.ClientSession] = None
         self._initialized = False

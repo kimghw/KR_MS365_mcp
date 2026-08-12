@@ -39,7 +39,9 @@ sys.path.insert(0, grandparent_dir)
 sys.path.insert(0, parent_dir)
 
 from mcp_teams.teams_service import TeamsService
-from session.auth_database import AuthDatabase
+from mcp_common.errors import ToolExecutionError
+from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.user_resolver import resolve_user_email
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,17 +50,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def get_default_user_email() -> Optional[str]:
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to get default user email from auth.db: {e}")
-        return None
+SERVER_NAME = "teams"
+SERVER_VERSION = "1.0.0"
 
 
 # Inline tool defs (same as server_stream.py)
@@ -249,10 +242,8 @@ teams_service = TeamsService()
 
 
 def _resolve_user_email(args: Dict[str, Any]) -> Optional[str]:
-    user_email = args.get("user_email")
-    if user_email:
-        return user_email
-    return get_default_user_email()
+    """사용자 선택은 mcp_common 정책(SSOT)에 위임한다."""
+    return resolve_user_email(args.get("user_email"), required=True)
 
 
 async def handle_list_chats(args):
@@ -351,24 +342,9 @@ TOOL_HANDLERS = {
 }
 
 
-def get_tool_config(tool_name: str) -> Optional[dict]:
-    for tool in MCP_TOOLS:
-        if tool.get("name") == tool_name:
-            return tool
-    return None
-
-
-def apply_schema_defaults(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    tool_config = get_tool_config(tool_name)
-    if not tool_config:
-        return arguments
-    input_schema = tool_config.get("inputSchema", {})
-    properties = input_schema.get("properties", {})
-    merged_args = dict(arguments) if arguments else {}
-    for prop_name, prop_def in properties.items():
-        if prop_name not in merged_args and "default" in prop_def:
-            merged_args[prop_name] = prop_def["default"]
-    return merged_args
+# stream 서버와 동일한 dispatch/검증/오류 계약을 공유한다.
+runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+lifecycle = ServiceLifecycle(SERVER_NAME, [teams_service])
 
 
 class StdioMCPServer:
@@ -410,7 +386,7 @@ class StdioMCPServer:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "teams", "version": "1.0.0"},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
         }
 
     async def handle_tools_list(self, params):
@@ -422,29 +398,25 @@ class StdioMCPServer:
         if not tool_name:
             raise ValueError("Tool name required")
 
-        arguments = apply_schema_defaults(tool_name, arguments)
-        handler = TOOL_HANDLERS.get(tool_name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {tool_name}")
-
+        # stream 서버와 동일한 계약: 실패는 isError=True 인 CallToolResult 로 표현한다.
         try:
-            result = await handler(arguments)
-            if isinstance(result, dict) and result.get("status") == "auth_required":
-                return {
-                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
-                    "isError": True,
-                }
-            if isinstance(result, str):
-                return {"content": [{"type": "text", "text": result}]}
+            blocks = await runtime.call(tool_name, arguments)
+        except ToolExecutionError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "isError": True}
+        except Exception as e:
+            logger.error(f"Error executing {tool_name}: {e}", exc_info=True)
             return {
                 "content": [{
                     "type": "text",
-                    "text": json.dumps(result, ensure_ascii=False, indent=2, default=str),
-                }]
+                    "text": json.dumps(
+                        {"status": "error", "error": type(e).__name__,
+                         "message": str(e), "tool": tool_name},
+                        ensure_ascii=False, indent=2,
+                    ),
+                }],
+                "isError": True,
             }
-        except Exception as e:
-            logger.error(f"Error executing {tool_name}: {e}", exc_info=True)
-            raise
+        return {"content": blocks}
 
     async def handle_request(self, request):
         request_id = request.get("id")
@@ -483,11 +455,9 @@ class StdioMCPServer:
 
     async def run(self):
         self.running = True
-        try:
-            await teams_service.initialize()
-            logger.info("TeamsService initialized")
-        except Exception as e:
-            logger.warning(f"TeamsService initialize() failed: {e}")
+        await lifecycle.startup()
+        if lifecycle.errors:
+            logger.error(f"Teams MCP STDIO Server degraded: {lifecycle.errors}")
 
         logger.info("Teams MCP STDIO Server started")
         try:
@@ -505,10 +475,7 @@ class StdioMCPServer:
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
         finally:
-            try:
-                await teams_service.close()
-            except Exception:
-                pass
+            await lifecycle.shutdown()
             logger.info("Teams MCP STDIO Server stopped")
 
 

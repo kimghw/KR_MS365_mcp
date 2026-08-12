@@ -44,7 +44,6 @@ tools:
       user_email:
         type: string
         description: 이메일 주소를 입력하고 입력하지 않을 경우 내부에서 연결정보를 메일 주소를 추정함
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - DatePeriodFilter
@@ -54,7 +53,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: query_method
@@ -358,8 +358,7 @@ tools:
         targetParam: top
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
     required:
     - search_keywords
@@ -369,7 +368,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: search_term
@@ -415,21 +415,22 @@ tools:
     properties:
       message_ids:
         type: array
-        description: ''
+        description: 조회할 메일 ID 목록
         targetParam: message_ids
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
-    required: []
+    required:
+    - message_ids
   mcp_service:
     name: batch_and_fetch
     parameters:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: message_ids
@@ -458,8 +459,7 @@ tools:
         targetParam: message_ids
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
     required:
     - message_ids
@@ -469,7 +469,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: message_ids
@@ -585,7 +586,6 @@ tools:
       user_email:
         type: string
         description: 사용자 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - message_attachment_ids
@@ -595,7 +595,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: message_attachment_ids
@@ -700,8 +701,7 @@ tools:
         targetParam: filter_params
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
     required: []
   mcp_service:
@@ -710,7 +710,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: filter_params
@@ -788,8 +789,7 @@ tools:
         targetParam: top
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
     required:
     - search_term
@@ -799,7 +799,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: search_term
@@ -864,8 +865,7 @@ tools:
         targetParam: top
       user_email:
         type: string
-        description: ''
-        default: kimghw@krs.co.kr
+        description: 사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)
         targetParam: user_email
     required: []
   mcp_service:
@@ -874,7 +874,8 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: filter_params
@@ -939,7 +940,6 @@ tools:
       user_email:
         type: string
         description: 사용자 이메일 (인증용)
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required: []
   mcp_service:
@@ -948,13 +948,15 @@ tools:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: url
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 url 은 default 가 있는 optional — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: filter_params
@@ -1046,18 +1048,17 @@ tools:
         type: integer
         description: ''
         targetParam: top
-    required:
-    - filter_params
-    - exclude_params
-    - select_params
-    - client_filter
+    # 핸들러(handle_test_handler)는 모든 인자를 args.get() 으로 선택 처리한다.
+    # 입력 검증 활성화 후 스키마-핸들러 계약을 맞추기 위해 required 를 비운다.
+    required: []
   mcp_service:
     name: fetch_filter
     parameters:
     - name: user_email
       type: str
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       default: null
       has_default: false
     - name: filter_params

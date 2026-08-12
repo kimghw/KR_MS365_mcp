@@ -34,22 +34,15 @@ sys.path.insert(0, grandparent_dir)
 sys.path.insert(0, parent_dir)
 
 from mcp_todo.todo_service import TodoService
-from session.auth_database import AuthDatabase
+from mcp_common.errors import ToolExecutionError
+from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.user_resolver import resolve_user_email
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-
-def get_default_user_email() -> Optional[str]:
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to get default user email: {e}")
-        return None
+SERVER_NAME = "todo"
+SERVER_VERSION = "1.0.0"
 
 
 def _load_mcp_tools() -> List[Dict[str, Any]]:
@@ -69,57 +62,29 @@ MCP_TOOLS = _load_mcp_tools()
 todo_service = TodoService()
 
 
-def get_tool_config(tool_name: str) -> Optional[dict]:
-    for tool in MCP_TOOLS:
-        if tool.get("name") == tool_name:
-            return tool
-    return None
-
-
-def apply_schema_defaults(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    tool_config = get_tool_config(tool_name)
-    if not tool_config:
-        return arguments
-    properties = tool_config.get("inputSchema", {}).get("properties", {})
-    merged = dict(arguments) if arguments else {}
-    for prop_name, prop_def in properties.items():
-        if prop_name not in merged and "default" in prop_def:
-            merged[prop_name] = prop_def["default"]
-    return merged
-
-
 def _resolve_user_email(args):
-    return args.get("user_email") or get_default_user_email()
+    """사용자 선택은 mcp_common 정책(SSOT)에 위임한다."""
+    return resolve_user_email(args.get("user_email"), required=True)
 
 
 async def handle_todo_lists_view(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
-    return await todo_service.todo_lists_view(user_email=user_email, top=args.get("top", 50))
+    return await todo_service.todo_lists_view(
+        user_email=_resolve_user_email(args), top=args.get("top", 50))
 
 
 async def handle_todo_list_create(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
-    return await todo_service.todo_list_create(user_email=user_email, display_name=args.get("display_name", ""))
+    return await todo_service.todo_list_create(
+        user_email=_resolve_user_email(args), display_name=args.get("display_name", ""))
 
 
 async def handle_todo_list_delete(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_list_delete(
-        user_email=user_email, list_id_or_name=args.get("list_id_or_name", ""))
+        user_email=_resolve_user_email(args), list_id_or_name=args.get("list_id_or_name", ""))
 
 
 async def handle_todo_tasks_view(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_tasks_view(
-        user_email=user_email,
+        user_email=_resolve_user_email(args),
         list_id_or_name=args.get("list_id_or_name"),
         status_filter=args.get("status_filter"),
         top=args.get("top", 50),
@@ -128,22 +93,16 @@ async def handle_todo_tasks_view(args):
 
 
 async def handle_todo_task_get(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_task_get(
-        user_email=user_email,
+        user_email=_resolve_user_email(args),
         list_id_or_name=args.get("list_id_or_name"),
         task_id=args.get("task_id", ""),
     )
 
 
 async def handle_todo_task_create(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_task_create(
-        user_email=user_email,
+        user_email=_resolve_user_email(args),
         list_id_or_name=args.get("list_id_or_name"),
         title=args.get("title", ""),
         body=args.get("body"),
@@ -155,11 +114,8 @@ async def handle_todo_task_create(args):
 
 
 async def handle_todo_task_update(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_task_update(
-        user_email=user_email,
+        user_email=_resolve_user_email(args),
         list_id_or_name=args.get("list_id_or_name"),
         task_id=args.get("task_id", ""),
         title=args.get("title"),
@@ -173,11 +129,8 @@ async def handle_todo_task_update(args):
 
 
 async def handle_todo_task_delete(args):
-    user_email = _resolve_user_email(args)
-    if not user_email:
-        return {"status": "error", "error": "user_email not provided and no default user found"}
     return await todo_service.todo_task_delete(
-        user_email=user_email,
+        user_email=_resolve_user_email(args),
         list_id_or_name=args.get("list_id_or_name"),
         task_id=args.get("task_id", ""),
     )
@@ -193,6 +146,11 @@ TOOL_HANDLERS = {
     "todo_task_update": handle_todo_task_update,
     "todo_task_delete": handle_todo_task_delete,
 }
+
+
+# stream 서버와 동일한 dispatch/검증/오류 계약을 공유한다.
+runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+lifecycle = ServiceLifecycle(SERVER_NAME, [todo_service])
 
 
 class StdioMCPServer:
@@ -231,7 +189,7 @@ class StdioMCPServer:
 
     async def handle_initialize(self, params):
         return {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                "serverInfo": {"name": "todo", "version": "1.0.0"}}
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}}
 
     async def handle_tools_list(self, params):
         return {"tools": MCP_TOOLS}
@@ -241,20 +199,26 @@ class StdioMCPServer:
         arguments = params.get("arguments", {})
         if not tool_name:
             raise ValueError("Tool name required")
-        arguments = apply_schema_defaults(tool_name, arguments)
-        handler = TOOL_HANDLERS.get(tool_name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {tool_name}")
+
+        # stream 서버와 동일한 계약: 실패는 isError=True 인 CallToolResult 로 표현한다.
         try:
-            result = await handler(arguments)
-            if isinstance(result, dict) and result.get("status") == "auth_required":
-                return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}], "isError": True}
-            if isinstance(result, str):
-                return {"content": [{"type": "text", "text": result}]}
-            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2, default=str)}]}
+            blocks = await runtime.call(tool_name, arguments)
+        except ToolExecutionError as e:
+            return {"content": [{"type": "text", "text": str(e)}], "isError": True}
         except Exception as e:
             logger.error(f"Error executing {tool_name}: {e}", exc_info=True)
-            raise
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(
+                        {"status": "error", "error": type(e).__name__,
+                         "message": str(e), "tool": tool_name},
+                        ensure_ascii=False, indent=2,
+                    ),
+                }],
+                "isError": True,
+            }
+        return {"content": blocks}
 
     async def handle_request(self, request):
         request_id = request.get("id")
@@ -290,11 +254,9 @@ class StdioMCPServer:
 
     async def run(self):
         self.running = True
-        try:
-            await todo_service.initialize()
-            logger.info("TodoService initialized")
-        except Exception as e:
-            logger.warning(f"TodoService init failed: {e}")
+        await lifecycle.startup()
+        if lifecycle.errors:
+            logger.error(f"Todo MCP STDIO Server degraded: {lifecycle.errors}")
         logger.info("Todo MCP STDIO Server started")
         try:
             while self.running:
@@ -310,10 +272,7 @@ class StdioMCPServer:
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
         finally:
-            try:
-                await todo_service.close()
-            except Exception:
-                pass
+            await lifecycle.shutdown()
             logger.info("Todo MCP STDIO Server stopped")
 
 

@@ -107,4 +107,9 @@ async def call_tool(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    from mcp_common.net import resolve_bind_host
+
+    # 바인드 기본값은 loopback(127.0.0.1)이다. MCP 서버에는 호출자 인증 계층이
+    # 없어서 0.0.0.0 으로 열면 네트워크상의 누구나 접근할 수 있다.
+    # 외부 노출이 필요하면 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 옵트인한다.
+    uvicorn.run(app, host=resolve_bind_host(server_name="{{ server_name | default('mcp') }}"), port=8080)

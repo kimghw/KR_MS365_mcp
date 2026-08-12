@@ -695,7 +695,9 @@ def detect_module_paths(
         "backup_dir": f"{editor_profile_dir}/backups",
         "types_files": types_files,
         "language": language,
-        "host": "0.0.0.0",
+        # 바인드 기본값은 loopback. 외부 노출은 MCP_BIND_HOST +
+        # MCP_ALLOW_PUBLIC_BIND=1 로 옵트인한다 (mcp_common/net.py 가 SSOT).
+        "host": "127.0.0.1",
         # port는 generate_editor_config_json에서 순차 할당
     }
 

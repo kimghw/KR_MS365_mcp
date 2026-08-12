@@ -82,6 +82,12 @@ if os.path.isdir(server_module_dir):
 sys.path.insert(0, grandparent_dir)  # For session module and package imports
 sys.path.insert(0, parent_dir)  # For direct module imports
 
+# 공통 런타임 헬퍼 (SSOT: mcp_common/runtime.py)
+# maybe_await: 서비스 메서드가 동기든 비동기든 안전하게 호출한다.
+# 동기 메서드의 반환값(dict 등)을 무조건 await 하면
+# "object dict can't be used in 'await' expression" 으로 깨지므로 반드시 이 헬퍼를 경유한다.
+from mcp_common.runtime import maybe_await
+
 # Import types dynamically based on type_info
 {%- if type_info and type_info.type_locations %}
 {%- set imports = {} %}
@@ -102,38 +108,10 @@ from {{ module }} import {{ types | join(', ') }}
 from mcp_{{ server_name }}.{{ server_name }}_types import {{ param_types | join(', ') }}
 {%- endif %}
 
+{% include '_schema_helpers.jinja2' %}
+
+
 # Load tool definitions from YAML (Single Source of Truth)
-def _convert_boolean_schema_to_enabled_disabled(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert boolean type properties to enabled/disabled enum for OpenAI compatibility.
-
-    OpenAI API does not support boolean type in function parameters.
-    This converts at runtime:
-        type: boolean, default: true  -> type: string, enum: ["enabled", "disabled"], default: "enabled"
-        type: boolean, default: false -> type: string, enum: ["enabled", "disabled"], default: "disabled"
-    """
-    if not isinstance(schema, dict):
-        return schema
-
-    result = dict(schema)
-
-    if 'properties' in result:
-        new_properties = {}
-        for prop_name, prop_def in result['properties'].items():
-            if isinstance(prop_def, dict) and prop_def.get('type') == 'boolean':
-                new_prop = dict(prop_def)
-                new_prop['type'] = 'string'
-                new_prop['enum'] = ['enabled', 'disabled']
-                if 'default' in new_prop:
-                    new_prop['default'] = 'enabled' if new_prop['default'] else 'disabled'
-                new_properties[prop_name] = new_prop
-            elif isinstance(prop_def, dict) and prop_def.get('type') == 'object':
-                new_properties[prop_name] = _convert_boolean_schema_to_enabled_disabled(prop_def)
-            else:
-                new_properties[prop_name] = prop_def
-        result['properties'] = new_properties
-
-    return result
-
 
 def _load_mcp_tools() -> List[Dict[str, Any]]:
     """Load MCP tools from tool_definition_templates.yaml and convert boolean types.
@@ -158,12 +136,14 @@ def _load_mcp_tools() -> List[Dict[str, Any]]:
     if yaml_path.exists():
         with open(yaml_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-            tools = data.get("tools", [])
+            tools = data.get("tools", []) or []
 
-            # Convert boolean types to enabled/disabled for OpenAI compatibility
             for tool in tools:
-                if 'inputSchema' in tool:
-                    tool['inputSchema'] = _convert_boolean_schema_to_enabled_disabled(tool['inputSchema'])
+                # 1) 스키마 형태 정규화: 항상 {"type": "object", "properties": {...}}
+                #    (required 는 그대로 보존된다)
+                schema = _normalize_input_schema(tool.get('inputSchema'))
+                # 2) OpenAI 호환을 위해 boolean 을 enabled/disabled enum 으로 변환
+                tool['inputSchema'] = _convert_boolean_schema_to_enabled_disabled(schema)
 
             return tools
     raise FileNotFoundError(f"Tool definition YAML not found: {yaml_path}")
@@ -175,38 +155,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# Boolean Parameter Conversion (enabled/disabled <-> bool)
-# ============================================================
-# OpenAI API does not support boolean type in function parameters.
-# We use "enabled"/"disabled" strings externally and convert to bool internally.
-
-def convert_enabled_to_bool(value: Any) -> bool:
-    """Convert enabled/disabled string to boolean.
-
-    Args:
-        value: "enabled", "disabled", True, False, or None
-
-    Returns:
-        True if enabled, False otherwise
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() == "enabled"
-    return False
-
-
-def convert_bool_to_enabled(value: bool) -> str:
-    """Convert boolean to enabled/disabled string.
-
-    Args:
-        value: Boolean value
-
-    Returns:
-        "enabled" if True, "disabled" if False
-    """
-    return "enabled" if value else "disabled"
+# NOTE: convert_enabled_to_bool / convert_bool_to_enabled 및 스키마 정규화 함수는
+# 위쪽에서 include 되는 _schema_helpers.jinja2 에서 한 번만 정의된다.
+# 규칙의 SSOT 는 mcp_editor/service_registry/schema_normalize.py 다.
 
 {#- Build unique services dict to avoid duplicate imports #}
 {%- set unique_services = {} %}
@@ -605,6 +556,10 @@ def merge_param_data(internal_data: dict, runtime_data, signature_defaults: dict
 
 # Tool handler functions
 {%- for tool in tools %}
+{#- 필수 여부의 단일 기준은 공개 inputSchema 의 required 다.
+    mcp_service 메타데이터의 is_required 만 믿고 args["x"] 를 생성하면
+    스키마에서 required 를 뺀 인자(예: 선택적 user_email)에서 KeyError 가 난다. #}
+{%- set schema_required = tool.inputSchema.required if tool.inputSchema and tool.inputSchema.required else [] %}
 
 async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict[str, Any]:
     """Handle {{ tool.name }} tool call"""
@@ -615,11 +570,13 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
     {%- for param_name, param_info in tool.params.items() %}
-    {%- if param_info.is_required %}
     {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
+    {#- args["x"] 는 공개 스키마 required 에 있는 인자에만 허용한다.
+        메타데이터 is_required 가 true 여도 스키마 required 에 없으면
+        args.get() 으로 방어한다 (서비스 쪽 폴백: resolve_user_email 등). #}
+    {%- if param_info.is_required and source_param in schema_required %}
     {{ param_name }} = args["{{ source_param }}"]
     {%- elif param_info.has_default %}
-    {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
     {{ param_name }}_sig = args.get("{{ source_param }}")
     {%- if param_info.type in enum_types %}
     {{ param_name }} = {{ param_name }}_sig if {{ param_name }}_sig is not None else {{ param_info.default | replace('"', '') }}
@@ -627,7 +584,6 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     {{ param_name }} = {{ param_name }}_sig if {{ param_name }}_sig is not None else {{ param_info.default_json }}
     {%- endif %}
     {%- else %}
-    {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
     {{ param_name }} = args.get("{{ source_param }}")
     {%- endif %}
     {%- endfor %}
@@ -654,7 +610,12 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     {{ param_name }}_data = merge_param_data({}, {{ param_name }}, {{ param_name }}_sig_defaults) or {}
     {%- else %}
     {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
+    {#- 여기서도 스키마 required 가 단일 기준: required 에 없으면 get 으로 방어 #}
+    {%- if source_param in schema_required %}
     {{ param_name }}_sig = args["{{ source_param }}"]
+    {%- else %}
+    {{ param_name }}_sig = args.get("{{ source_param }}")
+    {%- endif %}
     {{ param_name }}_data = merge_param_data({}, {{ param_name }}_sig, {{ param_name }}_sig_defaults) or {}
     {%- endif %}
     {{ param_name }} = {{ param_info.class_name }}(**{{ param_name }}_data)
@@ -695,6 +656,17 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     {%- for param_name, param_info in tool.call_params.items() %}
     call_args["{{ param_name }}"] = {{ param_info.value }}
     {%- endfor %}
+    {%- if tool.inputSchema and tool.inputSchema.additionalProperties is sameas true %}
+
+    # ========================================
+    # Step 3.5: additionalProperties=true — 비명시 인자 그대로 전달
+    # - 스키마에 명시되지 않은 자유형 인자(검색 조건 등)를 버리지 않는다
+    # ========================================
+    _declared_props = {{ tool.inputSchema.properties | list | pprint }}
+    for _extra_key, _extra_value in (args or {}).items():
+        if _extra_key not in _declared_props and _extra_key not in call_args:
+            call_args[_extra_key] = _extra_value
+    {%- endif %}
     {%- if tool.internal_args %}
 
     # ========================================
@@ -731,7 +703,9 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     # ========================================
     # Step 5: 서비스 메서드 호출
     # ========================================
-    return await {{ tool.implementation.instance }}.{{ tool.implementation.method }}(**call_args)
+    # maybe_await: 동기/비동기 서비스 메서드를 모두 안전하게 처리한다
+    # (동기 메서드의 반환값을 await 하면 TypeError 가 나므로 직접 await 금지)
+    return await maybe_await({{ tool.implementation.instance }}.{{ tool.implementation.method }}(**call_args))
     {%- else %}
 
     # ========================================
@@ -739,11 +713,13 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
     {%- for param_name, param_info in tool.params.items() %}
-    {%- if param_info.is_required %}
     {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
+    {#- args["x"] 는 공개 스키마 required 에 있는 인자에만 허용한다.
+        메타데이터 is_required 가 true 여도 스키마 required 에 없으면
+        args.get() 으로 방어한다 (서비스 쪽 폴백: resolve_user_email 등). #}
+    {%- if param_info.is_required and source_param in schema_required %}
     {{ param_name }} = args["{{ source_param }}"]
     {%- elif param_info.has_default %}
-    {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
     {{ param_name }}_sig = args.get("{{ source_param }}")
     {%- if param_info.type in enum_types %}
     {{ param_name }} = {{ param_name }}_sig if {{ param_name }}_sig is not None else {{ param_info.default | replace('"', '') }}
@@ -751,7 +727,6 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     {{ param_name }} = {{ param_name }}_sig if {{ param_name }}_sig is not None else {{ param_info.default_json }}
     {%- endif %}
     {%- else %}
-    {%- set source_param = tool.call_params[param_name].source_param if param_name in tool.call_params else param_name %}
     {{ param_name }} = args.get("{{ source_param }}")
     {%- endif %}
     {%- endfor %}
@@ -773,11 +748,25 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
     {%- for target_param, param_info in tool.call_params.items() %}
     call_args["{{ target_param }}"] = {{ param_info.value }}
     {%- endfor %}
+    {%- if tool.inputSchema and tool.inputSchema.additionalProperties is sameas true %}
+
+    # ========================================
+    # Step 2.5: additionalProperties=true — 비명시 인자 그대로 전달
+    # - 스키마에 명시되지 않은 자유형 인자(검색 조건 등)를 버리지 않는다
+    #   (예: file_handler.search_metadata 의 **search_criteria)
+    # ========================================
+    _declared_props = {{ tool.inputSchema.properties | list | pprint }}
+    for _extra_key, _extra_value in (args or {}).items():
+        if _extra_key not in _declared_props and _extra_key not in call_args:
+            call_args[_extra_key] = _extra_value
+    {%- endif %}
 
     # ========================================
     # Step 3: 서비스 메서드 호출
     # ========================================
-    return await {{ tool.implementation.instance }}.{{ tool.implementation.method }}(**call_args)
+    # maybe_await: 동기/비동기 서비스 메서드를 모두 안전하게 처리한다
+    # (동기 메서드의 반환값을 await 하면 TypeError 가 나므로 직접 await 금지)
+    return await maybe_await({{ tool.implementation.instance }}.{{ tool.implementation.method }}(**call_args))
     {%- endif %}
 {%- endfor %}
 
@@ -793,15 +782,19 @@ async def handle_{{ tool.tool_name or tool.name }}(args: Dict[str, Any]) -> Dict
 if __name__ == "__main__":
 {%- if protocol_type == 'rest' %}
     import uvicorn
+    from mcp_common.net import resolve_bind_host
     # Port can be set via environment variable or defaults to template value
     port = int(os.environ.get("MCP_SERVER_PORT", {{ port | default(8000) }}))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 바인드 주소는 resolve_bind_host 가 결정한다(기본 127.0.0.1).
+    # 외부 노출은 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 명시적 옵트인해야 한다.
+    uvicorn.run(app, host=resolve_bind_host(server_name="{{ server_name }}"), port=port)
 {%- elif protocol_type == 'stdio' %}
     asyncio.run(handle_stdio())
 {%- elif protocol_type == 'stream' %}
     # Port can be set via environment variable or defaults to template value
     port = int(os.environ.get("MCP_SERVER_PORT", {{ stream_port | default(port | default(8001)) }}))
-    run(host="0.0.0.0", port=port)  # Streamable HTTP server (MCP SDK)
+    # host 를 넘기지 않으면 run() 안의 resolve_bind_host 가 결정한다(기본 127.0.0.1).
+    run(port=port)  # Streamable HTTP server (MCP SDK)
 {%- else %}
     raise ValueError("Unsupported protocol_type: {{ protocol_type }}")
 {%- endif %}

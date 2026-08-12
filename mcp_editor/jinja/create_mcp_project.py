@@ -273,7 +273,22 @@ async def route_tool_call(tool_name: str, arguments: Dict[str, Any]) -> Any:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port={port})
+
+    # 바인드 기본값은 loopback(127.0.0.1)이다. MCP 서버에는 호출자 인증 계층이
+    # 없어서 0.0.0.0 으로 열면 네트워크상의 누구나 접근할 수 있다.
+    # 외부 노출이 필요하면 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 옵트인한다.
+    try:
+        from mcp_common.net import resolve_bind_host
+        bind_host = resolve_bind_host(server_name="{service_name}")
+    except ImportError:
+        # mcp_common 이 없는 독립 프로젝트용 폴백 (동일 정책)
+        bind_host = os.environ.get("MCP_BIND_HOST", "127.0.0.1")
+        if bind_host in ("0.0.0.0", "::", "*") and \\
+                os.environ.get("MCP_ALLOW_PUBLIC_BIND", "").lower() not in ("1", "true", "yes", "on"):
+            print("[WARN] refusing public bind without MCP_ALLOW_PUBLIC_BIND=1; using 127.0.0.1")
+            bind_host = "127.0.0.1"
+
+    uvicorn.run(app, host=bind_host, port={port})
 '''
         (mcp_server_dir / "server.py").write_text(content)
         print(f"[OK] Created: mcp_server/server.py")
@@ -323,9 +338,21 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 if __name__ == "__main__":
+    # 바인드 기본값은 loopback(127.0.0.1). 외부 노출은
+    # MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 명시적으로 옵트인해야 한다.
+    try:
+        from mcp_common.net import resolve_bind_host
+        bind_host = resolve_bind_host(server_name="mcp")
+    except ImportError:
+        bind_host = os.environ.get("MCP_BIND_HOST", "127.0.0.1")
+        if bind_host in ("0.0.0.0", "::", "*") and \\
+                os.environ.get("MCP_ALLOW_PUBLIC_BIND", "").lower() not in ("1", "true", "yes", "on"):
+            print("[WARN] refusing public bind without MCP_ALLOW_PUBLIC_BIND=1; using 127.0.0.1")
+            bind_host = "127.0.0.1"
+
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
+        host=bind_host,
         port={port},
         reload=True,
         log_level="info"
@@ -807,7 +834,12 @@ python-json-logger==2.0.7
         content = f'''# {service_name.upper()} Service Configuration
 
 # Server Configuration
-SERVER_HOST=0.0.0.0
+# 기본값은 loopback 이다. MCP 서버에는 호출자 인증 계층이 없으므로
+# 0.0.0.0 으로 열면 네트워크상의 누구나 접근할 수 있다.
+# 외부 노출이 정말 필요하면 아래 두 값을 함께 설정해 명시적으로 옵트인한다:
+#   MCP_BIND_HOST=0.0.0.0
+#   MCP_ALLOW_PUBLIC_BIND=1
+SERVER_HOST=127.0.0.1
 SERVER_PORT=8080
 LOG_LEVEL=INFO
 

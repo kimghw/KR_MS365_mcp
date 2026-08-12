@@ -169,8 +169,8 @@ class BatchAttachmentHandler:
         """
         if token_provider is None:
             # 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
-            from session.auth_manager import get_default_auth_manager
-            token_provider = get_default_auth_manager()
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self.folder_manager = MailFolderManager(base_directory)
         # metadata_file을 base_directory 안에 저장

@@ -245,14 +245,15 @@ class GraphMailClient:
             order_by=order_by,
         )
 
-        # 2. 에러 체크
-        if result.get("has_errors"):
-            print(f"[WARN] Query completed with errors: {len(result.get('errors', []))} errors")
-            if return_on_error:
+        # 2. 에러 체크 — 전량 실패(status:error)만 실패로 반환하고, 부분 실패는 성공분을 보존한 채 진행
+        query_errors = result.get("errors", []) if result.get("has_errors") else []
+        if query_errors:
+            print(f"[WARN] Query completed with errors: {len(query_errors)} errors")
+            if return_on_error and result.get("status") == "error":
                 return {
                     "status": "error",
-                    "error": "Query failed with errors",
-                    "errors": result.get("errors", []),
+                    "error": result.get("error", "Query failed with errors"),
+                    "errors": query_errors,
                     "partial_results": result.get("value", []),
                     "query_method": query_method.value,
                 }
@@ -261,30 +262,39 @@ class GraphMailClient:
             print(f"[ERROR] Query failed: {result['error']}")
             return result
 
+        # 부분 실패가 있으면 이후 성공 응답에 partial 로 표시 (성공분 보존, 오류 목록 유지)
+        base_status = "partial" if query_errors else "success"
+
         # 3. 결과 확인
         emails = result.get("value", [])
         if not emails:
             print("[INFO] No emails found")
-            return {
-                "status": "success",
+            payload = {
+                "status": base_status,
                 "message": "No emails found",
                 "value": [],
                 "processed_count": 0,
                 "query_method": query_method.value,
             }
+            if query_errors:
+                payload["errors"] = query_errors
+            return payload
 
         print(f"[DONE] Found {len(emails)} email(s)")
 
         # 4. 처리 모드에 따라 처리
         if processing_mode == ProcessingMode.FETCH_ONLY:
             # 메일만 가져오기
-            return {
-                "status": "success",
+            payload = {
+                "status": base_status,
                 "value": emails,
                 "total": len(emails),
                 "processing_mode": processing_mode.value,
                 "query_method": query_method.value,
             }
+            if query_errors:
+                payload["errors"] = query_errors
+            return payload
 
         # 5. 추가 처리가 필요한 경우 - BatchAttachmentHandler 사용
         print(f"\n[PROCESS] Processing emails with mode: {processing_mode.value}")
@@ -320,14 +330,19 @@ class GraphMailClient:
                         include_body=True,
                     )
                     print(f"[ATTACH] Processed {attachment_result.get('processed', 0)} emails with attachments")
-                    return {
-                        "status": "success",
+                    # 첨부 처리 결과의 success 도 반영: 전량 실패면 partial 로 강등해 오류가 드러나게 한다
+                    attach_failed = not attachment_result.get("success") and bool(attachment_result.get("errors"))
+                    payload = {
+                        "status": "partial" if (query_errors or attach_failed) else base_status,
                         "value": emails,
                         "total": len(emails),
                         "processing_mode": processing_mode.value,
                         "query_method": query_method.value,
                         "attachment_result": attachment_result,
                     }
+                    if query_errors:
+                        payload["errors"] = query_errors
+                    return payload
                 except Exception as e:
                     print(f"[WARN] Attachment processing failed: {e}")
                     return {
@@ -339,14 +354,17 @@ class GraphMailClient:
                         "attachment_error": str(e),
                     }
 
-        # 그 외 모드는 쿼리 결과만 반환
-        return {
-            "status": "success",
+        # 그 외 모드는 쿼리 결과만 반환 (부분 실패 시 partial + 오류 목록 보존)
+        payload = {
+            "status": base_status,
             "value": emails,
             "total": len(emails),
             "processing_mode": processing_mode.value,
             "query_method": query_method.value,
         }
+        if query_errors:
+            payload["errors"] = query_errors
+        return payload
 
     async def batch_and_fetch(
         self, user_email: str, message_ids: List[str], select_params: Optional[SelectParams] = None
@@ -442,8 +460,22 @@ class GraphMailClient:
                 select_params=select_params,
             )
 
+            # 내부 success/errors 를 반영: 하드코딩된 성공으로 실패가 새어나가지 않게 한다
+            errors = result.get("errors") or []
+            if not result.get("success"):
+                # 전량 실패 (토큰 획득 실패, 전 배치 실패, 처리된 메일 0건 등)
+                return {
+                    "status": "error",
+                    "error": "; ".join(str(e) for e in errors) if errors else "메타데이터 조회 실패 (처리된 메일 없음)",
+                    "value": result.get("messages", []),
+                    "total": result.get("total_processed", 0),
+                    "attachments_count": result.get("attachments_count", 0),
+                    "errors": errors or None,
+                }
+
             return {
-                "status": "success",
+                # 일부 실패가 섞인 경우 partial 로 표시해 성공분을 보존한다 (is_failure 는 partial 을 실패로 보지 않음)
+                "status": "partial" if errors else "success",
                 "value": result.get("messages", []),
                 "total": result.get("total_processed", 0),
                 "attachments_count": result.get("attachments_count", 0),
@@ -521,8 +553,9 @@ class GraphMailClient:
                     onedrive_folder=onedrive_folder,
                 )
 
-                return {
-                    "status": "success",
+                # 내부 success/errors 를 반영: 실제 실패가 "성공(downloaded:0)"으로 위장되지 않게 한다
+                errors = result.get("errors", [])
+                payload = {
                     "mode": "all_attachments",
                     "total_mails": result.get("total_requested", 0),
                     "processed": result.get("processed", 0),
@@ -532,11 +565,22 @@ class GraphMailClient:
                     "body_contents": result.get("body_contents", []),
                     "attachment_contents": result.get("attachment_contents", []),
                     "skipped_duplicates": result.get("skipped_duplicates", 0),
-                    "errors": result.get("errors", []),
+                    "errors": errors,
                     "storage_type": storage_type,
                     "save_file": save_file,
                     "convert_to_txt": convert_to_txt,
                 }
+                if result.get("message"):
+                    # "모든 메일이 이미 처리됨" 등 정상 안내 메시지 보존
+                    payload["message"] = result["message"]
+                if not result.get("success"):
+                    # 전량 실패 (토큰 획득 실패, 전 배치 실패 등)
+                    payload["status"] = "error"
+                    payload["error"] = "; ".join(str(e) for e in errors) if errors else "첨부파일 처리 실패 (처리된 메일 없음)"
+                else:
+                    # 부분 실패는 partial 로 표시해 성공분 보존
+                    payload["status"] = "partial" if errors else "success"
+                return payload
 
             elif all(isinstance(item, dict) and "message_id" in item and "attachment_id" in item for item in message_attachment_ids):
                 # 메일/첨부파일 ID 쌍 -> 특정 첨부파일만 다운로드
@@ -551,15 +595,26 @@ class GraphMailClient:
                     onedrive_folder=onedrive_folder,
                 )
 
-                return {
-                    "status": "success",
+                # 내부 success/failed 를 반영: 전량 실패는 실패로, 부분 실패는 partial 로 반환
+                errors = result.get("errors", [])
+                payload = {
                     "mode": "specific_attachments",
                     "total_requested": result.get("total_requested", 0),
                     "downloaded": result.get("downloaded", 0),
                     "failed": result.get("failed", 0),
                     "results": result.get("results", []),
-                    "errors": result.get("errors", []),
+                    "errors": errors,
                 }
+                if not result.get("success"):
+                    # 다운로드 0건 (토큰 획득 실패, 전 건 실패 등)
+                    payload["status"] = "error"
+                    payload["error"] = "; ".join(str(e) for e in errors) if errors else "첨부파일 다운로드 실패 (다운로드 0건)"
+                elif result.get("failed", 0) > 0 or errors:
+                    # 일부만 실패 — 성공분 보존
+                    payload["status"] = "partial"
+                else:
+                    payload["status"] = "success"
+                return payload
 
             else:
                 return {

@@ -42,7 +42,21 @@ def load_tool_definitions(paths: dict):
             return module.MCP_TOOLS
 
         # 3. Fallback to cleaned definitions
-        spec = importlib.util.spec_from_file_location("tool_definitions", paths["tool_path"])
+        tool_path = paths.get("tool_path", "")
+        if not tool_path or not os.path.exists(tool_path):
+            # teams/onedrive/onenote/time 처럼 서버가 MCP_TOOLS 를 코드에 인라인으로
+            # 갖고 있어 편집용 정의 파일(YAML 템플릿/tool_definitions.py)이 아예 없는
+            # 프로필. 일반 로딩 오류(500)와 구분할 수 있도록 no_definitions 마커를
+            # 함께 돌려주고, 라우트에서 "편집 불가" 상태(빈 목록 + 안내)로 처리한다.
+            return {
+                "error": (
+                    "이 프로필은 편집 가능한 도구 정의 파일이 없습니다. "
+                    f"(template: {yaml_path}, definitions: {tool_path or '(미설정)'} 모두 없음) "
+                    "서버 코드에 MCP_TOOLS 가 인라인으로 정의된 도메인입니다."
+                ),
+                "no_definitions": True,
+            }
+        spec = importlib.util.spec_from_file_location("tool_definitions", tool_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module.MCP_TOOLS

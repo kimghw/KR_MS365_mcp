@@ -37,16 +37,30 @@ def _get_callback_port_from_env(default: int = 5000) -> int:
 
 def get_default_user_email() -> Optional[str]:
     """
-    auth.db의 azure_user_info 테이블에서 첫 번째 사용자 이메일을 가져옴
+    기본 사용자 이메일을 결정한다.
+
+    이전 구현은 `list_users()[0]` 을 썼는데, 해당 쿼리가 updated_at DESC 정렬이라
+    토큰이 갱신될 때마다 대상 사용자가 암묵적으로 바뀌었다. 사용자 선택 정책은
+    mcp_common.user_resolver 로 일원화돼 있으므로 여기서는 그쪽에 위임한다
+    (MS365_DEFAULT_USER_EMAIL > 유효 토큰 보유자 우선 > 이메일 사전순).
 
     Returns:
-        첫 번째 사용자의 이메일 또는 None
+        기본 사용자의 이메일 또는 None
     """
-    db = AuthDatabase()
-    users = db.list_users()
-    if users:
-        return users[0].get('user_email') or users[0].get('email')
-    return None
+    try:
+        from mcp_common.user_resolver import resolve_user_email
+
+        return resolve_user_email()
+    except ImportError:
+        # mcp_common 없이 session 만 떼어 쓰는 경우를 위한 폴백 (결정적 정렬 유지)
+        db = AuthDatabase()
+        users = db.list_users() or []
+        emails = [
+            u.get('user_email') or u.get('email')
+            for u in users
+            if u.get('user_email') or u.get('email')
+        ]
+        return sorted(emails, key=str.lower)[0] if emails else None
 
 
 class AuthManager:

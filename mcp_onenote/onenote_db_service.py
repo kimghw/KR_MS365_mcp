@@ -367,8 +367,10 @@ class OneNoteDBService:
             return [dict(row) for row in rows]
 
         except Exception as e:
+            # "결과 0건"은 정상적으로 빈 리스트를 반환한다. 여기 도달하면 실제 DB
+            # 오류이므로 [] 로 위장하지 않고 예외를 전파해 상위에서 실패로 드러낸다.
             logger.error(f"[ERROR] 아이템 목록 조회 실패: {e}")
-            return []
+            raise
         finally:
             conn.close()
 
@@ -461,6 +463,7 @@ class OneNoteDBService:
             동기화 결과
         """
         synced_count = 0
+        failed_count = 0
 
         for page in pages:
             page_id = page.get("id")
@@ -483,9 +486,27 @@ class OneNoteDBService:
                 web_url=web_url,
             ):
                 synced_count += 1
+            else:
+                failed_count += 1
 
-        logger.info(f"페이지 동기화 완료: {synced_count}개")
-        return {"success": True, "synced": synced_count}
+        total = len(pages)
+        logger.info(f"페이지 동기화 완료: {synced_count}개 (실패 {failed_count}개)")
+
+        # 부분 실패를 은폐하지 않는다. 전량 실패(하나도 저장 못 함)는 실제 실패로
+        # 드러내고, 일부만 실패한 경우는 partial 플래그로 표시하되 성공으로 둔다.
+        result: Dict[str, Any] = {
+            "synced": synced_count,
+            "failed": failed_count,
+            "total": total,
+        }
+        if failed_count and synced_count == 0:
+            result["success"] = False
+            result["error"] = "sync_all_failed"
+        else:
+            result["success"] = True
+            if failed_count:
+                result["partial"] = True
+        return result
 
     # ========================================================================
     # 페이지 요약 관리

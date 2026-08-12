@@ -1,485 +1,200 @@
 """
-FastAPI MCP Server for File Handler MCP Server
-Routes MCP protocol requests to service functions
-Generated from universal template with registry data and protocol selection
-"""
-import json
-from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import sys
-import os
-import logging
-import aiohttp
+FileHandler MCP REST 서버 (FastAPI, JSON over HTTP)
 
-# Add parent directories to path for module access
+보안 주의:
+    - 이 서버에는 **호출자 인증이 없다**. 기본 바인드는 loopback(127.0.0.1) 전용이며,
+      외부 노출은 `MCP_BIND_HOST` + `MCP_ALLOW_PUBLIC_BIND=1` 옵트인이 필요하다.
+    - 도구가 여는 모든 파일/디렉터리는 `mcp_common.paths` 허용 루트로 제한된다
+      (기본: 프로젝트 루트, `MCP_ALLOWED_PATHS` 로 확장).
+
+표준 MCP Streamable HTTP 클라이언트는 `server_stream.py` 의 `/mcp` 를 쓴다.
+이 모듈은 그와 별개인 **단순 REST 래퍼**(`/mcp/v1/*`)이며, 도구 실행은 동일한
+`ToolRuntime` 을 경유한다(동기 핸들러를 `await` 하던 버그가 재발하지 않는다).
+실패는 성공 200 이 아니라 적절한 HTTP 상태코드로 나간다.
+"""
+
+import logging
+import os
+import sys
+from typing import Any, Dict, Tuple
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 
-# Add paths for imports based on server type
-file_handler_dir = os.path.join(grandparent_dir, "mcp_file_handler")
-sys.path.insert(0, file_handler_dir)  # For file_handler relative imports
-sys.path.insert(0, grandparent_dir)  # For session module and package imports
-sys.path.insert(0, parent_dir)  # For direct module imports
+for _path in (grandparent_dir, parent_dir, current_dir):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-# Import types dynamically based on type_info
-
-# Import tool definitions
-try:
-    from .tool_definitions import MCP_TOOLS
-except ImportError:
-    from tool_definitions import MCP_TOOLS
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import service classes (unique)
-from mcp_file_handler.file_manager import FileManager
+from mcp_common.errors import ToolExecutionError, ToolValidationError
+from mcp_common.net import resolve_bind_host
+from mcp_common.runtime import build_health_payload, health_status_code
 
-# Create service instances
-file_manager = FileManager()
-
-# ============================================================
-# Common MCP protocol utilities (shared across protocols)
-# ============================================================
-
-SUPPORTED_PROTOCOLS = {"rest", "stdio", "stream"}
-
-# Pre-computed tool -> implementation mapping
-TOOL_IMPLEMENTATIONS = {
-    "convert_file_to_text": {
-        "service_class": "FileManager",
-        "method": "process"
-    },
-    "process_directory": {
-        "service_class": "FileManager",
-        "method": "process_directory"
-    },
-    "save_file_metadata": {
-        "service_class": "FileManager",
-        "method": "save_metadata"
-    },
-    "search_metadata": {
-        "service_class": "FileManager",
-        "method": "search_metadata"
-    },
-    "convert_onedrive_to_text": {
-        "service_class": "FileManager",
-        "method": "process_onedrive"
-    },
-    "get_file_metadata": {
-        "service_class": "FileManager",
-        "method": "get_metadata"
-    },
-    "delete_file_metadata": {
-        "service_class": "FileManager",
-        "method": "delete_metadata"
-    },
-}
-
-# Pre-computed service class -> instance mapping
-SERVICE_INSTANCES = {
-    "FileManager": file_manager,
-}
-
-
-def get_tool_config(tool_name: str) -> Optional[dict]:
-    """Lookup MCP tool definition by name"""
-    for tool in MCP_TOOLS:
-        if tool.get("name") == tool_name:
-            return tool
-    return None
-
-
-def get_tool_implementation(tool_name: str) -> Optional[dict]:
-    """Get implementation mapping for a tool"""
-    return TOOL_IMPLEMENTATIONS.get(tool_name)
-
-
-def get_service_instance(service_class: str):
-    """Get instantiated service by class name"""
-    return SERVICE_INSTANCES.get(service_class)
-
-
-def format_tool_result(result: Any) -> Dict[str, Any]:
-    """Normalize service results into a consistent MCP payload"""
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, list):
-        return {"items": result}
-    if isinstance(result, str):
-        return {"message": result}
-    if result is None:
-        return {"success": True}
-    return {"result": str(result)}
-
-
-def build_mcp_content(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Wrap normalized payload into MCP content envelope"""
-    return {
-        "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": json.dumps(payload, ensure_ascii=False, indent=2)
-                }
-            ]
-        }
-    }
-
-
-# ============================================================
-# Internal Args Support
-# ============================================================
-# Internal args are now embedded in tool definitions via mcp_service_factors
-# This data is passed from the generator as part of the context
-INTERNAL_ARGS = {}
-
-# Build INTERNAL_ARG_TYPES dynamically based on imported types
-INTERNAL_ARG_TYPES = {}
-
-
-def extract_schema_defaults(arg_info: dict) -> dict:
-    """Extract default values from original_schema.properties."""
-    original_schema = arg_info.get("original_schema", {})
-    properties = original_schema.get("properties", {})
-    defaults = {}
-    for prop_name, prop_def in properties.items():
-        if "default" in prop_def:
-            defaults[prop_name] = prop_def["default"]
-    return defaults
-
-
-def build_internal_param(tool_name: str, arg_name: str, runtime_value: dict = None):
-    """Instantiate internal parameter object for a tool.
-
-    Value resolution priority:
-    1. runtime_value: Dynamic value passed from function arguments at runtime
-    2. stored value: Value from INTERNAL_ARGS (generated from mcp_service_factors)
-    3. defaults: Static value from original_schema.properties
-    """
-    arg_info = INTERNAL_ARGS.get(tool_name, {}).get(arg_name)
-    if not arg_info:
-        return None
-
-    param_cls = INTERNAL_ARG_TYPES.get(arg_info.get("type"))
-    if not param_cls:
-        logger.warning(f"Unknown internal arg type for {tool_name}.{arg_name}: {arg_info.get('type')}")
-        return None
-
-    defaults = extract_schema_defaults(arg_info)
-    stored_value = arg_info.get("value")
-
-    if runtime_value is not None and runtime_value != {}:
-        final_value = {**defaults, **runtime_value}
-    elif stored_value is not None and stored_value != {}:
-        final_value = {**defaults, **stored_value}
-    else:
-        final_value = defaults
-
-    if not final_value:
-        return param_cls()
-
-    try:
-        return param_cls(**final_value)
-    except Exception as exc:
-        logger.warning(f"Failed to build internal arg {tool_name}.{arg_name}: {exc}")
-        return None
-
-
-def model_to_dict(model):
-    if model is None:
-        return {}
-    if isinstance(model, dict):
-        return model
-    if hasattr(model, "model_dump"):
-        return model.model_dump(exclude_none=True)
-    if hasattr(model, "dict"):
-        return model.dict(exclude_none=True)
-    return {}
-
-
-def merge_param_data(internal_data: dict, runtime_data):
-    if not runtime_data:
-        return internal_data or None
-    if internal_data:
-        return {**internal_data, **runtime_data}
-    return runtime_data
-
-# Tool handler functions
-
-async def handle_convert_file_to_text(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle convert_file_to_text tool call"""
-
-    # Extract parameters from args
-    # Extract from input with source param name
-    input_path = args["input_path"]
-
-    return await file_manager.process(
-        input_path=input_path
+try:
+    from .handlers import (
+        MCP_TOOLS,
+        SERVER_NAME,
+        SERVER_VERSION,
+        build_lifecycle,
+        build_runtime,
+        security_payload,
+    )
+except ImportError:  # 스크립트 직접 실행
+    from handlers import (  # type: ignore[no-redef]
+        MCP_TOOLS,
+        SERVER_NAME,
+        SERVER_VERSION,
+        build_lifecycle,
+        build_runtime,
+        security_payload,
     )
 
-async def handle_process_directory(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle process_directory tool call"""
+DEFAULT_REST_PORT = 8000
 
-    # Extract parameters from args
-    # Extract from input with source param name
-    directory_path = args["directory_path"]
+runtime = build_runtime()
+lifecycle = build_lifecycle()
 
-    return await file_manager.process_directory(
-        directory_path=directory_path
-    )
-
-async def handle_save_file_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle save_file_metadata tool call"""
-
-    # Extract parameters from args
-    # Extract from input with source param name
-    file_url = args["file_url"]
-    # Extract from input with source param name
-    keywords = args["keywords"]
-    additional_metadata = args.get("additional_metadata")
-
-    # Convert dicts to parameter objects where needed
-    additional_metadata_internal_data = {}
-    # Use already extracted value if it exists
-    # Value was already extracted above, use the existing variable
-    additional_metadata_data = merge_param_data(additional_metadata_internal_data, additional_metadata)
-    additional_metadata = dict(**additional_metadata_data) if additional_metadata_data is not None else None
-    # Prepare call arguments
-    call_args = {}
-
-    # Add signature parameters
-    call_args["file_url"] = file_url
-    call_args["keywords"] = keywords
-    call_args["additional_metadata"] = additional_metadata
-
-    return await file_manager.save_metadata(**call_args)
-
-async def handle_search_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle search_metadata tool call"""
-
-    # Extract parameters from args
-
-    return await file_manager.search_metadata(
-    )
-
-async def handle_convert_onedrive_to_text(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle convert_onedrive_to_text tool call"""
-
-    # Extract parameters from args
-    # Extract from input with source param name
-    url = args["url"]
-
-    return await file_manager.process_onedrive(
-        url=url
-    )
-
-async def handle_get_file_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle get_file_metadata tool call"""
-
-    # Extract parameters from args
-    # Extract from input with source param name
-    file_url = args["file_url"]
-
-    return await file_manager.get_metadata(
-        file_url=file_url
-    )
-
-async def handle_delete_file_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle delete_file_metadata tool call"""
-
-    # Extract parameters from args
-    # Extract from input with source param name
-    file_url = args["file_url"]
-
-    return await file_manager.delete_metadata(
-        file_url=file_url
-    )
-# ============================================================
-# REST API Protocol Handlers for MCP
-# ============================================================
-# Note: This template is included by universal_server_template.jinja2
-# All common imports and utilities are defined in the parent template
-
-app = FastAPI(title="File Handler MCP Server", version="1.0.0")
+app = FastAPI(title="File Handler MCP Server (REST)", version=SERVER_VERSION)
 
 
 @app.on_event("startup")
-async def startup_event():
-    """Initialize services on server startup"""
-    if hasattr(file_manager, 'initialize'):
-        await file_manager.initialize()
-        logger.info("FileManager initialized")
-    logger.info("File Handler MCP Server started")
+async def startup_event() -> None:
+    await lifecycle.startup()
+    if lifecycle.errors:
+        logger.error("초기화 실패로 degraded 상태입니다: %s", lifecycle.errors)
+    logger.info("File Handler MCP REST server started (tools=%d)", len(runtime.tools))
 
 
 @app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on server shutdown"""
-    logger.info("File Handler MCP Server stopped")
+async def shutdown_event() -> None:
+    await lifecycle.shutdown()
+    logger.info("File Handler MCP REST server stopped")
 
 
 @app.get("/")
-async def root():
-    """Root endpoint"""
+async def root() -> Dict[str, Any]:
     return {
-        "name": "File Handler MCP Server",
-        "version": "1.0.0"
+        "name": "File Handler MCP Server (REST)",
+        "version": SERVER_VERSION,
+        "standard_endpoint": "server_stream.py 의 /mcp (Streamable HTTP)",
+        "security": security_payload(),
     }
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "server": "file_handler"}
+async def health_check() -> JSONResponse:
+    payload = build_health_payload(
+        SERVER_NAME, runtime, lifecycle, version=SERVER_VERSION, protocol="rest"
+    )
+    payload["security"] = security_payload()
+    return JSONResponse(content=payload, status_code=health_status_code(payload))
 
 
 @app.post("/mcp/v1/initialize")
-async def initialize(request: Request):
-    """Initialize MCP session"""
-    body = await request.json()
+async def initialize(request: Request) -> Dict[str, Any]:
     return {
-        "protocolVersion": "1.0",
-        "serverInfo": {
-            "name": "file_handler-mcp-server",
-            "version": "1.0.0"
-        },
-        "capabilities": {
-            "tools": {}
-        }
+        "serverInfo": {"name": f"{SERVER_NAME}-mcp-server", "version": SERVER_VERSION},
+        "capabilities": {"tools": {}},
+        "note": "표준 MCP 클라이언트는 server_stream.py 의 /mcp 를 사용하십시오.",
     }
 
 
 @app.post("/mcp/v1/tools/list")
-async def list_tools(request: Request):
-    """List available MCP tools"""
-    try:
-        # Get tools metadata
-        tools_list = []
-        for tool in MCP_TOOLS:
-            tools_list.append({
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "inputSchema": tool.get("inputSchema", {})
-            })
+async def list_tools(request: Request) -> JSONResponse:
+    tools_list = [
+        {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "inputSchema": runtime.input_schema(tool["name"]),
+        }
+        for tool in MCP_TOOLS
+        if tool.get("name")
+    ]
+    return JSONResponse(content={"result": {"tools": tools_list}})
 
-        return JSONResponse(content={
-            "result": {
-                "tools": tools_list
-            }
-        })
-    except Exception as e:
-        logger.error(f"Error listing tools: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"message": str(e)}}
-        )
+
+def _status_for(error: ToolExecutionError) -> Tuple[int, Dict[str, Any]]:
+    """도구 실행 실패를 적절한 HTTP 상태코드로 매핑한다."""
+    payload = error.payload if isinstance(error.payload, dict) else {"message": str(error)}
+    code = str(payload.get("error") or "")
+
+    if isinstance(error, ToolValidationError) or code == "invalid_arguments":
+        return 400, payload
+    if code == "unknown_tool":
+        return 404, payload
+    if code in ("not_found",):
+        return 404, payload
+    if code in ("PathNotAllowedError", "NotADirectoryError", "ValueError", "KeyError"):
+        return 400, payload
+    if code in ("FileNotFoundError",):
+        return 404, payload
+
+    # FileManager.process() 는 경로 거부/미존재 예외를 잡아서 {"success": false,
+    # "errors": [...]} 로 반환한다. 이 payload 에는 error/message 키가 없으므로,
+    # errors 목록 문자열을 함께 살펴 400/404 로 매핑한다(그렇지 않으면 전부 500).
+    error_text = " ".join(str(e) for e in payload.get("errors") or []).lower()
+    if "no converter available" in error_text or "unsupported" in error_text:
+        return 400, payload
+    if "outside allowed roots" in error_text or "path outside" in error_text or "not allowed" in error_text:
+        return 400, payload
+    if "does not exist" in error_text or "no such file" in error_text or "not found" in error_text:
+        return 404, payload
+
+    message = str(payload.get("message") or "").lower()
+    if "401" in message or "unauthorized" in message or "token expired" in message:
+        return 401, payload
+    if "403" in message or "forbidden" in message or "permission" in message:
+        return 403, payload
+    return 500, payload
 
 
 @app.post("/mcp/v1/tools/call")
-async def call_tool(request: Request):
-    """Execute an MCP tool"""
+async def call_tool(request: Request) -> JSONResponse:
+    tool_name = None
     try:
         data = await request.json()
         tool_name = data.get("name")
-        arguments = data.get("arguments", {})
+        arguments = data.get("arguments", {}) or {}
 
-        logger.info(f"Tool call: {tool_name} with args: {arguments}")
-
-        implementation_info = get_tool_implementation(tool_name)
-        if not implementation_info:
+        if not tool_name:
             return JSONResponse(
-                status_code=404,
-                content={"error": {"message": f"Unknown tool: {tool_name}"}}
+                status_code=400, content={"error": {"message": "Tool name is required"}}
             )
 
-        # Get service instance by class name
-        service_class = implementation_info["service_class"]
-        service_instance = get_service_instance(service_class)
+        logger.info("Tool call: %s", tool_name)
 
-        if not service_instance:
-            return JSONResponse(
-                status_code=500,
-                content={"error": {"message": f"Service not available: {service_class}"}}
-            )
+        # ToolRuntime 이 기본값 주입/검증/동기·비동기 호출/오류 정규화를 모두 처리한다.
+        blocks = await runtime.call(tool_name, arguments)
+        return JSONResponse(content={"result": {"content": blocks}})
 
-        # Get the handler function (handle_<tool_name>)
-        handler_name = f"handle_{tool_name}"
-        handler = globals().get(handler_name)
-        if not handler:
-            return JSONResponse(
-                status_code=500,
-                content={"error": {"message": f"Handler not found: {handler_name}"}}
-            )
-
-        # Call the handler function directly with the arguments
-        result = await handler(arguments)
-
-        response_content = format_tool_result(result)
-        return JSONResponse(content=build_mcp_content(response_content))
-
-    except aiohttp.ClientResponseError as e:
-        # HTTP-level errors from external API calls
-        logger.error(f"API error executing tool {tool_name}: {e.status} {e.message}", exc_info=True)
-        if e.status == 401:
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"code": "AUTH_EXPIRED", "message": "Access token expired or invalid. Re-authentication required."}}
-            )
-        elif e.status == 403:
-            return JSONResponse(
-                status_code=403,
-                content={"error": {"code": "PERMISSION_DENIED", "message": "Insufficient permissions for this operation."}}
-            )
-        elif e.status == 404:
-            return JSONResponse(
-                status_code=404,
-                content={"error": {"code": "NOT_FOUND", "message": f"Resource not found: {e.message}"}}
-            )
-        elif e.status == 429:
-            return JSONResponse(
-                status_code=429,
-                content={"error": {"code": "RATE_LIMITED", "message": "API rate limit exceeded. Please retry later."}}
-            )
-        else:
-            return JSONResponse(
-                status_code=e.status,
-                content={"error": {"code": "API_ERROR", "message": str(e)}}
-            )
-    except HTTPException as e:
-        # FastAPI HTTP exceptions (pass through)
-        logger.error(f"HTTP error executing tool {tool_name}: {e.status_code} {e.detail}", exc_info=True)
-        return JSONResponse(
-            status_code=e.status_code,
-            content={"error": {"code": "HTTP_ERROR", "message": e.detail}}
-        )
-    except Exception as e:
-        # Check for auth-related keywords in generic exceptions
-        error_str = str(e).lower()
-        if "401" in error_str or "unauthorized" in error_str or "token expired" in error_str:
-            logger.error(f"Auth error executing tool {tool_name}: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"code": "AUTH_EXPIRED", "message": "Authentication failed. Re-authentication required."}}
-            )
-        elif "403" in error_str or "forbidden" in error_str or "permission" in error_str:
-            logger.error(f"Permission error executing tool {tool_name}: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=403,
-                content={"error": {"code": "PERMISSION_DENIED", "message": "Permission denied."}}
-            )
-
-        # General internal error
-        logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+    except ToolExecutionError as exc:
+        status, payload = _status_for(exc)
+        logger.warning("Tool %s failed (%s): %s", tool_name, status, exc)
+        return JSONResponse(status_code=status, content={"error": payload})
+    except Exception as exc:  # noqa: BLE001 - 마지막 방어선
+        logger.error("Unexpected error executing tool %s: %s", tool_name, exc, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            content={"error": {"code": "INTERNAL_ERROR", "message": str(exc)}},
         )
 
-if __name__ == "__main__":
+
+def run(host: str = None, port: int = DEFAULT_REST_PORT) -> None:
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    bind_host = resolve_bind_host(host, server_name=SERVER_NAME)
+    logger.info("Starting File Handler MCP REST server on %s:%s", bind_host, port)
+    uvicorn.run(app, host=bind_host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    # controller(MCPServerManager)는 프로필 포트를 MCP_SERVER_PORT 로 전달한다.
+    # 예전 MCP_REST_PORT 도 하위 호환으로 계속 받되, MCP_SERVER_PORT 를 우선한다.
+    _port = os.environ.get("MCP_SERVER_PORT") or os.environ.get("MCP_REST_PORT") or DEFAULT_REST_PORT
+    run(port=int(_port))

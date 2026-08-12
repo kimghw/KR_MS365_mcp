@@ -32,22 +32,14 @@ sys.path.insert(0, grandparent_dir)
 sys.path.insert(0, parent_dir)
 
 from mcp_onedrive.onedrive_service import OneDriveService
-from session.auth_database import AuthDatabase
+from mcp_common.errors import ToolExecutionError
+from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.user_resolver import resolve_user_email
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-
-def get_default_user_email() -> Optional[str]:
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to get default user email: {e}")
-        return None
+SERVER_NAME = "onedrive"
 
 
 MCP_TOOLS: List[Dict[str, Any]] = [
@@ -93,7 +85,8 @@ onedrive_service = OneDriveService()
 
 
 def _resolve_user_email(args):
-    return args.get("user_email") or get_default_user_email()
+    """사용자 선택은 mcp_common 정책(SSOT)에 위임. 없으면 ToolExecutionError."""
+    return resolve_user_email(args.get("user_email"), required=True)
 
 
 async def handle_get_drive_info(args):
@@ -144,23 +137,14 @@ TOOL_HANDLERS = {
 }
 
 
+# stream transport 와 동일한 dispatch/검증/오류 계약을 공유한다.
+runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+lifecycle = ServiceLifecycle(SERVER_NAME, [onedrive_service])
+
+
 def get_tool_config(tool_name: str) -> Optional[dict]:
-    for tool in MCP_TOOLS:
-        if tool.get("name") == tool_name:
-            return tool
-    return None
-
-
-def apply_schema_defaults(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    tool_config = get_tool_config(tool_name)
-    if not tool_config:
-        return arguments
-    properties = tool_config.get("inputSchema", {}).get("properties", {})
-    merged = dict(arguments) if arguments else {}
-    for prop_name, prop_def in properties.items():
-        if prop_name not in merged and "default" in prop_def:
-            merged[prop_name] = prop_def["default"]
-    return merged
+    """하위 호환용 조회 헬퍼."""
+    return runtime.tool_config(tool_name)
 
 
 class StdioMCPServer:
@@ -209,20 +193,14 @@ class StdioMCPServer:
         arguments = params.get("arguments", {})
         if not tool_name:
             raise ValueError("Tool name required")
-        arguments = apply_schema_defaults(tool_name, arguments)
-        handler = TOOL_HANDLERS.get(tool_name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {tool_name}")
         try:
-            result = await handler(arguments)
-            if isinstance(result, dict) and result.get("status") == "auth_required":
-                return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}], "isError": True}
-            if isinstance(result, str):
-                return {"content": [{"type": "text", "text": result}]}
-            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2, default=str)}]}
-        except Exception as e:
-            logger.error(f"Error executing {tool_name}: {e}", exc_info=True)
-            raise
+            # 기본값 주입 + 스키마 검증 + 오류 정규화를 ToolRuntime 이 수행한다.
+            blocks = await runtime.call(tool_name, arguments)
+            return {"content": blocks}
+        except ToolExecutionError as e:
+            # 실패는 "성공처럼 보이는 TextContent" 가 아니라 isError=True 로 나간다.
+            logger.warning(f"Tool {tool_name} failed: {e}")
+            return {"content": [{"type": "text", "text": str(e)}], "isError": True}
 
     async def handle_request(self, request):
         request_id = request.get("id")
@@ -258,11 +236,7 @@ class StdioMCPServer:
 
     async def run(self):
         self.running = True
-        try:
-            await onedrive_service.initialize()
-            logger.info("OneDriveService initialized")
-        except Exception as e:
-            logger.warning(f"OneDriveService init failed: {e}")
+        await lifecycle.startup()
         logger.info("OneDrive MCP STDIO Server started")
         try:
             while self.running:
@@ -278,10 +252,7 @@ class StdioMCPServer:
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
         finally:
-            try:
-                await onedrive_service.close()
-            except Exception:
-                pass
+            await lifecycle.shutdown()
             logger.info("OneDrive MCP STDIO Server stopped")
 
 

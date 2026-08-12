@@ -370,8 +370,15 @@ class OneNoteAgent:
         """저장된 페이지 요약 조회"""
         summary = self._db_service.get_summary(page_id)
         if summary:
-            return {"success": True, **summary}
-        return {"success": False, "message": f"페이지 '{page_id}'의 요약이 없습니다."}
+            return {"success": True, "has_summary": True, **summary}
+        # 이 경로는 summarize 를 호출하지 않으므로 한 번도 요약되지 않은 페이지는
+        # 정상적으로 요약이 없을 수 있다. "결과 없음"을 실패로 올리지 않는다.
+        return {
+            "success": True,
+            "has_summary": False,
+            "page_id": page_id,
+            "message": f"페이지 '{page_id}'의 요약이 없습니다.",
+        }
 
     async def list_summarized_pages(
         self,
@@ -405,9 +412,12 @@ class OneNoteAgent:
             관련 페이지 목록과 요약
         """
         if not is_sdk_available():
+            # SDK 미설치는 이 검색 기능만 건너뛰는 것이지 도구 실행 실패가 아니다.
             return {
-                "success": False,
+                "success": True,
                 "skipped": True,
+                "results": [],
+                "count": 0,
                 "message": "Claude Code SDK가 설치되지 않았습니다.",
             }
 

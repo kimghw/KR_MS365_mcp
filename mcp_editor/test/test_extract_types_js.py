@@ -52,20 +52,14 @@ def test_map_sequelize_to_json_type():
         ("UNKNOWN_TYPE", "any"),
     ]
 
-    passed = 0
-    failed = 0
+    failures = []
 
     for seq_type, expected in test_cases:
         result = map_sequelize_to_json_type(seq_type)
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: map_sequelize_to_json_type('{seq_type}') = '{result}' (expected: '{expected}')")
+        if result != expected:
+            failures.append(f"map_sequelize_to_json_type('{seq_type}') = '{result}' (expected: '{expected}')")
 
-    print(f"  Result: {passed} passed, {failed} failed")
-    return failed == 0
+    assert not failures, "Sequelize 타입 매핑 불일치:\n  " + "\n  ".join(failures)
 
 
 def test_map_zod_to_json_type():
@@ -85,20 +79,14 @@ def test_map_zod_to_json_type():
         ("unknown", "any"),
     ]
 
-    passed = 0
-    failed = 0
+    failures = []
 
     for zod_type, expected in test_cases:
         result = map_zod_to_json_type(zod_type)
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: map_zod_to_json_type('{zod_type}') = '{result}' (expected: '{expected}')")
+        if result != expected:
+            failures.append(f"map_zod_to_json_type('{zod_type}') = '{result}' (expected: '{expected}')")
 
-    print(f"  Result: {passed} passed, {failed} failed")
-    return failed == 0
+    assert not failures, "Zod 타입 매핑 불일치:\n  " + "\n  ".join(failures)
 
 
 def test_extract_sequelize_models_from_file():
@@ -165,9 +153,7 @@ module.exports = Employee;
 
         print(f"  Found {len(models)} Sequelize model(s)")
 
-        if "Employee" not in models:
-            print("  FAIL: Employee model not found")
-            return False
+        assert "Employee" in models, f"Employee 모델을 찾지 못했다 (추출된 모델: {list(models)})"
 
         employee = models["Employee"]
         properties = employee.get("properties", [])
@@ -201,16 +187,6 @@ module.exports = Employee;
             assert metadata_prop["type"] == "object", f"metadata should be object, got {metadata_prop['type']}"
 
         print("  PASS: All assertions passed")
-        return True
-
-    except AssertionError as e:
-        print(f"  FAIL: {e}")
-        return False
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
     finally:
         os.unlink(temp_file)
 
@@ -248,37 +224,37 @@ module.exports = User;
             # Scan the temp directory
             result = scan_js_project_types(temp_dir)
 
+            assert "models" in result, "결과에 models 키가 있어야 한다"
+            assert "all_properties" in result, "결과에 all_properties 키가 있어야 한다"
+            # 방금 만든 샘플 모델(User)은 반드시 잡혀야 한다.
+            assert "User" in result["models"], f"샘플 User 모델을 스캔하지 못했다 (결과: {list(result['models'])})"
+
             print(f"  Found {len(result['models'])} models")
             print(f"  Total properties: {len(result['all_properties'])}")
 
-            if result["models"]:
-                for model_name in result["models"]:
-                    print(f"    - {model_name}")
+            for model_name in result["models"]:
+                print(f"    - {model_name}")
 
             print("  PASS: scan_js_project_types works with sample data")
-            return True
     else:
-        try:
-            result = scan_js_project_types(str(asset_dir))
+        result = scan_js_project_types(str(asset_dir))
 
-            print(f"  Found {len(result['models'])} models")
-            print(f"  Total properties: {len(result['all_properties'])}")
+        assert "models" in result, "결과에 models 키가 있어야 한다"
+        assert "all_properties" in result, "결과에 all_properties 키가 있어야 한다"
 
-            # List some models
-            for model_name in list(result["models"].keys())[:5]:
-                model = result["models"][model_name]
-                prop_count = len(model.get("properties", []))
-                print(f"    - {model_name}: {prop_count} properties")
+        print(f"  Found {len(result['models'])} models")
+        print(f"  Total properties: {len(result['all_properties'])}")
 
-            if len(result["models"]) > 5:
-                print(f"    ... and {len(result['models']) - 5} more")
+        # List some models
+        for model_name in list(result["models"].keys())[:5]:
+            model = result["models"][model_name]
+            prop_count = len(model.get("properties", []))
+            print(f"    - {model_name}: {prop_count} properties")
 
-            print("  PASS: scan_js_project_types works correctly")
-            return True
+        if len(result["models"]) > 5:
+            print(f"    ... and {len(result['models']) - 5} more")
 
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            return False
+        print("  PASS: scan_js_project_types works correctly")
 
 
 def test_export_js_types_property():
@@ -320,50 +296,46 @@ module.exports = Department;
 
         # Create output directory
         with tempfile.TemporaryDirectory() as output_dir:
-            try:
-                output_path = export_js_types_property(
-                    base_dir=temp_project,
-                    server_name="test_server",
-                    output_dir=output_dir
-                )
+            output_path = export_js_types_property(
+                base_dir=temp_project,
+                server_name="test_server",
+                output_dir=output_dir
+            )
 
-                print(f"  Generated: {output_path}")
+            print(f"  Generated: {output_path}")
 
-                # Verify file was created
-                assert Path(output_path).exists(), "Output file should exist"
+            # Verify file was created
+            assert Path(output_path).exists(), "Output file should exist"
 
-                # Load and verify content
-                with open(output_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+            # Load and verify content
+            with open(output_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
 
-                print(f"  Version: {data.get('version')}")
-                print(f"  Server: {data.get('server_name')}")
-                print(f"  Language: {data.get('language')}")
-                print(f"  Classes (models): {len(data.get('classes', []))}")
-                print(f"  All properties: {len(data.get('all_properties', []))}")
+            print(f"  Version: {data.get('version')}")
+            print(f"  Server: {data.get('server_name')}")
+            print(f"  Language: {data.get('language')}")
+            print(f"  Classes (models): {len(data.get('classes', []))}")
+            print(f"  All properties: {len(data.get('all_properties', []))}")
 
-                # Check structure
-                assert "classes" in data, "Should have classes field"
-                assert "properties_by_class" in data, "Should have properties_by_class field"
-                assert "all_properties" in data, "Should have all_properties field"
-                assert data.get("language") == "javascript", "Language should be javascript"
+            # Check structure
+            assert "classes" in data, "Should have classes field"
+            assert "properties_by_class" in data, "Should have properties_by_class field"
+            assert "all_properties" in data, "Should have all_properties field"
+            assert data.get("language") == "javascript", "Language should be javascript"
 
-                # Check models
-                class_names = [c["name"] for c in data["classes"]]
-                print(f"  Extracted models: {class_names}")
+            # Check models
+            class_names = [c["name"] for c in data["classes"]]
+            print(f"  Extracted models: {class_names}")
 
-                if "Employee" in class_names:
-                    emp_props = data["properties_by_class"].get("Employee", [])
-                    print(f"  Employee properties: {[p['name'] for p in emp_props]}")
+            # 위에서 employee.js / department.js 를 만들었으므로 둘 다 잡혀야 한다.
+            assert "Employee" in class_names, f"Employee 모델 누락 (추출: {class_names})"
+            assert "Department" in class_names, f"Department 모델 누락 (추출: {class_names})"
 
-                print("  PASS: export_js_types_property works correctly")
-                return True
+            emp_props = data["properties_by_class"].get("Employee", [])
+            assert emp_props, "Employee 의 properties 가 비어 있다"
+            print(f"  Employee properties: {[p['name'] for p in emp_props]}")
 
-            except Exception as e:
-                print(f"  FAIL: {e}")
-                import traceback
-                traceback.print_exc()
-                return False
+            print("  PASS: export_js_types_property works correctly")
 
 
 def run_all_tests():
@@ -380,26 +352,26 @@ def run_all_tests():
         test_export_js_types_property,
     ]
 
+    # 각 테스트는 이제 반환값이 아니라 예외(AssertionError)로 실패를 알린다.
     results = []
     for test_func in tests:
         try:
-            result = test_func()
-            results.append((test_func.__name__, result))
+            test_func()
+            results.append((test_func.__name__, "PASS"))
         except Exception as e:
-            print(f"  ERROR: {e}")
+            print(f"  FAIL: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            results.append((test_func.__name__, False))
+            results.append((test_func.__name__, "FAIL"))
 
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
 
-    passed = sum(1 for _, r in results if r)
-    failed = len(results) - passed
+    passed = sum(1 for _, r in results if r == "PASS")
+    failed = sum(1 for _, r in results if r == "FAIL")
 
-    for name, result in results:
-        status = "PASS" if result else "FAIL"
+    for name, status in results:
         print(f"  [{status}] {name}")
 
     print(f"\nTotal: {passed} passed, {failed} failed")

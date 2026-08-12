@@ -15,6 +15,7 @@ from flask import request, jsonify
 
 from . import backup_bp
 from ..config import get_profile_config, resolve_paths, ensure_dirs
+from ..safe_paths import PathNotAllowedError, resolve_request_path, path_error_payload
 
 
 @backup_bp.route("/api/backups", methods=["GET"])
@@ -55,7 +56,12 @@ def get_backup(filename):
         profile_conf = get_profile_config(profile)
         paths = resolve_paths(profile_conf)
 
-        file_path = os.path.join(paths["backup_dir"], filename)
+        # 심볼릭 링크로 백업 디렉터리 밖을 가리키는 경우까지 차단 (실행 대상 파일이므로)
+        try:
+            file_path = str(resolve_request_path(filename, base=paths["backup_dir"]))
+        except PathNotAllowedError as e:
+            return jsonify(path_error_payload(e, "filename")), 400
+
         if not os.path.exists(file_path):
             return jsonify({"error": "Backup not found"}), 404
 
@@ -80,7 +86,11 @@ def restore_backup(filename):
         paths = resolve_paths(profile_conf)
         ensure_dirs(paths)
 
-        backup_path = os.path.join(paths["backup_dir"], filename)
+        try:
+            backup_path = str(resolve_request_path(filename, base=paths["backup_dir"]))
+        except PathNotAllowedError as e:
+            return jsonify(path_error_payload(e, "filename")), 400
+
         if not os.path.exists(backup_path):
             return jsonify({"error": "Backup not found"}), 404
 

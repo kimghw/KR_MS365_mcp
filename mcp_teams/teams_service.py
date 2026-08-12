@@ -4,6 +4,7 @@ Teams Service - GraphTeamsClient Facade
 (mcp_outlook/outlook_service.py 구조 참조)
 """
 
+import logging
 from typing import Dict, Any, Optional, List
 
 from .graph_teams_client import GraphTeamsClient
@@ -12,13 +13,21 @@ from .teams_types import (
     ChatType,
     MessageImportance,
 )
-from session.auth_database import AuthDatabase
+from mcp_common.user_resolver import resolve_user_email
 
-# mcp_service decorator is only needed for registry scanning, not runtime
+logger = logging.getLogger(__name__)
+
+# mcp_service decorator 는 registry 스캔용 메타데이터일 뿐 런타임 동작에는 영향이 없다.
+# 실제 구현 경로는 mcp_editor/service_registry/python/decorator.py 이다.
 try:
-    from mcp_editor.mcp_service_registry.mcp_service_decorator import mcp_service
-except ImportError:
-    # Define a no-op decorator for runtime when mcp_editor is not available
+    from mcp_editor.service_registry.python.decorator import mcp_service
+except ImportError as _decorator_import_error:  # pragma: no cover - 선택적 의존성
+    logger.warning(
+        "mcp_editor.service_registry.python.decorator import 실패(%s) — "
+        "no-op decorator 로 대체합니다. 서비스 메타데이터가 registry 에 등록되지 않습니다.",
+        _decorator_import_error,
+    )
+
     def mcp_service(**kwargs):
         def decorator(func):
             return func
@@ -27,16 +36,12 @@ except ImportError:
 
 def _get_default_user_email() -> Optional[str]:
     """
-    auth.db의 azure_user_info 테이블에서 첫 번째 user_email을 가져옴
+    기본 사용자 이메일 조회 (mcp_common 의 결정적 선택 정책에 위임)
 
     Returns:
-        첫 번째 등록된 사용자의 이메일 또는 None
+        기본 사용자의 이메일 또는 None
     """
-    db = AuthDatabase()
-    users = db.list_users()
-    if users:
-        return users[0].get('user_email') or users[0].get('email')
-    return None
+    return resolve_user_email()
 
 
 class TeamsService:
@@ -422,8 +427,16 @@ class TeamsService:
             recipient_name=recipient_name,
         )
         if chat_id:
-            return {"success": True, "chat_id": chat_id}
-        return {"success": False, "message": f"'{recipient_name}' 채팅을 찾을 수 없습니다"}
+            return {"success": True, "found": True, "chat_id": chat_id}
+        # "검색 결과 없음"은 도구 실행 실패가 아니다. success=False 로 돌려주면
+        # 공통 오류 계약(mcp_common.errors.is_failure)이 isError=True 로 승격시켜
+        # 정상적인 빈 결과가 오류로 보이게 된다.
+        return {
+            "success": True,
+            "found": False,
+            "chat_id": None,
+            "message": f"'{recipient_name}' 채팅을 찾을 수 없습니다",
+        }
 
     @mcp_service(
         tool_name="handler_teams_sync_chats",

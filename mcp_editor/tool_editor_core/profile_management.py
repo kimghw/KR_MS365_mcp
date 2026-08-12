@@ -148,7 +148,8 @@ def update_editor_config_for_reuse(
         "tool_definitions_path": f"../mcp_{new_profile_name}/mcp_server/tool_definitions.py",
         "backup_dir": f"mcp_{new_profile_name}/backups",
         "types_files": existing_conf.get("types_files", []),  # Same types!
-        "host": "0.0.0.0",
+        # 기본은 loopback. 외부 노출은 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND 로 옵트인한다.
+        "host": "127.0.0.1",
         "port": port,
         "is_reused": True  # Mark as reused profile
     }

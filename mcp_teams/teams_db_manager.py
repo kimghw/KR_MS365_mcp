@@ -120,12 +120,16 @@ class TeamsDBManager:
                 logger.info(f"사용자 '{recipient_name}' 채팅 찾음: {chat_id}")
                 return chat_id
             else:
+                # 정상적인 "검색 결과 없음"은 None 으로 돌려주고, 상위 서비스가
+                # soft(success:True, found:False)로 변환한다.
                 logger.warning(f"[WARN] 사용자 '{recipient_name}' 채팅을 찾을 수 없습니다")
                 return None
 
         except Exception as e:
+            # DB 예외를 None(미검색)으로 위장하면 실패가 정상처럼 보인다.
+            # 실제 예외는 전파해 상위에서 isError 로 드러낸다.
             logger.error(f"[ERROR] 채팅 검색 오류: {str(e)}")
-            return None
+            raise
         finally:
             conn.close()
 
@@ -177,7 +181,15 @@ class TeamsDBManager:
                     chat_id = row[0]
                     logger.info(f"영문 이름 '{topic_en}'으로 채팅 찾음: {chat_id}")
                 else:
-                    return {"success": False, "message": f"영문 이름 '{topic_en}'으로 채팅을 찾을 수 없습니다"}
+                    # 영문 이름으로 채팅을 못 찾은 것은 스키마상 합법적인 정상 상태다.
+                    # 도구 실행 실패가 아니므로 soft(saved:False)로 안내한다.
+                    return {
+                        "success": True,
+                        "saved": False,
+                        "found": False,
+                        "reason": "chat_not_found",
+                        "message": f"영문 이름 '{topic_en}'으로 채팅을 찾을 수 없습니다",
+                    }
 
             # chat_id로 한글 이름 업데이트
             if chat_id:
@@ -195,12 +207,22 @@ class TeamsDBManager:
                     logger.info(f"한글 이름 저장: {chat_id} -> {topic_kr}")
                     return {
                         "success": True,
+                        "saved": True,
                         "message": f"한글 이름 '{topic_kr}' 저장 완료",
                         "chat_id": chat_id
                     }
                 else:
-                    return {"success": False, "message": f"chat_id '{chat_id}'를 찾을 수 없습니다"}
+                    # rowcount 0 = 해당 chat 이 아직 DB 에 sync 되지 않음. 정상 상태이므로
+                    # soft(saved:False)로 안내한다(먼저 sync_chats 필요).
+                    return {
+                        "success": True,
+                        "saved": False,
+                        "reason": "not_synced",
+                        "chat_id": chat_id,
+                        "message": f"chat_id '{chat_id}'가 DB에 없습니다. 먼저 채팅을 동기화(sync)하세요",
+                    }
             else:
+                # chat_id/topic_en 둘 다 없음 = 입력 부족(validation). 실패로 유지.
                 return {"success": False, "message": "chat_id 또는 topic_en이 필요합니다"}
 
         except Exception as e:
@@ -237,6 +259,7 @@ class TeamsDBManager:
                     "topic_en": topic_en,
                     "topic_kr": topic_kr,
                     "success": False,
+                    "saved": False,
                     "message": "topic_en과 topic_kr이 모두 필요합니다"
                 })
                 failed_count += 1
@@ -249,7 +272,9 @@ class TeamsDBManager:
                 **result
             })
 
-            if result.get("success"):
+            # "저장됨" 여부는 success 가 아니라 saved 플래그로 센다. soft 전환 이후
+            # 못 찾음/미동기화는 success:True 지만 saved:False 이므로 미저장으로 집계.
+            if result.get("saved"):
                 saved_count += 1
             else:
                 failed_count += 1

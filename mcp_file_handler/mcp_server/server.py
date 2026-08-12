@@ -1,7 +1,14 @@
 """
-FastAPI MCP Server for File Handler
-Routes MCP protocol requests to FileManager functions
-Handles file conversion, metadata management, and OneDrive integration
+FastAPI MCP Server for File Handler (legacy REST, SessionManager 연동)
+
+보안 주의:
+    - 이 서버에는 **호출자 인증이 없다**. 기본 바인드는 loopback(127.0.0.1) 전용이며,
+      외부 노출은 `MCP_BIND_HOST` + `MCP_ALLOW_PUBLIC_BIND=1` 옵트인이 필요하다.
+    - 도구가 여는 모든 파일/디렉터리는 `FileManager` 내부에서 `mcp_common.paths`
+      허용 루트로 제한된다 (기본: 프로젝트 루트, `MCP_ALLOWED_PATHS` 로 확장).
+
+표준 MCP 클라이언트는 `server_stream.py` 의 `/mcp` 엔드포인트를 사용한다.
+여기의 FileManager 호출은 원래부터 동기 호출이라 await 버그 대상이 아니다.
 """
 import json
 from typing import Dict, Any, List, Optional
@@ -23,7 +30,10 @@ sys.path.insert(0, file_handler_dir)
 sys.path.insert(0, grandparent_dir)  # For session module
 sys.path.insert(0, parent_dir)  # For direct module imports
 
-from tool_definitions import MCP_TOOLS
+try:
+    from .tool_definitions import MCP_TOOLS
+except ImportError:  # 스크립트 직접 실행
+    from tool_definitions import MCP_TOOLS
 
 # Configure logging first
 logging.basicConfig(level=logging.INFO)
@@ -69,8 +79,8 @@ except ImportError:
     USE_SESSION_MANAGER = False
 
 # Import file handler components
-from file_manager import FileManager
-from metadata.manager import MetadataManager
+from mcp_file_handler.file_manager import FileManager
+from mcp_file_handler.metadata.manager import MetadataManager
 
 app = FastAPI(title="File Handler MCP Server", version="1.0.0")
 
@@ -210,4 +220,9 @@ async def call_tool(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8092)
+    from mcp_common.net import resolve_bind_host
+
+    bind_host = resolve_bind_host(server_name="file_handler")
+    port = int(os.environ.get("MCP_LEGACY_PORT", 8092))
+    logger.info(f"Starting File Handler MCP Server on {bind_host}:{port}")
+    uvicorn.run(app, host=bind_host, port=port)

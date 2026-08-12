@@ -322,6 +322,7 @@ class TestTeamsService:
         )
 
         assert result["success"] is True
+        assert result["found"] is True
         assert result["chat_id"] == "c1"
 
     @pytest.mark.asyncio
@@ -338,7 +339,10 @@ class TestTeamsService:
             recipient_name="존재하지않는사용자"
         )
 
-        assert result["success"] is False
+        # 미검색은 오류가 아니라 빈 결과다 (isError 로 승격되면 안 된다)
+        assert result["success"] is True
+        assert result["found"] is False
+        assert result["chat_id"] is None
 
     @pytest.mark.asyncio
     async def test_sync_chats(self, service, mock_client, mock_db_manager):

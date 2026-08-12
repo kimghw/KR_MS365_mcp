@@ -16,6 +16,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -49,20 +51,14 @@ def test_map_python_to_json_type():
         ("CustomClass", "object"),  # Unknown types -> object
     ]
 
-    passed = 0
-    failed = 0
+    failures = []
 
     for python_type, expected in test_cases:
         result = map_python_to_json_type(python_type)
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: map_python_to_json_type('{python_type}') = '{result}' (expected: '{expected}')")
+        if result != expected:
+            failures.append(f"map_python_to_json_type('{python_type}') = '{result}' (expected: '{expected}')")
 
-    print(f"  Result: {passed} passed, {failed} failed")
-    return failed == 0
+    assert not failures, "타입 매핑 불일치:\n  " + "\n  ".join(failures)
 
 
 def test_extract_class_properties_with_sample():
@@ -124,11 +120,6 @@ class NotABaseModel:
                 print(f"    - tags type: {prop['type']}")
 
         print("  PASS: All assertions passed")
-        return True
-
-    except AssertionError as e:
-        print(f"  FAIL: {e}")
-        return False
     finally:
         os.unlink(temp_file)
 
@@ -141,39 +132,35 @@ def test_extract_from_real_file():
     types_file = Path(__file__).parent.parent.parent / "mcp_outlook" / "outlook_types.py"
 
     if not types_file.exists():
-        print(f"  SKIP: File not found: {types_file}")
-        return True
+        pytest.skip(f"File not found: {types_file}")
 
-    try:
-        classes = extract_class_properties(str(types_file))
-        print(f"  Found {len(classes)} BaseModel class(es) in outlook_types.py")
+    classes = extract_class_properties(str(types_file))
+    print(f"  Found {len(classes)} BaseModel class(es) in outlook_types.py")
 
-        # List extracted classes
-        for class_name, class_info in list(classes.items())[:5]:
-            prop_count = len(class_info.get("properties", []))
-            print(f"    - {class_name}: {prop_count} properties")
+    assert isinstance(classes, dict), f"결과는 dict 여야 한다, got {type(classes)}"
+    assert classes, "outlook_types.py 에서 BaseModel 클래스를 하나도 추출하지 못했다"
 
-        if len(classes) > 5:
-            print(f"    ... and {len(classes) - 5} more classes")
+    # List extracted classes
+    for class_name, class_info in list(classes.items())[:5]:
+        prop_count = len(class_info.get("properties", []))
+        print(f"    - {class_name}: {prop_count} properties")
 
-        # Verify FilterParams exists (known class in outlook_types.py)
-        if "FilterParams" in classes:
-            filter_params = classes["FilterParams"]
-            print(f"  FilterParams has {len(filter_params['properties'])} properties")
+    if len(classes) > 5:
+        print(f"    ... and {len(classes) - 5} more classes")
 
-            # Check some known properties
-            prop_names = [p["name"] for p in filter_params["properties"]]
-            if "from_address" in prop_names:
-                print("    - from_address: found")
-            if "is_read" in prop_names:
-                print("    - is_read: found")
+    # Verify FilterParams exists (known class in outlook_types.py)
+    if "FilterParams" in classes:
+        filter_params = classes["FilterParams"]
+        assert filter_params["properties"], "FilterParams 의 properties 가 비어 있다"
+        print(f"  FilterParams has {len(filter_params['properties'])} properties")
 
-        print("  PASS: Successfully extracted from outlook_types.py")
-        return True
+        # Check some known properties
+        prop_names = [p["name"] for p in filter_params["properties"]]
+        for known in ("from_address", "is_read"):
+            if known in prop_names:
+                print(f"    - {known}: found")
 
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        return False
+    print("  PASS: Successfully extracted from outlook_types.py")
 
 
 def test_extract_single_class():
@@ -184,31 +171,22 @@ def test_extract_single_class():
     types_file = Path(__file__).parent.parent.parent / "mcp_outlook" / "outlook_types.py"
 
     if not types_file.exists():
-        print(f"  SKIP: File not found: {types_file}")
-        return True
+        pytest.skip(f"File not found: {types_file}")
 
-    try:
-        # Extract only FilterParams
-        class_info = extract_single_class(str(types_file), "FilterParams")
+    # Extract only FilterParams
+    class_info = extract_single_class(str(types_file), "FilterParams")
 
-        if class_info is None:
-            print("  FAIL: FilterParams not found")
-            return False
+    assert class_info is not None, "FilterParams 를 찾지 못했다"
 
-        print(f"  FilterParams found at line {class_info.get('line', '?')}")
-        print(f"  Properties: {len(class_info.get('properties', []))}")
+    print(f"  FilterParams found at line {class_info.get('line', '?')}")
+    print(f"  Properties: {len(class_info.get('properties', []))}")
 
-        # Try non-existent class
-        non_existent = extract_single_class(str(types_file), "NonExistentClass")
-        assert non_existent is None, "NonExistentClass should return None"
-        print("  NonExistentClass returns None as expected")
+    # Try non-existent class
+    non_existent = extract_single_class(str(types_file), "NonExistentClass")
+    assert non_existent is None, "NonExistentClass should return None"
+    print("  NonExistentClass returns None as expected")
 
-        print("  PASS: extract_single_class works correctly")
-        return True
-
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        return False
+    print("  PASS: extract_single_class works correctly")
 
 
 def test_scan_py_project_types():
@@ -219,33 +197,31 @@ def test_scan_py_project_types():
     outlook_dir = Path(__file__).parent.parent.parent / "mcp_outlook"
 
     if not outlook_dir.exists():
-        print(f"  SKIP: Directory not found: {outlook_dir}")
-        return True
+        pytest.skip(f"Directory not found: {outlook_dir}")
 
-    try:
-        result = scan_py_project_types(str(outlook_dir))
+    result = scan_py_project_types(str(outlook_dir))
 
-        print(f"  Found {len(result['classes'])} classes")
-        print(f"  Total properties: {len(result['all_properties'])}")
+    assert "classes" in result, "결과에 classes 키가 있어야 한다"
+    assert "all_properties" in result, "결과에 all_properties 키가 있어야 한다"
+    assert result["classes"], "mcp_outlook 에서 클래스를 하나도 스캔하지 못했다"
 
-        # List some classes
-        for class_name in list(result["classes"].keys())[:5]:
-            print(f"    - {class_name}")
+    print(f"  Found {len(result['classes'])} classes")
+    print(f"  Total properties: {len(result['all_properties'])}")
 
-        if len(result["classes"]) > 5:
-            print(f"    ... and {len(result['classes']) - 5} more")
+    # List some classes
+    for class_name in list(result["classes"].keys())[:5]:
+        print(f"    - {class_name}")
 
-        # Check all_properties format
-        if result["all_properties"]:
-            sample = result["all_properties"][0]
-            print(f"  Sample property: {sample.get('name')} (source: {sample.get('source')})")
+    if len(result["classes"]) > 5:
+        print(f"    ... and {len(result['classes']) - 5} more")
 
-        print("  PASS: scan_py_project_types works correctly")
-        return True
+    # Check all_properties format
+    if result["all_properties"]:
+        sample = result["all_properties"][0]
+        assert "name" in sample, "all_properties 항목에 name 이 있어야 한다"
+        print(f"  Sample property: {sample.get('name')} (source: {sample.get('source')})")
 
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        return False
+    print("  PASS: scan_py_project_types works correctly")
 
 
 def test_export_py_types_property():
@@ -256,45 +232,36 @@ def test_export_py_types_property():
     outlook_dir = Path(__file__).parent.parent.parent / "mcp_outlook"
 
     if not outlook_dir.exists():
-        print(f"  SKIP: Directory not found: {outlook_dir}")
-        return True
+        pytest.skip(f"Directory not found: {outlook_dir}")
 
     # Create temp output directory
     with tempfile.TemporaryDirectory() as temp_dir:
-        try:
-            output_path = export_py_types_property(
-                base_dir=str(outlook_dir),
-                server_name="outlook_test",
-                output_dir=temp_dir
-            )
+        output_path = export_py_types_property(
+            base_dir=str(outlook_dir),
+            server_name="outlook_test",
+            output_dir=temp_dir
+        )
 
-            print(f"  Generated: {output_path}")
+        print(f"  Generated: {output_path}")
 
-            # Verify file was created
-            assert Path(output_path).exists(), "Output file should exist"
+        # Verify file was created
+        assert Path(output_path).exists(), "Output file should exist"
 
-            # Load and verify content
-            with open(output_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+        # Load and verify content
+        with open(output_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-            print(f"  Version: {data.get('version')}")
-            print(f"  Server: {data.get('server_name')}")
-            print(f"  Classes: {len(data.get('classes', []))}")
-            print(f"  All properties: {len(data.get('all_properties', []))}")
+        print(f"  Version: {data.get('version')}")
+        print(f"  Server: {data.get('server_name')}")
+        print(f"  Classes: {len(data.get('classes', []))}")
+        print(f"  All properties: {len(data.get('all_properties', []))}")
 
-            # Check structure
-            assert "classes" in data, "Should have classes field"
-            assert "properties_by_class" in data, "Should have properties_by_class field"
-            assert "all_properties" in data, "Should have all_properties field"
+        # Check structure
+        assert "classes" in data, "Should have classes field"
+        assert "properties_by_class" in data, "Should have properties_by_class field"
+        assert "all_properties" in data, "Should have all_properties field"
 
-            print("  PASS: export_py_types_property works correctly")
-            return True
-
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+        print("  PASS: export_py_types_property works correctly")
 
 
 def run_all_tests():
@@ -312,27 +279,34 @@ def run_all_tests():
         test_export_py_types_property,
     ]
 
+    # 각 테스트는 이제 반환값이 아니라 예외(AssertionError)로 실패를 알린다.
+    # 예외 없이 끝나면 PASS, pytest.skip.Exception 이면 SKIP 으로 집계한다.
     results = []
     for test_func in tests:
         try:
-            result = test_func()
-            results.append((test_func.__name__, result))
+            test_func()
+            results.append((test_func.__name__, "PASS"))
+        except pytest.skip.Exception as e:
+            print(f"  SKIP: {e}")
+            results.append((test_func.__name__, "SKIP"))
         except Exception as e:
-            print(f"  ERROR: {e}")
-            results.append((test_func.__name__, False))
+            print(f"  FAIL: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            results.append((test_func.__name__, "FAIL"))
 
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
 
-    passed = sum(1 for _, r in results if r)
-    failed = len(results) - passed
+    passed = sum(1 for _, r in results if r == "PASS")
+    skipped = sum(1 for _, r in results if r == "SKIP")
+    failed = sum(1 for _, r in results if r == "FAIL")
 
-    for name, result in results:
-        status = "PASS" if result else "FAIL"
+    for name, status in results:
         print(f"  [{status}] {name}")
 
-    print(f"\nTotal: {passed} passed, {failed} failed")
+    print(f"\nTotal: {passed} passed, {failed} failed, {skipped} skipped")
 
     return failed == 0
 

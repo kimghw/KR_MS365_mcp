@@ -13,7 +13,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from session.auth_database import AuthDatabase
+from mcp_common.user_resolver import resolve_user_email
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -31,20 +31,16 @@ logger = logging.getLogger(__name__)
 
 def get_default_user_email() -> Optional[str]:
     """
-    auth.db의 azure_user_info 테이블에서 첫 번째 user_email을 가져온다.
+    기본 사용자 이메일을 반환한다 (mcp_common.user_resolver 정책 위임).
+
+    기존의 `list_users()[0]` 방식은 auth.db 정렬(updated_at DESC)에 따라
+    대상이 암묵적으로 바뀌었다. 이제 SSOT 정책(명시값 > 환경변수 >
+    유효 토큰 보유자 우선 사전순)을 따른다.
 
     Returns:
-        첫 번째 사용자의 이메일 또는 None
+        결정된 사용자 이메일 또는 None
     """
-    try:
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get('user_email') or users[0].get('email')
-        return None
-    except Exception as e:
-        logger.error(f"기본 사용자 조회 실패: {e}")
-        return None
+    return resolve_user_email()
 
 
 class GraphOneNoteClient:
@@ -57,11 +53,15 @@ class GraphOneNoteClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 session.AuthManager 사용)
+            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
+
+        Note:
+            per-email refresh lock 이 인스턴스마다 분리되지 않도록 반드시
+            mcp_common.auth.get_shared_auth_manager() 의 단일 인스턴스를 쓴다.
         """
         if token_provider is None:
-            from session import AuthManager
-            token_provider = AuthManager()
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._session: Optional[aiohttp.ClientSession] = None
         self._initialized = False
@@ -114,7 +114,7 @@ class GraphOneNoteClient:
         사용자 이메일로 유효한 액세스 토큰 조회 (자동 갱신 포함)
 
         Args:
-            user_email: 사용자 이메일 (None이면 auth.db에서 첫 번째 사용자 사용)
+            user_email: 사용자 이메일 (None이면 mcp_common 사용자 선택 정책 적용)
 
         Returns:
             유효한 액세스 토큰 또는 None
@@ -379,11 +379,17 @@ class GraphOneNoteClient:
         all_pages_data = result.get("data", {}).get("value", [])
 
         # @odata.nextLink 페이징
+        truncated = False
+        page_error: Optional[str] = None
         next_link = result.get("data", {}).get("@odata.nextLink")
         while next_link:
             logger.info(f"페이징 진행 중... 현재 {len(all_pages_data)}개")
             next_result = await self._make_request_full_url(next_link, user_email)
             if not next_result.get("success"):
+                # 다음 페이지 조회 실패 → 목록이 잘렸음을 숨기지 않고 표시한다.
+                truncated = True
+                page_error = next_result.get("error", "nextLink 조회 실패")
+                logger.warning(f"페이징 중단(잘린 목록 반환): {page_error}")
                 break
             page_data = next_result.get("data", {}).get("value", [])
             if not page_data:
@@ -392,11 +398,15 @@ class GraphOneNoteClient:
             next_link = next_result.get("data", {}).get("@odata.nextLink")
 
         pages = [PageInfo.from_dict(p) for p in all_pages_data]
-        return {
+        response: Dict[str, Any] = {
             "success": True,
             "pages": [p.__dict__ for p in pages],
             "count": len(pages),
         }
+        if truncated:
+            response["truncated"] = True
+            response["truncated_reason"] = page_error
+        return response
 
     async def get_page_content(
         self,

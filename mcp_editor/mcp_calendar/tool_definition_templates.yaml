@@ -28,7 +28,6 @@ tools:
       user_email:
         type: string
         description: 조회할 사용자의 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - start_datetime
@@ -39,7 +38,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -88,7 +88,6 @@ tools:
       user_email:
         type: string
         description: 사용자 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - event_id
@@ -98,7 +97,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -144,7 +144,6 @@ tools:
       user_email:
         type: string
         description: 이벤트를 생성할 사용자 이메일
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - subject
@@ -156,7 +155,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -209,7 +209,6 @@ tools:
       user_email:
         type: string
         description: 조회할 사용자의 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required: []
   mcp_service:
@@ -218,7 +217,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -281,7 +281,6 @@ tools:
       user_email:
         type: string
         description: 사용자 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - event_id
@@ -291,7 +290,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -361,7 +361,6 @@ tools:
       user_email:
         type: string
         description: 요청하는 사용자의 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - schedules
@@ -373,7 +372,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null
@@ -415,7 +415,6 @@ tools:
       user_email:
         type: string
         description: 사용자 이메일 주소
-        default: kimghw@krs.co.kr
         targetParam: user_email
     required:
     - event_id
@@ -425,7 +424,8 @@ tools:
     - default: null
       has_default: false
       is_optional: false
-      is_required: true
+      # 공개 inputSchema 에서 user_email 을 optional 로 유지 — 재생성 시 다시 필수화되지 않도록 false
+      is_required: false
       name: user_email
       type: str
     - default: null

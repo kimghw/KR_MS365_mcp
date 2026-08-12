@@ -8,10 +8,26 @@ and automatically generates an editor_config.json file with appropriate profiles
 
 import ast
 import os
+import sys
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Set
 from jinja2 import Environment, FileSystemLoader
+
+# mcp_common(바인드 정책 SSOT)은 프로젝트 루트에 있다.
+# mcp_editor/jinja/generate_editor_config.py -> parents[2] == 프로젝트 루트
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from mcp_common.net import DEFAULT_BIND_HOST, is_public_bind  # noqa: E402
+
+# editor_config.json 프로필의 기본값. 0.0.0.0 이 아니라 loopback 이다.
+# MCP 서버에는 호출자 인증 계층이 없어서 wildcard 로 열면 네트워크상의 누구나
+# 사용자 메일/파일에 접근할 수 있다. 외부 노출은 런타임에
+# MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND=1 로 명시적으로 옵트인해야 한다.
+DEFAULT_PROFILE_HOST = DEFAULT_BIND_HOST
+DEFAULT_PROFILE_PORT = 8091
 
 # Import scan functions from generate_universal_server
 try:
@@ -136,8 +152,8 @@ def detect_module_paths(server_name: str, base_dir: str) -> Dict[str, Any]:
         "backup_dir": f"mcp_{server_name}/backups",
         "types_files": types_files,
         "service_files": service_files,
-        "host": "0.0.0.0",
-        "port": 8091
+        "host": DEFAULT_PROFILE_HOST,
+        "port": DEFAULT_PROFILE_PORT
     }
 
 
@@ -190,13 +206,39 @@ def merge_configs(existing_config: Dict[str, Any], new_config: Dict[str, Any],
         if server_name in existing_config and server_name in merged:
             existing_profile = existing_config[server_name]
             # Preserve custom port if it was changed from default
-            if 'port' in existing_profile and existing_profile['port'] != 8091:
+            if 'port' in existing_profile and existing_profile['port'] != DEFAULT_PROFILE_PORT:
                 merged[server_name]['port'] = existing_profile['port']
                 print(f"    [KEEP] Preserved custom port for {server_name}: {existing_profile['port']}")
-            # Preserve custom host if it was changed
-            if 'host' in existing_profile and existing_profile['host'] != "0.0.0.0":
-                merged[server_name]['host'] = existing_profile['host']
-                print(f"    [KEEP] Preserved custom host for {server_name}: {existing_profile['host']}")
+
+            # 커스텀 host 보존.
+            #
+            # 주의: 기본값이 "0.0.0.0" -> "127.0.0.1" 로 바뀌었기 때문에 비교 대상만
+            # 갈아끼우면 의미가 뒤집힌다. 기존 설정에 남아 있는 "0.0.0.0" 은
+            # "사용자가 의도한 커스텀 값"이 아니라 "예전 기본값"이므로, 그대로
+            # 보존하면 방금 없앤 취약점이 매 재생성마다 되살아난다.
+            # 따라서 wildcard 주소는 보존하지 않고 안전한 기본값으로 마이그레이션한다.
+            existing_host = existing_profile.get('host')
+            if existing_host and existing_host != DEFAULT_PROFILE_HOST:
+                normalized = str(existing_host).strip().strip('[]')
+                # NOTE: 콘솔 인코딩(cp1252)에서 깨지지 않도록 출력 문자열은 ASCII 로 유지한다.
+                if normalized in ('0.0.0.0', '::', '*'):
+                    # 레거시 기본값 -> 마이그레이션 (보존하지 않는다)
+                    print(
+                        f"    [MIGRATE] {server_name}: legacy wildcard host "
+                        f"{existing_host!r} -> {DEFAULT_PROFILE_HOST!r}. "
+                        f"To expose externally, opt in at runtime with "
+                        f"MCP_BIND_HOST={existing_host} MCP_ALLOW_PUBLIC_BIND=1"
+                    )
+                else:
+                    # 사용자가 명시적으로 지정한 값은 보존한다.
+                    merged[server_name]['host'] = existing_host
+                    print(f"    [KEEP] Preserved custom host for {server_name}: {existing_host}")
+                    if is_public_bind(existing_host):
+                        print(
+                            f"    [WARN] {server_name}: host {existing_host!r} is externally "
+                            f"reachable; without MCP_ALLOW_PUBLIC_BIND=1 the runtime will "
+                            f"fall back to loopback."
+                        )
 
     if preserved_count > 0:
         print(f"    Total preserved profiles: {preserved_count}")

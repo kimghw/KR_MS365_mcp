@@ -13,7 +13,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       top:
         type: integer
@@ -46,7 +46,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       display_name:
         type: string
@@ -79,7 +79,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string
@@ -112,7 +112,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string
@@ -181,7 +181,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string
@@ -224,7 +224,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string
@@ -323,7 +323,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string
@@ -448,7 +448,7 @@ tools:
     properties:
       user_email:
         type: string
-        description: 사용자 이메일 (생략 시 auth.db의 첫 사용자 사용)
+        description: 사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)
         targetParam: user_email
       list_id_or_name:
         type: string

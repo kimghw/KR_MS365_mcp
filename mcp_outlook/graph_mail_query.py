@@ -53,8 +53,8 @@ class GraphMailQuery:
         """
         if token_provider is None:
             # 하위 호환성: 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
-            from session.auth_manager import get_default_auth_manager
-            token_provider = get_default_auth_manager()
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self._url_builder: Optional[GraphMailUrlBuilder] = None
 
@@ -608,10 +608,17 @@ class GraphMailQuery:
             "fetch_time": elapsed,
         }
 
-        # Include error information if any errors occurred
+        # 오류 정보 반영: 전 페이지 실패는 실패 계약(status:error)으로, 부분 실패는 partial 로 표시
         if errors:
             return_data["errors"] = errors
             return_data["has_errors"] = True
+            if len(errors) >= num_pages:
+                # 전량 실패 — 상위에서 성공으로 오판하지 않도록 실패 상태 부여
+                return_data["status"] = "error"
+                return_data["error"] = f"모든 페이지 요청 실패 ({len(errors)}/{num_pages})"
+            else:
+                # 부분 실패 — 성공분 보존 (is_failure 는 partial 을 실패로 보지 않음)
+                return_data["status"] = "partial"
 
         return return_data
 

@@ -29,6 +29,11 @@ from ..config import (
     _get_template_for_server,
     _resolve_path,
 )
+from ..safe_paths import (
+    PathNotAllowedError,
+    resolve_safe_path,
+    path_error_payload,
+)
 from tool_editor_web_server_mappings import get_server_name_from_profile, get_server_name_from_path
 
 
@@ -161,17 +166,28 @@ def generate_server_from_web():
             return jsonify({"error": "output_path is required"}), 400
 
         def resolve_for_generator(path_value: str) -> str:
-            """Resolve a provided path against both editor and repo roots"""
-            if os.path.isabs(path_value):
-                return path_value
-            editor_path = _resolve_path(path_value)
-            if os.path.exists(editor_path):
-                return editor_path
-            return os.path.normpath(os.path.join(ROOT_DIR, path_value))
+            """
+            Resolve a provided path against both editor and repo roots.
 
-        tools_path = resolve_for_generator(tools_path)
-        template_path = resolve_for_generator(template_path)
-        output_path = resolve_for_generator(output_path)
+            경로는 요청 본문에서 올 수 있고 output_path 는 곧바로 mkdir + 파일 쓰기 대상이 되므로
+            허용 루트(mcp_common.paths) 안인지 반드시 검사한다.
+            """
+            if os.path.isabs(path_value):
+                candidate = path_value
+            else:
+                editor_path = _resolve_path(path_value)
+                if os.path.exists(editor_path):
+                    candidate = editor_path
+                else:
+                    candidate = os.path.normpath(os.path.join(ROOT_DIR, path_value))
+            return str(resolve_safe_path(candidate))
+
+        try:
+            tools_path = resolve_for_generator(tools_path)
+            template_path = resolve_for_generator(template_path)
+            output_path = resolve_for_generator(output_path)
+        except PathNotAllowedError as e:
+            return jsonify(path_error_payload(e, "tools_path/template_path/output_path")), 400
 
         if not os.path.exists(tools_path):
             return jsonify({"error": f"Tools file not found: {tools_path}"}), 400
@@ -260,6 +276,10 @@ def create_new_server():
         # Validation
         if not server_name:
             return jsonify({"error": "Server name is required"}), 400
+
+        # 서버명은 디렉터리명으로 쓰이므로 영숫자/언더스코어만 허용 (경로 조작 차단)
+        if not server_name.replace("_", "").isalnum():
+            return jsonify({"error": "Server name must contain only letters, numbers, and underscores"}), 400
 
         # Check if server already exists
         server_dir = os.path.join(ROOT_DIR, f"mcp_{server_name}")

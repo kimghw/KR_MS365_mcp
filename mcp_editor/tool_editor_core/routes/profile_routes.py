@@ -26,7 +26,6 @@ from ..config import (
     resolve_paths,
     list_profile_names,
     _load_config_file,
-    _resolve_path,
     get_sibling_profiles,
     get_profile_family,
     is_base_profile,
@@ -38,6 +37,11 @@ from ..profile_management import (
     delete_mcp_profile,
     create_derived_profile,
     delete_mcp_server_only,
+)
+from ..safe_paths import (
+    PathNotAllowedError,
+    resolve_request_path,
+    path_error_payload,
 )
 
 
@@ -92,6 +96,10 @@ def create_profile():
         if not profile_name:
             return jsonify({"error": "Profile name is required"}), 400
 
+        # 프로필명은 디렉터리명으로 쓰이므로 영숫자/언더스코어만 허용 (경로 조작 차단)
+        if not profile_name.replace("_", "").isalnum():
+            return jsonify({"error": "Profile name should only contain letters, numbers, and underscores"}), 400
+
         # Check if profile already exists
         existing = list_profile_names()
         if profile_name in existing:
@@ -102,6 +110,14 @@ def create_profile():
         template_path = data.get("template_path", f"{profile_name}/tool_definition_templates.py")
         backup_dir = data.get("backup_dir", f"{profile_name}/backups")
         port = data.get("port", 8091)
+
+        # 요청으로 받은 경로는 그대로 mkdir/write 대상이 되므로 허용 루트 안인지 먼저 검사한다
+        try:
+            resolved_mcp_server_dir = resolve_request_path(mcp_server_path)
+            resolved_template_file = resolve_request_path(template_path)
+            resolved_backup_dir = resolve_request_path(backup_dir)
+        except PathNotAllowedError as e:
+            return jsonify(path_error_payload(e, "mcp_server_path/template_path/backup_dir")), 400
 
         # Create MCP server directory structure if requested
         if data.get("create_mcp_structure", False):
@@ -133,15 +149,17 @@ def create_profile():
                     if result.returncode != 0:
                         print(f"Warning: create_mcp_project.py failed: {result.stderr}")
                         # Fall back to simple structure creation
-                        _create_minimal_structure(mcp_server_path)
+                        _create_minimal_structure(resolved_mcp_server_dir)
                 else:
                     print(f"create_mcp_project.py not found at {create_script_path}, using simple structure")
                     # Fall back to simple structure creation
-                    _create_minimal_structure(mcp_server_path)
+                    _create_minimal_structure(resolved_mcp_server_dir)
+            except PathNotAllowedError as e:
+                return jsonify(path_error_payload(e, "mcp_server_path")), 400
             except Exception as e:
                 print(f"Error running create_mcp_project.py: {str(e)}")
                 # Fall back to simple structure creation
-                _create_minimal_structure(mcp_server_path)
+                _create_minimal_structure(resolved_mcp_server_dir)
 
         # Create profile config
         new_profile = {
@@ -149,17 +167,19 @@ def create_profile():
             "tool_definitions_path": f"{mcp_server_path}/tool_definitions.py",
             "backup_dir": backup_dir,
             "types_files": [],
-            "host": "0.0.0.0",
+            # 기본은 loopback. 외부 노출은 MCP_BIND_HOST + MCP_ALLOW_PUBLIC_BIND 로 옵트인한다.
+            "host": "127.0.0.1",
             "port": port,
         }
 
         # Create directory structure in mcp_editor (for templates and backups)
         editor_profile_dir = os.path.join(BASE_DIR, profile_name)
         os.makedirs(editor_profile_dir, exist_ok=True)
-        os.makedirs(os.path.join(editor_profile_dir, "backups"), exist_ok=True)
+        os.makedirs(resolved_backup_dir, exist_ok=True)
 
-        # Create empty tool_definition_templates.py if not exists
-        template_file_path = os.path.join(BASE_DIR, template_path)
+        # Create empty tool_definition_templates.py if not exists (검증된 경로만 사용)
+        template_file_path = str(resolved_template_file)
+        os.makedirs(os.path.dirname(template_file_path), exist_ok=True)
         if not os.path.exists(template_file_path):
             with open(template_file_path, "w", encoding="utf-8") as f:
                 f.write(
@@ -301,9 +321,17 @@ def create_mcp_project_reuse():
         return jsonify({"error": str(e)}), 500
 
 
-def _create_minimal_structure(mcp_server_path: str):
-    """Create minimal MCP server structure"""
-    mcp_dir = _resolve_path(mcp_server_path)
+def _create_minimal_structure(mcp_server_path):
+    """
+    Create minimal MCP server structure
+
+    mcp_server_path 는 요청에서 온 값일 수 있으므로 항상 허용 루트 검사를 거친다.
+    (호출부에서 이미 검증한 Path 를 넘겨도 재검증 비용은 무시할 수준)
+
+    Raises:
+        PathNotAllowedError: 허용 루트 밖 경로
+    """
+    mcp_dir = str(resolve_request_path(mcp_server_path))
     os.makedirs(mcp_dir, exist_ok=True)
 
     # Create minimal tool_definitions.py

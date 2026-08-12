@@ -29,115 +29,133 @@ PROTOCOL_SERVER_FILES = {
     "stdio": "server_stdio.py",
     "stream": "server_stream.py",
 }
+# 프로토콜 전용 파일이 없을 때만 시도하는 일반 서버 파일
+FALLBACK_SERVER_FILES = ["server.py"]
+
+CONFIG_PATH = os.path.join(ROOT_DIR, "mcp_editor", "editor_config.json")
+
+
+def _load_editor_config() -> Dict:
+    """editor_config.json 로드 (읽기 실패 시 빈 dict)"""
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, IOError, OSError):
+        return {}
+
+
+def _profile_base_path(profile: str) -> Optional[str]:
+    """
+    editor_config.json 에 등록된 프로필의 mcp_server 디렉터리를 반환.
+
+    미등록 프로필이거나 tool_definitions_path 가 없으면 None.
+    """
+    profile_conf = _load_editor_config().get(profile)
+    if not isinstance(profile_conf, dict):
+        return None
+
+    # tool_definitions_path 예: "../mcp_outlook/mcp_server/tool_definitions.py"
+    tool_def_path = profile_conf.get("tool_definitions_path", "")
+    if not tool_def_path:
+        return None
+
+    return os.path.normpath(
+        os.path.dirname(os.path.join(ROOT_DIR, "mcp_editor", tool_def_path))
+    )
 
 
 class MCPServerManager:
     """Manages MCP server lifecycle with PID file tracking"""
 
-    def __init__(self, profile: str = "default", protocol: str = "stream"):
+    def __init__(self, profile: str = "default", protocol: str = "stream", port: Optional[int] = None):
         """
         Initialize server manager.
 
         Args:
             profile: Profile name (e.g., "outlook", "calendar")
             protocol: Server protocol type ("rest", "stdio", "stream")
+            port: 포트 오버라이드. 없으면 editor_config.json 의 프로필 포트를 사용한다.
         """
         self.profile = profile
         self.protocol = protocol if protocol in PROTOCOL_TYPES else "stream"
         # Include protocol in PID/log file names for independent tracking
         self.pid_file = os.path.join(PID_DIR, f"{profile}_{self.protocol}_server.pid")
         self.log_file = os.path.join(LOG_DIR, f"{profile}_{self.protocol}_server.log")
+
+        profile_conf = _load_editor_config().get(profile)
+        self.profile_conf = profile_conf if isinstance(profile_conf, dict) else None
+        self.registered = self.profile_conf is not None
+
+        # 설정된 포트를 자식 프로세스에 MCP_SERVER_PORT 로 전달하기 위해 보관
+        self.port = port
+        if self.port is None and self.profile_conf:
+            try:
+                configured = self.profile_conf.get("port")
+                self.port = int(configured) if configured is not None else None
+            except (TypeError, ValueError):
+                self.port = None
+
         self.server_path = self._get_server_path()
 
     def _get_server_path(self) -> Optional[str]:
         """
         Get the server path based on profile and protocol from editor_config.json.
 
-        This method reads the profile configuration from editor_config.json
-        to properly support reused profiles (e.g., outlook_read that uses
-        mcp_outlook_read/mcp_server/ instead of mcp_outlook/mcp_server/).
+        editor_config.json 에 등록된 프로필만 해석한다. 미등록 프로필은 None 을 반환한다.
+
+        (구버전은 프로필명 부분 문자열 매칭 후, 그래도 못 찾으면 후보 목록의 첫 항목
+         = mcp_outlook 서버로 폴백했다. 그 결과 teams/todo 처럼 editor_config.json 에
+         없는 프로필이 조용히 Outlook 서버로 라우팅됐다. 잘못된 서버를 기동/중지하는 것보다
+         명시적으로 실패하는 편이 안전하므로 폴백을 제거했다.)
 
         The protocol determines which server file to use:
         - rest: server_rest.py
         - stdio: server_stdio.py
         - stream: server_stream.py
         """
+        base_path = _profile_base_path(self.profile)
+        if not base_path:
+            return None
+
         # Protocol-specific server file takes priority
         protocol_server_file = PROTOCOL_SERVER_FILES.get(self.protocol)
-        # Fallback order if protocol-specific file doesn't exist
-        fallback_files = ["server.py"]
-
-        # First, try to load from editor_config.json for accurate path resolution
-        config_path = os.path.join(ROOT_DIR, "mcp_editor", "editor_config.json")
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-
-                if self.profile in config:
-                    profile_conf = config[self.profile]
-                    # tool_definitions_path gives us the server directory path
-                    tool_def_path = profile_conf.get("tool_definitions_path", "")
-                    if tool_def_path:
-                        # tool_definitions_path is like "../mcp_outlook_read/mcp_server/tool_definitions.py"
-                        # Extract the mcp_server directory
-                        base_path = os.path.dirname(
-                            os.path.join(ROOT_DIR, "mcp_editor", tool_def_path)
-                        )
-                        base_path = os.path.normpath(base_path)
-
-                        # Try protocol-specific server file first
-                        if protocol_server_file:
-                            path = os.path.join(base_path, protocol_server_file)
-                            if os.path.exists(path):
-                                return path
-
-                        # Fallback to generic server files
-                        for server_file in fallback_files:
-                            path = os.path.join(base_path, server_file)
-                            if os.path.exists(path):
-                                return path
-            except (json.JSONDecodeError, IOError, KeyError):
-                pass  # Fall through to legacy behavior
-
-        # Legacy behavior: substring matching (fallback for backwards compatibility)
-        if "outlook" in self.profile.lower():
-            base_path = os.path.join(ROOT_DIR, "mcp_outlook", "mcp_server")
-        elif "file" in self.profile.lower() or "handler" in self.profile.lower():
-            base_path = os.path.join(ROOT_DIR, "mcp_file_handler", "mcp_server")
-        elif "calendar" in self.profile.lower():
-            base_path = os.path.join(ROOT_DIR, "mcp_calendar", "mcp_server")
-        else:
-            # Default or try to find any server
-            for module in ["mcp_outlook", "mcp_file_handler", "mcp_calendar"]:
-                base_path = os.path.join(ROOT_DIR, module, "mcp_server")
-                # Check if protocol-specific server file exists
-                if protocol_server_file:
-                    if os.path.exists(os.path.join(base_path, protocol_server_file)):
-                        break
-                # Check fallback files
-                for server_file in fallback_files:
-                    if os.path.exists(os.path.join(base_path, server_file)):
-                        break
-                else:
-                    continue
-                break
-            else:
-                return None
-
-        # Try protocol-specific server file first
         if protocol_server_file:
             path = os.path.join(base_path, protocol_server_file)
             if os.path.exists(path):
                 return path
 
-        # Fallback to generic server files
-        for server_file in fallback_files:
+        # Fallback to generic server files (같은 프로필 디렉터리 안에서만)
+        for server_file in FALLBACK_SERVER_FILES:
             path = os.path.join(base_path, server_file)
             if os.path.exists(path):
                 return path
 
         return None
+
+    def _unresolved_reason(self) -> str:
+        """server_path 를 못 찾은 이유를 사용자에게 설명 가능한 문장으로 만든다"""
+        if not self.registered:
+            known = ", ".join(sorted(_load_editor_config().keys())) or "(none)"
+            return (
+                f"Unknown profile '{self.profile}': not registered in mcp_editor/editor_config.json. "
+                f"Registered profiles: {known}"
+            )
+
+        base_path = _profile_base_path(self.profile)
+        if not base_path:
+            return (
+                f"Profile '{self.profile}' has no usable 'tool_definitions_path' "
+                f"in mcp_editor/editor_config.json"
+            )
+
+        expected = PROTOCOL_SERVER_FILES.get(self.protocol, FALLBACK_SERVER_FILES[0])
+        return (
+            f"Server file not found for profile '{self.profile}' (protocol '{self.protocol}'): "
+            f"expected {os.path.join(base_path, expected)}"
+        )
 
     def _read_pid(self) -> Optional[int]:
         """Read PID from file"""
@@ -231,56 +249,40 @@ class MCPServerManager:
         managed_processes = [p for p in processes if p.get("managed")]
         primary_pid = managed_processes[0]["pid"] if managed_processes else None
 
-        return {
+        result = {
             "running": len(processes) > 0,
             "pid": primary_pid,  # Add primary PID for UI display
             "processes": processes,
             "profile": self.profile,
             "protocol": self.protocol,
             "server_path": self.server_path,
+            "port": self.port,
+            "registered": self.registered,
         }
+        # 미등록 프로필/서버 파일 부재는 조용히 넘기지 않고 이유를 함께 돌려준다
+        if not self.server_path:
+            result["error"] = self._unresolved_reason()
+        return result
 
     @staticmethod
     def get_available_protocols(profile: str) -> List[str]:
         """
         Get list of available protocols for a profile.
         Checks which server files exist in the profile's server directory.
+
+        editor_config.json 미등록 프로필은 빈 목록을 반환한다.
+        (구버전의 프로필명 부분 문자열 폴백은 미등록 프로필에 남의 서버 프로토콜을
+         노출시켰으므로 제거)
         """
-        available = []
-        config_path = os.path.join(ROOT_DIR, "mcp_editor", "editor_config.json")
-
-        base_path = None
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-
-                if profile in config:
-                    profile_conf = config[profile]
-                    tool_def_path = profile_conf.get("tool_definitions_path", "")
-                    if tool_def_path:
-                        base_path = os.path.dirname(
-                            os.path.join(ROOT_DIR, "mcp_editor", tool_def_path)
-                        )
-                        base_path = os.path.normpath(base_path)
-            except (json.JSONDecodeError, IOError, KeyError):
-                pass
-
+        base_path = _profile_base_path(profile)
         if not base_path:
-            # Fallback to legacy path detection
-            if "outlook" in profile.lower():
-                base_path = os.path.join(ROOT_DIR, "mcp_outlook", "mcp_server")
-            elif "file" in profile.lower() or "handler" in profile.lower():
-                base_path = os.path.join(ROOT_DIR, "mcp_file_handler", "mcp_server")
-            elif "calendar" in profile.lower():
-                base_path = os.path.join(ROOT_DIR, "mcp_calendar", "mcp_server")
+            return []
 
-        if base_path:
-            for protocol, server_file in PROTOCOL_SERVER_FILES.items():
-                if os.path.exists(os.path.join(base_path, server_file)):
-                    available.append(protocol)
-
-        return available
+        return [
+            protocol
+            for protocol, server_file in PROTOCOL_SERVER_FILES.items()
+            if os.path.exists(os.path.join(base_path, server_file))
+        ]
 
     @staticmethod
     def get_all_protocols_status(profile: str) -> Dict:
@@ -319,7 +321,14 @@ class MCPServerManager:
                 }
 
         if not self.server_path:
-            return {"success": False, "error": f"Server path not found for profile: {self.profile}"}
+            # 미등록 프로필을 다른 서버로 폴백시키지 않고 명확한 오류를 돌려준다
+            return {"success": False, "error": self._unresolved_reason(), "profile": self.profile}
+
+        # 프로필에 설정된 포트를 자식 프로세스에 전달한다.
+        # 도메인 서버(server_stream.py 등)는 MCP_SERVER_PORT 를 읽고, 없으면 자체 기본 포트를 쓴다.
+        env = os.environ.copy()
+        if self.port:
+            env["MCP_SERVER_PORT"] = str(self.port)
 
         # Start the server
         try:
@@ -333,6 +342,7 @@ class MCPServerManager:
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
                         close_fds=True,
+                        env=env,
                     )
 
                 # Give it a moment to start
@@ -344,7 +354,9 @@ class MCPServerManager:
                     return {
                         "success": True,
                         "pid": process.pid,
-                        "message": f"Server started with PID {process.pid}",
+                        "port": self.port,
+                        "message": f"Server started with PID {process.pid}"
+                        + (f" on port {self.port}" if self.port else ""),
                         "log_file": self.log_file,
                     }
                 else:
@@ -354,7 +366,11 @@ class MCPServerManager:
                     return {"success": False, "error": f"Server failed to start: {error_output}"}
             else:
                 # Run in foreground (for debugging)
-                subprocess.run([sys.executable, self.server_path], cwd=os.path.dirname(self.server_path))
+                subprocess.run(
+                    [sys.executable, self.server_path],
+                    cwd=os.path.dirname(self.server_path),
+                    env=env,
+                )
                 return {"success": True, "message": "Server ran in foreground mode"}
 
         except Exception as e:
@@ -364,6 +380,9 @@ class MCPServerManager:
         """Stop the server"""
         processes = self._find_server_processes()
         if not processes:
+            if not self.server_path:
+                # 미등록 프로필이면 "프로세스 없음" 대신 원인을 밝힌다
+                return {"success": False, "error": self._unresolved_reason(), "profile": self.profile}
             return {"success": False, "error": "No server process found"}
 
         killed_count = 0
@@ -442,11 +461,17 @@ def main():
 
     parser = argparse.ArgumentParser(description="MCP Server Manager")
     parser.add_argument("action", choices=["start", "stop", "restart", "status", "logs", "protocols"], help="Action to perform")
-    parser.add_argument("--profile", default="default", help="Profile name (default, outlook, file_handler, etc.)")
+    parser.add_argument("--profile", default="default", help="Profile name (outlook, calendar, teams, ...)")
     parser.add_argument("--protocol", default="stream", choices=PROTOCOL_TYPES, help="Server protocol (rest, stdio, stream)")
     parser.add_argument("--force", action="store_true", help="Force kill the server (for stop action)")
     parser.add_argument("--foreground", action="store_true", help="Run server in foreground (for start action)")
     parser.add_argument("--lines", type=int, default=50, help="Number of log lines to show (for logs action)")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Override MCP_SERVER_PORT (default: editor_config.json 의 프로필 포트)",
+    )
 
     args = parser.parse_args()
 
@@ -456,7 +481,7 @@ def main():
         print(json.dumps(result, indent=2))
         sys.exit(0)
 
-    manager = MCPServerManager(args.profile, args.protocol)
+    manager = MCPServerManager(args.profile, args.protocol, port=args.port)
 
     if args.action == "status":
         result = manager.status()

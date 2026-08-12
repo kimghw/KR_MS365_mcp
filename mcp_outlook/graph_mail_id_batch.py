@@ -36,8 +36,8 @@ class GraphMailIdBatch:
         """
         if token_provider is None:
             # 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
-            from session.auth_manager import get_default_auth_manager
-            token_provider = get_default_auth_manager()
+            from mcp_common.auth import get_shared_auth_manager
+            token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
         self.batch_url = "https://graph.microsoft.com/v1.0/$batch"
         self.max_batch_size = 20  # Microsoft Graph API 제한
@@ -638,7 +638,8 @@ if __name__ == "__main__":
             print("Failed to initialize")
             return
 
-        user_email = "kimghw@krs.co.kr"
+        # 개인 이메일 하드코딩 제거: 환경변수로 지정 (수동 테스트용)
+        user_email = os.environ.get("MS365_DEFAULT_USER_EMAIL", "user@example.com")
 
         # 테스트용 메일 ID (실제 테스트시 실제 ID로 변경 필요)
         test_ids = [

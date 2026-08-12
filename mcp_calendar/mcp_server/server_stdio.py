@@ -55,6 +55,20 @@ sys.stdout = sys.stderr
 # Import types dynamically based on type_info
 from mcp_calendar.calendar_types import EventFilterParams, EventSelectParams
 
+# 공통 런타임 (사용자 선택 / 입력 검증 / 오류 계약 / lifecycle)
+from mcp_common.errors import ToolExecutionError
+from mcp_common.user_resolver import resolve_user_email
+from mcp_common.runtime import ToolRuntime, ServiceLifecycle
+
+SERVER_NAME = "calendar"
+SERVER_VERSION = "1.0.0"
+
+
+def _resolve_user_email(args: Dict[str, Any]) -> str:
+    """요청 인자의 user_email 을 공통 정책으로 확정 (미인증이면 예외)."""
+    return resolve_user_email(args.get("user_email"), required=True)
+
+
 # Load tool definitions from YAML (Single Source of Truth)
 def _convert_boolean_schema_to_enabled_disabled(schema: Dict[str, Any]) -> Dict[str, Any]:
     """Convert boolean type properties to enabled/disabled enum for OpenAI compatibility.
@@ -553,7 +567,7 @@ async def handle_calendar_view(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     start_datetime = args["start_datetime"]
     end_datetime = args["end_datetime"]
 
@@ -577,7 +591,7 @@ async def handle_get_event(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     event_id = args["event_id"]
 
     # ========================================
@@ -599,7 +613,7 @@ async def handle_create_event(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     subject = args["subject"]
     start = args["start"]
     end = args["end"]
@@ -631,7 +645,7 @@ async def handle_delete_event(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     event_id = args["event_id"]
 
     # ========================================
@@ -653,7 +667,7 @@ async def handle_list_events(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     top_sig = args.get("top")
     top = top_sig if top_sig is not None else 50
     orderby_sig = args.get("orderby")
@@ -679,7 +693,7 @@ async def handle_update_event(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     event_id = args["event_id"]
     subject = args.get("subject")
     start = args.get("start")
@@ -711,7 +725,7 @@ async def handle_get_schedule(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 1: Signature 파라미터 수신
     # - LLM으로부터 전달받은 인자 추출
     # ========================================
-    user_email = args.get("user_email")
+    user_email = _resolve_user_email(args)
     schedules = args["schedules"]
     start_time = args["start_time"]
     end_time = args["end_time"]
@@ -732,6 +746,24 @@ async def handle_get_schedule(args: Dict[str, Any]) -> Dict[str, Any]:
     # Step 3: 서비스 메서드 호출
     # ========================================
     return await calendar_service.get_schedule(**call_args)
+
+
+# ============================================================
+# 공통 런타임 (기본값 주입 + 입력 검증 + 오류 정규화 + 서비스 lifecycle)
+# ============================================================
+
+TOOL_HANDLERS = {
+    "calendar_view": handle_calendar_view,
+    "list_events": handle_list_events,
+    "get_event": handle_get_event,
+    "create_event": handle_create_event,
+    "update_event": handle_update_event,
+    "delete_event": handle_delete_event,
+    "get_schedule": handle_get_schedule,
+}
+
+RUNTIME = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+LIFECYCLE = ServiceLifecycle(SERVER_NAME, [calendar_service])
 
 # ============================================================
 # STDIO Protocol Implementation for MCP Server
@@ -823,91 +855,51 @@ class StdioMCPServer:
                 "tools": {}
             },
             "serverInfo": {
-                "name": "calendar",
-                "version": "1.0.0"
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION
             }
         }
 
     async def handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/list request"""
-        return {"tools": MCP_TOOLS}
+        """Handle tools/list request
 
-    def apply_schema_defaults(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply default values from inputSchema to arguments if not provided."""
-        tool_config = get_tool_config(tool_name)
-        if not tool_config:
-            return arguments
-
-        input_schema = tool_config.get("inputSchema", {})
-        properties = input_schema.get("properties", {})
-
-        # Create a copy of arguments to avoid modifying the original
-        merged_args = dict(arguments) if arguments else {}
-
-        # Apply defaults for properties that have them and are not in arguments
-        for prop_name, prop_def in properties.items():
-            if prop_name not in merged_args and "default" in prop_def:
-                merged_args[prop_name] = prop_def["default"]
-                logger.debug(f"Applied default for {prop_name}: {prop_def['default']}")
-
-        return merged_args
+        MCP 스펙 필드(name/description/inputSchema)만 노출한다.
+        (mcp_service / mcp_service_factors 같은 내부 메타데이터는 내보내지 않는다)
+        """
+        return {
+            "tools": [
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "inputSchema": RUNTIME.input_schema(tool["name"]),
+                }
+                for tool in RUNTIME.tools
+            ]
+        }
 
     async def handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/call request"""
+        """Handle tools/call request
+
+        기본값 주입 / 입력 검증 / 핸들러 호출 / 오류 정규화는 ToolRuntime 이 담당한다.
+        도구 실행 실패는 JSON-RPC error 가 아니라 result.isError=True 로 표현한다
+        (MCP 스펙: 프로토콜 오류와 도구 실행 오류를 구분).
+        """
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
 
         if not tool_name:
             raise ValueError("Tool name is required")
 
-        # Apply default values from inputSchema
-        arguments = self.apply_schema_defaults(tool_name, arguments)
-
-        # Look up the handler function
-        handler_name = f"handle_{tool_name.replace('-', '_')}"
-        if handler_name not in globals():
-            raise ValueError(f"Unknown tool: {tool_name}")
-
         try:
-            # Call the tool handler
-            result = await globals()[handler_name](arguments)
+            blocks = await RUNTIME.call(tool_name, arguments)
+        except ToolExecutionError as exc:
+            logger.error(f"Tool {tool_name} failed: {exc}")
+            return {
+                "content": [{"type": "text", "text": str(exc)}],
+                "isError": True,
+            }
 
-            # Check for auth_required response (login URL for LLM)
-            if isinstance(result, dict) and result.get("status") == "auth_required":
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False, indent=2)
-                        }
-                    ],
-                    "isError": True
-                }
-
-            # Format result for MCP
-            if isinstance(result, dict) and "content" in result:
-                return result
-            elif isinstance(result, str):
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": result
-                        }
-                    ]
-                }
-            else:
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False, indent=2)
-                        }
-                    ]
-                }
-        except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {e}")
-            raise
+        return {"content": blocks}
 
     async def handle_request(self, request: Dict[str, Any]):
         """Handle a single JSON-RPC request"""
@@ -966,10 +958,10 @@ class StdioMCPServer:
         """Main server loop"""
         self.running = True
 
-        # Initialize services before starting
-        if hasattr(calendar_service, 'initialize'):
-            await calendar_service.initialize()
-            logger.info("CalendarService initialized")
+        # 서비스 초기화 (실패해도 서버는 떠 있고, 도구 호출 시 오류로 표면화된다)
+        await LIFECYCLE.startup()
+        if LIFECYCLE.errors:
+            logger.error(f"Service startup errors: {LIFECYCLE.errors}")
 
         logger.info(f"Calendar MCP Server STDIO Server started")
         logger.info("Waiting for messages on stdin...")
@@ -997,6 +989,8 @@ class StdioMCPServer:
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
         finally:
+            # close() 누락 방지 — 종료 시 서비스 리소스를 반드시 정리한다
+            await LIFECYCLE.shutdown()
             logger.info("Calendar MCP Server STDIO Server stopped")
 
 # Main entry point for STDIO protocol

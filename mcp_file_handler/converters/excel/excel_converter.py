@@ -29,22 +29,24 @@ class ExcelConverter(BaseConverter):
             import pandas as pd
 
             # Use pandas for better data extraction
-            excel_file = pd.ExcelFile(file_path)
-            text_content = []
+            # with 로 닫지 않으면 Windows 에서 파일 핸들이 남아 임시 다운로드
+            # 디렉터리 정리(shutil.rmtree)가 실패한다.
+            with pd.ExcelFile(file_path) as excel_file:
+                text_content = []
 
-            for sheet_name in excel_file.sheet_names:
-                df = excel_file.parse(sheet_name)
+                for sheet_name in excel_file.sheet_names:
+                    df = excel_file.parse(sheet_name)
 
-                if df.empty:
-                    continue
+                    if df.empty:
+                        continue
 
-                # Add sheet header
-                text_content.append(f"=== Sheet: {sheet_name} ===")
+                    # Add sheet header
+                    text_content.append(f"=== Sheet: {sheet_name} ===")
 
-                # Convert dataframe to readable text
-                # Include column headers and data
-                text_content.append(df.to_string(index=False, na_rep=''))
-                text_content.append("")  # Add blank line between sheets
+                    # Convert dataframe to readable text
+                    # Include column headers and data
+                    text_content.append(df.to_string(index=False, na_rep=''))
+                    text_content.append("")  # Add blank line between sheets
 
             return '\n'.join(text_content)
 

@@ -54,7 +54,14 @@ class OneNoteWriter:
         if not page_id:
             recent = self._db_service.get_recent_items(user_email, "page", limit=1)
             if not recent:
-                return {"success": False, "error": "최근 접근한 페이지가 없습니다. page_id를 지정해주세요."}
+                # 신규 DB 첫 사용 등 최근 페이지가 아직 없는 것은 실패가 아니다.
+                # page_id 를 지정하면 되므로 soft 로 안내한다.
+                return {
+                    "success": True,
+                    "appended": False,
+                    "reason": "no_recent_page",
+                    "message": "최근 접근한 페이지가 없습니다. page_id를 지정해주세요.",
+                }
             page_id = recent[0].get("item_id")
 
         result = await self.edit_page(
@@ -64,12 +71,16 @@ class OneNoteWriter:
         )
 
         if result.get("success"):
-            # 페이지 정보 조회하여 반환값 보강
-            items = self._db_service.list_items(user_email, item_type="page")
-            page_info = next((i for i in items if i.get("item_id") == page_id), {})
+            # 페이지 정보 조회하여 반환값 보강. 이미 편집은 성공했으므로 보강용
+            # DB 조회 실패로 전체 성공을 뒤엎지 않는다(best-effort).
             result["page_id"] = page_id
-            result["title"] = page_info.get("item_name", "")
-            result["web_url"] = page_info.get("web_url", "")
+            try:
+                items = self._db_service.list_items(user_email, item_type="page")
+                page_info = next((i for i in items if i.get("item_id") == page_id), {})
+                result["title"] = page_info.get("item_name", "")
+                result["web_url"] = page_info.get("web_url", "")
+            except Exception as e:
+                logger.warning(f"append 보강용 페이지 정보 조회 실패 (무시): {e}")
 
         return result
 
@@ -220,6 +231,17 @@ class OneNoteWriter:
                 pages=pages,
             )
             result["pages_synced"] = sync_result.get("synced", 0)
+            result["pages_failed"] = sync_result.get("failed", 0)
+            # DB 저장 부분/전량 실패를 은폐하지 않고 그대로 반영한다.
+            if not sync_result.get("success", True):
+                result["success"] = False
+                result["error"] = sync_result.get("error", "DB 동기화 실패")
+            elif sync_result.get("partial"):
+                result["partial"] = True
+            # 목록이 페이징 중단으로 잘렸으면 표시한다(정상 성공이지만 불완전).
+            if pages_result.get("truncated"):
+                result["truncated"] = True
+                result["truncated_reason"] = pages_result.get("truncated_reason")
         else:
             result["success"] = False
             result["error"] = pages_result.get("error", "페이지 조회 실패")

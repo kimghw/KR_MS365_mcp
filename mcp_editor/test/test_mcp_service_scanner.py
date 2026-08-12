@@ -17,6 +17,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -46,20 +48,14 @@ def test_detect_language():
         (Path("test.md"), Language.UNKNOWN),
     ]
 
-    passed = 0
-    failed = 0
+    failures = []
 
     for file_path, expected in test_cases:
         result = detect_language(file_path)
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: detect_language('{file_path}') = {result.value} (expected: {expected.value})")
+        if result != expected:
+            failures.append(f"detect_language('{file_path}') = {result.value} (expected: {expected.value})")
 
-    print(f"  Result: {passed} passed, {failed} failed")
-    return failed == 0
+    assert not failures, "언어 감지 불일치:\n  " + "\n  ".join(failures)
 
 
 def test_find_mcp_services_in_python_file():
@@ -129,42 +125,32 @@ async def helper_function(data: str):
 
         # Verify expected services
         expected_services = ["get_emails", "send_email", "search_emails"]
+        missing = [name for name in expected_services if name not in services]
+        assert not missing, f"@mcp_service 함수 누락: {missing} (추출됨: {sorted(services)})"
+
         for svc_name in expected_services:
-            if svc_name in services:
-                svc = services[svc_name]
-                print(f"    - {svc_name}: {svc.get('metadata', {}).get('description', 'N/A')}")
-                print(f"      signature: {svc.get('signature', '')[:60]}...")
-                print(f"      is_async: {svc.get('is_async')}")
-                print(f"      class: {svc.get('class', 'N/A')}")
-            else:
-                print(f"    - {svc_name}: NOT FOUND")
+            svc = services[svc_name]
+            print(f"    - {svc_name}: {svc.get('metadata', {}).get('description', 'N/A')}")
+            print(f"      signature: {svc.get('signature', '')[:60]}...")
+            print(f"      is_async: {svc.get('is_async')}")
+            print(f"      class: {svc.get('class', 'N/A')}")
 
         # Verify helper_function is NOT extracted
         assert "helper_function" not in services, "helper_function should not be extracted"
         print("    - helper_function: correctly NOT extracted")
 
         # Check parameters extraction
-        if "get_emails" in services:
-            params = services["get_emails"].get("parameters", [])
-            param_names = [p["name"] for p in params]
-            print(f"    get_emails params: {param_names}")
+        params = services["get_emails"].get("parameters", [])
+        param_names = [p["name"] for p in params]
+        print(f"    get_emails params: {param_names}")
+        assert "user_email" in param_names, f"get_emails 에 user_email 파라미터가 없다: {param_names}"
 
-            # Check class_name detection for FilterParams
-            filter_param = next((p for p in params if p["name"] == "filter_params"), None)
-            if filter_param:
-                print(f"      filter_params: type={filter_param.get('type')}, class_name={filter_param.get('class_name')}")
+        # Check class_name detection for FilterParams
+        filter_param = next((p for p in params if p["name"] == "filter_params"), None)
+        assert filter_param is not None, f"filter_params 파라미터를 추출하지 못했다: {param_names}"
+        print(f"      filter_params: type={filter_param.get('type')}, class_name={filter_param.get('class_name')}")
 
         print("  PASS: Services extracted correctly")
-        return True
-
-    except AssertionError as e:
-        print(f"  FAIL: {e}")
-        return False
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
     finally:
         os.unlink(temp_file)
 
@@ -242,28 +228,22 @@ module.exports = { crewService, updateCrew };
         assert "helperFunc" not in services, "helperFunc should not be extracted"
         print("    - helperFunc: correctly NOT extracted")
 
+        # 샘플에 JSDoc @mcp_service 가 2개(getCrew, updateCrew) 있으므로 둘 다 잡혀야 한다.
+        assert "getCrew" in services, f"getCrew 를 추출하지 못했다 (추출됨: {sorted(services)})"
+        assert "updateCrew" in services, f"updateCrew 를 추출하지 못했다 (추출됨: {sorted(services)})"
+
         # Check parameters with nested properties
-        if "getCrew" in services:
-            params = services["getCrew"].get("parameters", [])
-            print(f"    getCrew params:")
-            for p in params:
-                props = p.get("properties", {})
-                if props:
-                    print(f"      - {p['name']}: type={p['type']}, nested_props={list(props.keys())}")
-                else:
-                    print(f"      - {p['name']}: type={p['type']}")
+        params = services["getCrew"].get("parameters", [])
+        assert params, "getCrew 의 parameters 가 비어 있다"
+        print("    getCrew params:")
+        for p in params:
+            props = p.get("properties", {})
+            if props:
+                print(f"      - {p['name']}: type={p['type']}, nested_props={list(props.keys())}")
+            else:
+                print(f"      - {p['name']}: type={p['type']}")
 
         print("  PASS: JSDoc services extracted correctly")
-        return True
-
-    except AssertionError as e:
-        print(f"  FAIL: {e}")
-        return False
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
     finally:
         os.unlink(temp_file)
 
@@ -304,22 +284,16 @@ def test_signature_from_parameters():
         ),
     ]
 
-    passed = 0
-    failed = 0
+    failures = []
 
     for params, expected in test_cases:
         result = signature_from_parameters(params)
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: '{result}'")
         if result != expected:
-            print(f"         expected: '{expected}'")
+            failures.append(f"got '{result}' / expected '{expected}'")
+        else:
+            print(f"  PASS: '{result}'")
 
-    print(f"  Result: {passed} passed, {failed} failed")
-    return failed == 0
+    assert not failures, "시그니처 생성 불일치:\n  " + "\n  ".join(failures)
 
 
 def test_scan_codebase_for_mcp_services():
@@ -330,28 +304,21 @@ def test_scan_codebase_for_mcp_services():
     outlook_dir = Path(__file__).parent.parent.parent / "mcp_outlook"
 
     if not outlook_dir.exists():
-        print(f"  SKIP: Directory not found: {outlook_dir}")
-        return True
+        pytest.skip(f"Directory not found: {outlook_dir}")
 
-    try:
-        services = scan_codebase_for_mcp_services(str(outlook_dir))
+    services = scan_codebase_for_mcp_services(str(outlook_dir))
 
-        print(f"  Found {len(services)} services in mcp_outlook")
+    assert isinstance(services, dict), f"services 는 dict 여야 한다, got {type(services)}"
 
-        for name, svc in list(services.items())[:5]:
-            print(f"    - {name}: {svc.get('metadata', {}).get('description', 'N/A')[:40]}...")
+    print(f"  Found {len(services)} services in mcp_outlook")
 
-        if len(services) > 5:
-            print(f"    ... and {len(services) - 5} more")
+    for name, svc in list(services.items())[:5]:
+        print(f"    - {name}: {svc.get('metadata', {}).get('description', 'N/A')[:40]}...")
 
-        print("  PASS: scan_codebase_for_mcp_services works correctly")
-        return True
+    if len(services) > 5:
+        print(f"    ... and {len(services) - 5} more")
 
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    print("  PASS: scan_codebase_for_mcp_services works correctly")
 
 
 def test_export_services_to_json():
@@ -408,42 +375,39 @@ class QueryParams(BaseModel):
 
         # Create output directory
         with tempfile.TemporaryDirectory() as output_dir:
-            try:
-                result = export_services_to_json(
-                    base_dir=temp_project,
-                    server_name="test_server",
-                    output_dir=output_dir
-                )
+            result = export_services_to_json(
+                base_dir=temp_project,
+                server_name="test_server",
+                output_dir=output_dir
+            )
 
-                print(f"  Registry: {result.get('registry')}")
-                print(f"  Types property: {result.get('types_property')}")
-                print(f"  Service count: {result.get('service_count')}")
-                print(f"  Type count: {result.get('type_count')}")
-                print(f"  Language: {result.get('language')}")
+            print(f"  Registry: {result.get('registry')}")
+            print(f"  Types property: {result.get('types_property')}")
+            print(f"  Service count: {result.get('service_count')}")
+            print(f"  Type count: {result.get('type_count')}")
+            print(f"  Language: {result.get('language')}")
 
-                # Verify registry file
-                registry_path = result.get('registry')
-                if registry_path and Path(registry_path).exists():
-                    with open(registry_path, 'r', encoding='utf-8') as f:
-                        registry = json.load(f)
+            # Verify registry file
+            registry_path = result.get('registry')
+            assert registry_path, "결과에 registry 경로가 없다"
+            assert Path(registry_path).exists(), f"registry 파일이 생성되지 않았다: {registry_path}"
 
-                    print(f"  Registry version: {registry.get('version')}")
-                    print(f"  Registry services: {list(registry.get('services', {}).keys())}")
+            with open(registry_path, 'r', encoding='utf-8') as fp:
+                registry = json.load(fp)
 
-                    # Check service structure
-                    for svc_name, svc in registry.get("services", {}).items():
-                        print(f"    - {svc_name}:")
-                        print(f"        handler: {svc.get('handler', {}).get('method')}")
-                        print(f"        params: {len(svc.get('parameters', []))}")
+            assert "services" in registry, "registry 에 services 키가 없다"
+            assert registry["services"], "registry 의 services 가 비어 있다"
 
-                print("  PASS: export_services_to_json works correctly")
-                return True
+            print(f"  Registry version: {registry.get('version')}")
+            print(f"  Registry services: {list(registry.get('services', {}).keys())}")
 
-            except Exception as e:
-                print(f"  FAIL: {e}")
-                import traceback
-                traceback.print_exc()
-                return False
+            # Check service structure
+            for svc_name, svc in registry.get("services", {}).items():
+                print(f"    - {svc_name}:")
+                print(f"        handler: {svc.get('handler', {}).get('method')}")
+                print(f"        params: {len(svc.get('parameters', []))}")
+
+            print("  PASS: export_services_to_json works correctly")
 
 
 def test_scan_real_outlook_project():
@@ -453,50 +417,42 @@ def test_scan_real_outlook_project():
     outlook_dir = Path(__file__).parent.parent.parent / "mcp_outlook"
 
     if not outlook_dir.exists():
-        print(f"  SKIP: Directory not found: {outlook_dir}")
-        return True
+        pytest.skip(f"Directory not found: {outlook_dir}")
 
     # Check if registry file exists
     registry_dir = Path(__file__).parent.parent / "mcp_outlook"
     registry_file = registry_dir / "registry_outlook.json"
 
     if registry_file.exists():
-        try:
-            with open(registry_file, 'r', encoding='utf-8') as f:
-                registry = json.load(f)
+        # JSON 파싱 실패는 그대로 터뜨려서 테스트를 실패시킨다.
+        with open(registry_file, 'r', encoding='utf-8') as fp:
+            registry = json.load(fp)
 
-            print(f"  Existing registry: {registry_file}")
-            print(f"  Version: {registry.get('version')}")
-            print(f"  Generated: {registry.get('generated_at')}")
-            print(f"  Services: {len(registry.get('services', {}))}")
+        assert "services" in registry, f"{registry_file.name} 에 services 키가 없다"
 
-            # List some services
-            for svc_name in list(registry.get("services", {}).keys())[:5]:
-                svc = registry["services"][svc_name]
-                desc = svc.get("metadata", {}).get("description", "N/A")
-                print(f"    - {svc_name}: {desc[:40]}...")
+        print(f"  Existing registry: {registry_file}")
+        print(f"  Version: {registry.get('version')}")
+        print(f"  Generated: {registry.get('generated_at')}")
+        print(f"  Services: {len(registry.get('services', {}))}")
 
-            if len(registry.get("services", {})) > 5:
-                print(f"    ... and {len(registry['services']) - 5} more")
+        # List some services
+        for svc_name in list(registry.get("services", {}).keys())[:5]:
+            svc = registry["services"][svc_name]
+            desc = svc.get("metadata", {}).get("description", "N/A")
+            print(f"    - {svc_name}: {desc[:40]}...")
 
-            print("  PASS: Real registry loaded successfully")
-            return True
+        if len(registry.get("services", {})) > 5:
+            print(f"    ... and {len(registry['services']) - 5} more")
 
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            return False
+        print("  PASS: Real registry loaded successfully")
     else:
         print(f"  Registry file not found: {registry_file}")
         print("  Scanning source code instead...")
 
-        try:
-            services = scan_codebase_for_mcp_services(str(outlook_dir), server_name="outlook")
-            print(f"  Found {len(services)} services")
-            print("  PASS: Source scan works")
-            return True
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            return False
+        services = scan_codebase_for_mcp_services(str(outlook_dir), server_name="outlook")
+        assert isinstance(services, dict), f"services 는 dict 여야 한다, got {type(services)}"
+        print(f"  Found {len(services)} services")
+        print("  PASS: Source scan works")
 
 
 def run_all_tests():
@@ -515,29 +471,33 @@ def run_all_tests():
         test_scan_real_outlook_project,
     ]
 
+    # 각 테스트는 이제 반환값이 아니라 예외(AssertionError)로 실패를 알린다.
     results = []
     for test_func in tests:
         try:
-            result = test_func()
-            results.append((test_func.__name__, result))
+            test_func()
+            results.append((test_func.__name__, "PASS"))
+        except pytest.skip.Exception as e:
+            print(f"  SKIP: {e}")
+            results.append((test_func.__name__, "SKIP"))
         except Exception as e:
-            print(f"  ERROR: {e}")
+            print(f"  FAIL: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            results.append((test_func.__name__, False))
+            results.append((test_func.__name__, "FAIL"))
 
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
 
-    passed = sum(1 for _, r in results if r)
-    failed = len(results) - passed
+    passed = sum(1 for _, r in results if r == "PASS")
+    skipped = sum(1 for _, r in results if r == "SKIP")
+    failed = sum(1 for _, r in results if r == "FAIL")
 
-    for name, result in results:
-        status = "PASS" if result else "FAIL"
+    for name, status in results:
         print(f"  [{status}] {name}")
 
-    print(f"\nTotal: {passed} passed, {failed} failed")
+    print(f"\nTotal: {passed} passed, {failed} failed, {skipped} skipped")
 
     return failed == 0
 

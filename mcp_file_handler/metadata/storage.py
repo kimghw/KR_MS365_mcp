@@ -153,8 +153,10 @@ class SQLiteStorage(MetadataStorage):
             return None
 
         except Exception as e:
+            # 미존재는 위에서 None 으로 반환한다. 여기 도달하면 실제 DB 오류이므로
+            # "결과 없음"으로 위장하지 않고 예외를 전파해 상위에서 실패로 드러낸다.
             logger.error(f"Failed to get metadata: {e}")
-            return None
+            raise
 
     def search(self, **criteria) -> List[Dict[str, Any]]:
         """Search metadata in SQLite."""
@@ -190,8 +192,10 @@ class SQLiteStorage(MetadataStorage):
             return results
 
         except Exception as e:
+            # "결과 0건"은 위에서 빈 리스트로 정상 반환한다. 여기 도달하면 실제 DB
+            # 오류이므로 예외를 전파해 상위에서 실패(isError)로 드러낸다.
             logger.error(f"Failed to search metadata: {e}")
-            return []
+            raise
 
     def delete(self, file_url: str) -> bool:
         """Delete metadata from SQLite."""
@@ -208,8 +212,10 @@ class SQLiteStorage(MetadataStorage):
             return affected > 0
 
         except Exception as e:
+            # 미존재(멱등 재삭제)는 affected==0 으로 정상 False 를 반환한다. 여기 도달하면
+            # 실제 DB 오류이므로 예외를 전파해 상위에서 실패로 드러낸다.
             logger.error(f"Failed to delete metadata: {e}")
-            return False
+            raise
 
 
 class JSONStorage(MetadataStorage):

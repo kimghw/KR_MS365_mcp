@@ -2,7 +2,7 @@
 Todo Service - GraphTodoClient Facade
 
 MCP 도구가 호출하는 진입점.
-- user_email 기본값 처리 (auth.db에서 첫 사용자)
+- user_email 기본값 처리 (mcp_common 의 결정적 사용자 선택 정책)
 - list_id_or_name 해석 (wellknownListName / displayName)
 """
 
@@ -16,19 +16,12 @@ from .todo_types import (
     TaskCreateParams,
     TaskUpdateParams,
 )
+from mcp_common.user_resolver import resolve_user_email
 
 
 def get_default_user_email() -> Optional[str]:
-    """auth.db에서 첫 번째 사용자 이메일 조회."""
-    try:
-        from session.auth_database import AuthDatabase
-        db = AuthDatabase()
-        users = db.list_users()
-        if users:
-            return users[0].get("user_email") or users[0].get("email")
-    except Exception:
-        pass
-    return None
+    """기본 사용자 이메일 조회 (mcp_common 정책에 위임)."""
+    return resolve_user_email()
 
 
 def _to_datetime_timezone(
@@ -64,6 +57,30 @@ def _to_item_body(
             or default_content_type,
         )
     return ItemBody(content=str(value), contentType=default_content_type)
+
+
+def _list_not_found_soft(
+    resolved: Dict[str, Any], user_email: str
+) -> Optional[Dict[str, Any]]:
+    """resolve_list_id 결과를 상위 도구 응답으로 변환.
+
+    - status == "success": None 반환 (호출측이 계속 진행)
+    - status == "not_found": soft(success:True, found:False) + 사용 가능한 리스트 안내
+    - 그 외(토큰 실패 등 진짜 오류): 원본을 그대로 반환해 하드 실패로 유지
+    """
+    status = resolved.get("status")
+    if status == "success":
+        return None
+    if status == "not_found":
+        return {
+            "success": True,
+            "found": False,
+            "requested": resolved.get("requested"),
+            "available_lists": resolved.get("available_lists", []),
+            "message": resolved.get("message"),
+            "user": user_email,
+        }
+    return resolved
 
 
 class TodoService:
@@ -140,8 +157,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
         result = await self._client.delete_task_list(user_email=user_email, list_id=list_id)
         if result.get("status") == "success":
@@ -169,8 +187,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
 
         filter_query = None
@@ -207,8 +226,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
 
         result = await self._client.get_task(
@@ -240,8 +260,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
 
         params = TaskCreateParams(
@@ -285,8 +306,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
 
         params = TaskUpdateParams(
@@ -325,8 +347,9 @@ class TodoService:
         resolved = await self._client.resolve_list_id(
             user_email=user_email, list_id_or_name=list_id_or_name
         )
-        if resolved.get("status") != "success":
-            return resolved
+        early = _list_not_found_soft(resolved, user_email)
+        if early is not None:
+            return early
         list_id = resolved["list_id"]
 
         result = await self._client.delete_task(

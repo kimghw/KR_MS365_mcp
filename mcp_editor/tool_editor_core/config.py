@@ -14,6 +14,9 @@ import importlib.util
 # Import server name mappings
 from tool_editor_web_server_mappings import get_server_name_from_profile, get_server_name_from_path
 
+# 경로 sink 검증용 (허용 루트: 기본 프로젝트 루트, MCP_ALLOWED_PATHS 로 확장)
+from .safe_paths import PathNotAllowedError, resolve_safe_path
+
 # === Constants ===
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -230,16 +233,35 @@ def get_profile_config(profile_name: str | None = None) -> dict:
 
 def resolve_paths(profile_conf: dict) -> dict:
     # 단순화: 중간 JSON 파일 제거, mcp_service_factors에 직접 저장
-    return {
-        "template_path": _resolve_path(profile_conf["template_definitions_path"]),
-        "tool_path": _resolve_path(profile_conf["tool_definitions_path"]),
-        "backup_dir": _resolve_path(profile_conf["backup_dir"]),
-        "types_files": profile_conf.get(
-            "types_files", profile_conf.get("graph_types_files", ["../mcp_outlook/outlook_types.py"])
-        ),
-        "host": profile_conf.get("host", "127.0.0.1"),
-        "port": profile_conf.get("port", 8091),
-    }
+    #
+    # 보안: 이 함수의 결과는 tool_saver(파일 쓰기)·backup_routes(백업/복원 copy) 의
+    # sink 로 그대로 들어간다. editor_config.json 이 손으로 편집되거나
+    # MCP_EDITOR_CONFIG 로 외부 설정 파일이 주입되면 tool_definitions_path/backup_dir 가
+    # 허용 루트 밖(임의 위치)을 가리킬 수 있으므로 resolve_safe_path 로 검증한다.
+    # 정상 프로필 경로(mcp_editor/ 내부, ../mcp_<domain>/**)는 모두 프로젝트 루트
+    # 안이라 그대로 통과하며, 루트 밖을 써야 하면 MCP_ALLOWED_PATHS 로 옵트인한다.
+    resolved = {}
+    for out_key, conf_key in (
+        ("template_path", "template_definitions_path"),
+        ("tool_path", "tool_definitions_path"),
+        ("backup_dir", "backup_dir"),
+    ):
+        try:
+            resolved[out_key] = str(resolve_safe_path(_resolve_path(profile_conf[conf_key])))
+        except PathNotAllowedError as e:
+            # 어느 설정 필드가 거부됐는지 알 수 있게 컨텍스트를 붙여 다시 던진다
+            raise PathNotAllowedError(f"editor_config.json '{conf_key}' 경로 거부: {e}") from e
+
+    resolved.update(
+        {
+            "types_files": profile_conf.get(
+                "types_files", profile_conf.get("graph_types_files", ["../mcp_outlook/outlook_types.py"])
+            ),
+            "host": profile_conf.get("host", "127.0.0.1"),
+            "port": profile_conf.get("port", 8091),
+        }
+    )
+    return resolved
 
 
 def _default_generator_paths(profile_conf: dict, profile_name: str | None = None) -> dict:

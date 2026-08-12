@@ -1,22 +1,4 @@
 {
-  "calendar": {
-    "template_definitions_path": "mcp_calendar/tool_definition_templates.yaml",
-    "tool_definitions_path": "../mcp_calendar/mcp_server/tool_definitions.py",
-    "backup_dir": "mcp_calendar/backups",
-    "types_files": [
-      "../mcp_calendar/calendar_types.py"
-    ],
-    "host": "0.0.0.0",
-    "port": 8002
-  },
-  "file_handler": {
-    "template_definitions_path": "mcp_file_handler/tool_definition_templates.yaml",
-    "tool_definitions_path": "../mcp_file_handler/mcp_server/tool_definitions.py",
-    "backup_dir": "mcp_file_handler/backups",
-    "types_files": [],
-    "host": "0.0.0.0",
-    "port": 8003
-  },
   "outlook": {
     "template_definitions_path": "mcp_outlook/tool_definition_templates.yaml",
     "tool_definitions_path": "../mcp_outlook/mcp_server/tool_definitions.py",
@@ -24,8 +6,74 @@
     "types_files": [
       "../mcp_outlook/outlook_types.py"
     ],
-    "host": "0.0.0.0",
-    "port": 8004
+    "host": "127.0.0.1",
+    "port": 5001
+  },
+  "calendar": {
+    "template_definitions_path": "mcp_calendar/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_calendar/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_calendar/backups",
+    "types_files": [
+      "../mcp_calendar/calendar_types.py"
+    ],
+    "host": "127.0.0.1",
+    "port": 5002
+  },
+  "teams": {
+    "template_definitions_path": "mcp_teams/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_teams/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_teams/backups",
+    "types_files": [
+      "../mcp_teams/teams_types.py"
+    ],
+    "host": "127.0.0.1",
+    "port": 5003
+  },
+  "onedrive": {
+    "template_definitions_path": "mcp_onedrive/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_onedrive/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_onedrive/backups",
+    "types_files": [
+      "../mcp_onedrive/onedrive_types.py"
+    ],
+    "host": "127.0.0.1",
+    "port": 5004
+  },
+  "onenote": {
+    "template_definitions_path": "mcp_onenote/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_onenote/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_onenote/backups",
+    "types_files": [
+      "../mcp_onenote/onenote_types.py"
+    ],
+    "host": "127.0.0.1",
+    "port": 5005
+  },
+  "todo": {
+    "template_definitions_path": "mcp_todo/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_todo/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_todo/backups",
+    "types_files": [
+      "../mcp_todo/todo_types.py"
+    ],
+    "host": "127.0.0.1",
+    "port": 5006
+  },
+  "time": {
+    "template_definitions_path": "mcp_time/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_time/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_time/backups",
+    "types_files": [],
+    "host": "127.0.0.1",
+    "port": 5007
+  },
+  "file_handler": {
+    "template_definitions_path": "mcp_file_handler/tool_definition_templates.yaml",
+    "tool_definitions_path": "../mcp_file_handler/mcp_server/tool_definitions.py",
+    "backup_dir": "mcp_file_handler/backups",
+    "types_files": [],
+    "host": "127.0.0.1",
+    "port": 5008
   },
   "asset_management": {
     "template_definitions_path": "mcp_asset_management/tool_definition_templates.py",
@@ -45,7 +93,7 @@
       "../mcp_asset_management/asset-api/sequelize/models2/mst_position.js"
     ],
     "language": "javascript",
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8001
   }
 }

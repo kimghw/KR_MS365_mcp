@@ -13,6 +13,11 @@ from flask import render_template, request, jsonify, send_from_directory
 
 from . import utility_bp
 from ..config import BASE_DIR, ROOT_DIR
+from ..safe_paths import (
+    PathNotAllowedError,
+    resolve_request_path,
+    path_error_payload,
+)
 
 
 @utility_bp.route("/")
@@ -36,19 +41,20 @@ def browse_files():
         extension = data.get("extension", "")
         show_files = data.get("show_files", True)  # Default to showing files
 
-        # Security: Ensure we're only browsing within the project root
-        abs_path = os.path.abspath(path)
+        # Security: 허용 루트(기본 프로젝트 루트) 안인지 검사.
+        # 기존 startswith 비교는 심볼릭 링크와 형제 디렉터리(예: <root>_backup)를 걸러내지 못했다.
         abs_root = os.path.abspath(ROOT_DIR)
+        try:
+            abs_path = str(resolve_request_path(path, base=abs_root))
+        except PathNotAllowedError as e:
+            return jsonify(path_error_payload(e, "path")), 403
 
-        if not abs_path.startswith(abs_root):
-            return jsonify({"error": "Access denied: path outside project"}), 403
-
-        if not os.path.exists(abs_path):
-            # If path doesn't exist, use parent directory
-            abs_path = os.path.dirname(abs_path)
-        elif os.path.isfile(abs_path):
-            # If a file path is provided, browse its parent directory
-            abs_path = os.path.dirname(abs_path)
+        if not os.path.exists(abs_path) or os.path.isfile(abs_path):
+            # 존재하지 않거나 파일이면 상위 디렉터리를 탐색 (상위도 허용 루트 안이어야 함)
+            try:
+                abs_path = str(resolve_request_path(os.path.dirname(abs_path), base=abs_root))
+            except PathNotAllowedError as e:
+                return jsonify(path_error_payload(e, "path")), 403
 
         # Build contents list for new format
         contents = []

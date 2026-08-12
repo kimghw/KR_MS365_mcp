@@ -15,6 +15,7 @@ from datetime import datetime
 from flask import request, jsonify
 
 from . import registry_bp
+from ..safe_paths import resolve_request_path, path_error_payload, PathNotAllowedError
 from ..config import (
     BASE_DIR,
     ROOT_DIR,
@@ -286,19 +287,20 @@ def load_from_template_source():
         if not source_path:
             return jsonify({"error": "path is required"}), 400
 
-        if not os.path.exists(source_path):
-            return jsonify({"error": f"File not found: {source_path}"}), 404
-
-        # Security check - only allow .py files in expected directories
-        abs_source = os.path.abspath(source_path)
-        abs_editor = os.path.abspath(BASE_DIR)
-        abs_root = os.path.abspath(ROOT_DIR)
-
-        if not (abs_source.startswith(abs_editor) or abs_source.startswith(abs_root)):
-            return jsonify({"error": "Access denied: path outside allowed directories"}), 403
-
+        # 이 엔드포인트는 대상 .py 를 exec_module() 로 실행한다. 문자열 prefix
+        # (startswith) 검사는 형제 디렉터리(<root>_evil)와 심볼릭 링크를 통과시켜
+        # 임의 코드 실행 경로가 된다. 공통 기반의 realpath 기반 허용 루트 검사를 쓴다.
         if not source_path.endswith(".py"):
             return jsonify({"error": "Only .py files are allowed"}), 400
+
+        try:
+            safe_path = resolve_request_path(source_path, must_exist=True)
+        except PathNotAllowedError as exc:
+            return jsonify(path_error_payload(exc, "path")), 403
+        except FileNotFoundError:
+            return jsonify({"error": f"File not found: {source_path}"}), 404
+
+        source_path = str(safe_path)
 
         # Load MCP_TOOLS from the file
         spec = importlib.util.spec_from_file_location("source_template", source_path)

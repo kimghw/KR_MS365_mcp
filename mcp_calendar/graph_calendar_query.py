@@ -657,8 +657,9 @@ class GraphCalendarQuery:
             }
 
         # Convert EventCreateParams to Graph API format
+        # (변환의 유일한 진입점은 모델의 to_graph_api_body — 여기서 다시 조립하지 않는다)
         if isinstance(event_data, EventCreateParams):
-            request_body = self._build_event_request_body(event_data)
+            request_body = event_data.to_graph_api_body()
         else:
             request_body = event_data
 
@@ -705,8 +706,9 @@ class GraphCalendarQuery:
             }
 
         # Convert EventUpdateParams to Graph API format
+        # (변환의 유일한 진입점은 모델의 to_graph_api_body — 여기서 다시 조립하지 않는다)
         if isinstance(event_data, EventUpdateParams):
-            request_body = self._build_event_update_body(event_data)
+            request_body = event_data.to_graph_api_body()
         else:
             request_body = event_data
 
@@ -818,154 +820,9 @@ class GraphCalendarQuery:
     # 헬퍼 메서드 - Request Body 빌드
     # ============================================================
 
-    def _build_event_request_body(self, params: EventCreateParams) -> Dict[str, Any]:
-        """
-        EventCreateParams를 Graph API 요청 본문으로 변환
-
-        Args:
-            params: 이벤트 생성 파라미터
-
-        Returns:
-            Graph API 요청 본문
-        """
-        body: Dict[str, Any] = {
-            "subject": params.subject,
-            "start": {
-                "dateTime": params.start.dateTime,
-                "timeZone": params.start.timeZone,
-            },
-            "end": {
-                "dateTime": params.end.dateTime,
-                "timeZone": params.end.timeZone,
-            },
-        }
-
-        # 본문
-        if params.body:
-            body["body"] = {
-                "contentType": params.body_content_type,
-                "content": params.body,
-            }
-
-        # 장소
-        if params.location:
-            body["location"] = {"displayName": params.location}
-
-        # 참석자
-        if params.attendees:
-            body["attendees"] = [
-                {
-                    "emailAddress": {
-                        "address": a.email_address,
-                        "name": a.name or a.email_address,
-                    },
-                    "type": a.type,
-                }
-                for a in params.attendees
-            ]
-
-        # 종일 이벤트
-        if params.is_all_day is not None:
-            body["isAllDay"] = params.is_all_day
-
-        # 온라인 회의
-        if params.is_online_meeting is not None:
-            body["isOnlineMeeting"] = params.is_online_meeting
-        if params.online_meeting_provider:
-            body["onlineMeetingProvider"] = params.online_meeting_provider
-
-        # 상태 및 속성
-        if params.show_as:
-            body["showAs"] = params.show_as
-        if params.importance:
-            body["importance"] = params.importance
-        if params.sensitivity:
-            body["sensitivity"] = params.sensitivity
-
-        # 카테고리
-        if params.categories:
-            body["categories"] = params.categories
-
-        # 알림
-        if params.reminder_minutes_before_start is not None:
-            body["reminderMinutesBeforeStart"] = params.reminder_minutes_before_start
-        if params.is_reminder_on is not None:
-            body["isReminderOn"] = params.is_reminder_on
-
-        return body
-
-    def _build_event_update_body(self, params: EventUpdateParams) -> Dict[str, Any]:
-        """
-        EventUpdateParams를 Graph API 요청 본문으로 변환 (None이 아닌 필드만)
-
-        Args:
-            params: 이벤트 수정 파라미터
-
-        Returns:
-            Graph API 요청 본문
-        """
-        body: Dict[str, Any] = {}
-
-        if params.subject is not None:
-            body["subject"] = params.subject
-
-        if params.start is not None:
-            body["start"] = {
-                "dateTime": params.start.dateTime,
-                "timeZone": params.start.timeZone,
-            }
-
-        if params.end is not None:
-            body["end"] = {
-                "dateTime": params.end.dateTime,
-                "timeZone": params.end.timeZone,
-            }
-
-        if params.body is not None:
-            body["body"] = {
-                "contentType": params.body_content_type or "html",
-                "content": params.body,
-            }
-
-        if params.location is not None:
-            body["location"] = {"displayName": params.location}
-
-        if params.attendees is not None:
-            body["attendees"] = [
-                {
-                    "emailAddress": {
-                        "address": a.email_address,
-                        "name": a.name or a.email_address,
-                    },
-                    "type": a.type,
-                }
-                for a in params.attendees
-            ]
-
-        if params.is_all_day is not None:
-            body["isAllDay"] = params.is_all_day
-
-        if params.is_online_meeting is not None:
-            body["isOnlineMeeting"] = params.is_online_meeting
-        if params.online_meeting_provider is not None:
-            body["onlineMeetingProvider"] = params.online_meeting_provider
-
-        if params.show_as is not None:
-            body["showAs"] = params.show_as
-        if params.importance is not None:
-            body["importance"] = params.importance
-        if params.sensitivity is not None:
-            body["sensitivity"] = params.sensitivity
-
-        if params.categories is not None:
-            body["categories"] = params.categories
-
-        if params.reminder_minutes_before_start is not None:
-            body["reminderMinutesBeforeStart"] = params.reminder_minutes_before_start
-        if params.is_reminder_on is not None:
-            body["isReminderOn"] = params.is_reminder_on
-
-        return body
+    # 이벤트 생성/수정 본문 조립은 EventCreateParams/EventUpdateParams.to_graph_api_body()
+    # 하나만 쓴다. 여기에 있던 _build_event_request_body/_build_event_update_body 는
+    # snake_case 필드를 읽는 두 번째 사본이라 camelCase 모델과 어긋나 삭제했다.
 
     def _build_schedule_request_body(self, params: ScheduleRequest) -> Dict[str, Any]:
         """

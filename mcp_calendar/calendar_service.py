@@ -14,6 +14,8 @@ from .calendar_types import (
     EventUpdateParams,
     DateTimeTimeZone,
     Attendee,
+    EmailAddress,
+    Location,
     ScheduleRequest,
     build_event_filter_query,
     build_event_select_query,
@@ -302,24 +304,27 @@ class CalendarService:
         # attendees 타입 변환
         attendee_list = self._convert_attendees(attendees) if attendees else None
 
-        # EventCreateParams 생성
+        # location 타입 변환
+        location_obj = self._convert_location(location)
+
+        # EventCreateParams 생성 (camelCase 필드명 사용)
         event_data = EventCreateParams(
             subject=subject,
             start=start_dt,
             end=end_dt,
             body=body,
-            body_content_type=body_content_type,
-            location=location,
+            bodyContentType=body_content_type,
+            location=location_obj,
             attendees=attendee_list,
-            is_all_day=is_all_day,
-            is_online_meeting=is_online_meeting,
-            online_meeting_provider=online_meeting_provider,
-            show_as=show_as,
+            isAllDay=is_all_day,
+            isOnlineMeeting=is_online_meeting,
+            onlineMeetingProvider=online_meeting_provider,
+            showAs=show_as,
             importance=importance,
             sensitivity=sensitivity,
             categories=categories,
-            reminder_minutes_before_start=reminder_minutes_before_start,
-            is_reminder_on=is_reminder_on,
+            reminderMinutesBeforeStart=reminder_minutes_before_start,
+            isReminderOn=is_reminder_on,
         )
 
         result = await self._client.create_event(
@@ -365,15 +370,33 @@ class CalendarService:
             if isinstance(attendee, Attendee):
                 result.append(attendee)
             elif isinstance(attendee, dict):
+                email = attendee.get("email_address", attendee.get("emailAddress", ""))
                 result.append(Attendee(
-                    email_address=attendee.get("email_address", attendee.get("emailAddress", "")),
-                    name=attendee.get("name"),
+                    emailAddress=EmailAddress(address=email, name=attendee.get("name")),
                     type=attendee.get("type", "required"),
                 ))
             else:
                 # 문자열(이메일 주소)인 경우
-                result.append(Attendee(email_address=attendee))
+                result.append(Attendee(
+                    emailAddress=EmailAddress(address=attendee),
+                    type="required",
+                ))
         return result
+
+    def _convert_location(
+        self, location: Optional[Union[str, Location, Dict[str, Any]]]
+    ) -> Optional[Location]:
+        """장소를 Location 객체로 변환"""
+        if location is None:
+            return None
+
+        if isinstance(location, Location):
+            return location
+        elif isinstance(location, dict):
+            return Location(**location)
+        else:
+            # 문자열인 경우 displayName으로 설정
+            return Location(displayName=location)
 
     @mcp_service(
         tool_name="handler_calendar_update_event",
@@ -443,24 +466,27 @@ class CalendarService:
         # attendees 타입 변환 (None 허용)
         attendee_list = self._convert_attendees(attendees) if attendees else None
 
-        # EventUpdateParams 생성
+        # location 타입 변환
+        location_obj = self._convert_location(location)
+
+        # EventUpdateParams 생성 (camelCase 필드명 사용)
         event_data = EventUpdateParams(
             subject=subject,
             start=start_dt,
             end=end_dt,
             body=body,
-            body_content_type=body_content_type,
-            location=location,
+            bodyContentType=body_content_type,
+            location=location_obj,
             attendees=attendee_list,
-            is_all_day=is_all_day,
-            is_online_meeting=is_online_meeting,
-            online_meeting_provider=online_meeting_provider,
-            show_as=show_as,
+            isAllDay=is_all_day,
+            isOnlineMeeting=is_online_meeting,
+            onlineMeetingProvider=online_meeting_provider,
+            showAs=show_as,
             importance=importance,
             sensitivity=sensitivity,
             categories=categories,
-            reminder_minutes_before_start=reminder_minutes_before_start,
-            is_reminder_on=is_reminder_on,
+            reminderMinutesBeforeStart=reminder_minutes_before_start,
+            isReminderOn=is_reminder_on,
         )
 
         result = await self._client.update_event(

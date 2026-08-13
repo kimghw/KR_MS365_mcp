@@ -869,6 +869,12 @@ class EventUpdateParams(BaseModel):
         None,
         description="온라인 회의 여부",
     )
+    onlineMeetingProvider: Optional[
+        Literal["unknown", "teamsForBusiness", "skypeForBusiness", "skypeForConsumer"]
+    ] = Field(
+        None,
+        description="온라인 회의 제공자",
+    )
 
     # 상태 및 중요도
     importance: Optional[Literal["low", "normal", "high"]] = Field(
@@ -957,6 +963,7 @@ class EventUpdateParams(BaseModel):
         optional_fields = [
             "isAllDay",
             "isOnlineMeeting",
+            "onlineMeetingProvider",
             "importance",
             "showAs",
             "sensitivity",

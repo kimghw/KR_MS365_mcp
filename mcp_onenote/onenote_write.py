@@ -6,7 +6,7 @@ action에 따라 append, create_page, create_section 분기
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from .graph_onenote_client import GraphOneNoteClient
 from .onenote_db_service import OneNoteDBService
@@ -242,8 +242,41 @@ class OneNoteWriter:
             if pages_result.get("truncated"):
                 result["truncated"] = True
                 result["truncated_reason"] = pages_result.get("truncated_reason")
+            elif result["success"]:
+                # 목록이 완전할 때만 Graph 에 없는 page 행을 걷어낸다. upsert 만
+                # 하면 다른 경로로 삭제된 페이지가 DB 에 영구히 남아, 목록에는
+                # 뜨는데 개별 조회는 404 인 유령 행이 된다.
+                result["pages_pruned"] = self._prune_missing_pages(user_email, pages)
         else:
             result["success"] = False
             result["error"] = pages_result.get("error", "페이지 조회 실패")
 
         return result
+
+    def _prune_missing_pages(
+        self,
+        user_email: str,
+        pages: List[Dict[str, Any]],
+    ) -> int:
+        """Graph 목록에 없는 page 행을 DB 에서 제거하고 제거 건수를 돌려준다.
+
+        호출 전제: pages 가 잘리지 않은 완전한 목록일 것. 잘린 목록으로 부르면
+        멀쩡한 페이지를 지운다.
+        """
+        live_ids = {p.get("id") for p in pages if p.get("id")}
+        if not live_ids:
+            # 계정에 페이지가 하나도 없는 경우와 조회 이상을 구분할 수 없으므로
+            # 아무것도 지우지 않는다.
+            return 0
+
+        pruned = 0
+        for row in self._db_service.list_items(user_id=user_email, item_type="page"):
+            item_id = row.get("item_id")
+            if item_id and item_id not in live_ids:
+                if self._db_service.delete_item(user_id=user_email, item_id=item_id):
+                    self._db_service.delete_summary(page_id=item_id)
+                    pruned += 1
+
+        if pruned:
+            logger.info(f"Graph 에 없는 페이지 행 {pruned}건 정리")
+        return pruned

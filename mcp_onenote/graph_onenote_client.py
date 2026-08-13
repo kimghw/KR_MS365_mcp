@@ -193,6 +193,7 @@ class GraphOneNoteClient:
                     return {
                         "success": False,
                         "error": f"API 요청 실패: {response.status}",
+                        "status_code": response.status,
                         "details": error_text,
                     }
         except Exception as e:

@@ -503,6 +503,224 @@ class GraphMailQuery:
         except Exception as e:
             return {"value": [], "error": str(e), "status": "error"}
 
+    def _build_message_payload(
+        self,
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        to_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        sendMail(발송)·messages(임시저장) 공용 message 리소스 생성
+
+        첨부 파일 문제(없는 경로, 3MB 초과)는 ValueError 로 올린다.
+        """
+
+        def _addr(addrs: List[str]) -> List[Dict[str, Any]]:
+            return [{"emailAddress": {"address": a}} for a in addrs]
+
+        message: Dict[str, Any] = {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML" if str(body_type).lower() == "html" else "Text",
+                "content": body,
+            },
+        }
+        if to_recipients:
+            message["toRecipients"] = _addr(to_recipients)
+        if cc_recipients:
+            message["ccRecipients"] = _addr(cc_recipients)
+        if bcc_recipients:
+            message["bccRecipients"] = _addr(bcc_recipients)
+
+        if attachments:
+            import base64
+            import mimetypes
+            from pathlib import Path
+
+            file_attachments = []
+            for path_str in attachments:
+                path = Path(path_str)
+                if not path.is_file():
+                    raise ValueError(f"첨부파일을 찾을 수 없음: {path_str}")
+                data = path.read_bytes()
+                # 직접 첨부는 파일당 3MB 까지 (초과는 업로드 세션이 필요)
+                if len(data) > 3 * 1024 * 1024:
+                    raise ValueError(
+                        f"첨부파일이 3MB 초과 (직접 첨부 한도): {path_str} ({len(data)} bytes)"
+                    )
+                content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                file_attachments.append(
+                    {
+                        "@odata.type": "#microsoft.graph.fileAttachment",
+                        "name": path.name,
+                        "contentType": content_type,
+                        "contentBytes": base64.b64encode(data).decode("ascii"),
+                    }
+                )
+            message["attachments"] = file_attachments
+
+        return message
+
+    async def send_mail(
+        self,
+        user_email: str,
+        to_recipients: List[str],
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+        save_to_sent_items: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        메일 발송 - POST /users/{email}/sendMail
+
+        Args:
+            user_email: 발신자(인증) 이메일
+            to_recipients: 받는 사람 주소 리스트
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트 (파일당 3MB 제한 - sendMail 직접 첨부 한도)
+            save_to_sent_items: 보낸 편지함 저장 여부
+
+        Returns:
+            발송 결과 (202 Accepted 시 success)
+        """
+        access_token = await self._get_access_token(user_email)
+        if not access_token:
+            auth_response = await self._get_auth_url(user_email)
+            if auth_response:
+                return auth_response
+            raise Exception(f"Failed to get access token for {user_email}")
+
+        if not to_recipients:
+            return {"status": "error", "error": "to_recipients 가 비어 있음"}
+
+        try:
+            message = self._build_message_payload(
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                to_recipients=to_recipients,
+                cc_recipients=cc_recipients,
+                bcc_recipients=bcc_recipients,
+                attachments=attachments,
+            )
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/sendMail"
+        payload = {"message": message, "saveToSentItems": bool(save_to_sent_items)}
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    # sendMail 은 성공 시 202 Accepted + 빈 본문을 돌려준다
+                    if response.status == 202:
+                        return {
+                            "status": "success",
+                            "message": "메일 발송 완료",
+                            "to": to_recipients,
+                            "cc": cc_recipients or [],
+                            "bcc": bcc_recipients or [],
+                            "subject": subject,
+                            "attachments": [a["name"] for a in message.get("attachments", [])],
+                            "save_to_sent_items": bool(save_to_sent_items),
+                        }
+                    error_text = await response.text()
+                    return {
+                        "status": "error",
+                        "error": f"sendMail failed with status {response.status}: {error_text[:300]}",
+                    }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def save_draft(
+        self,
+        user_email: str,
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        to_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        메일 임시저장 - POST /users/{email}/messages (Drafts 폴더에 생성)
+
+        발송과 달리 받는 사람 없이도 저장할 수 있다.
+
+        Args:
+            user_email: 작성자(인증) 이메일
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            to_recipients: 받는 사람 주소 리스트 (임시저장은 생략 가능)
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트 (파일당 3MB 제한)
+
+        Returns:
+            저장 결과 (201 Created 시 success + draft_id/web_link)
+        """
+        access_token = await self._get_access_token(user_email)
+        if not access_token:
+            auth_response = await self._get_auth_url(user_email)
+            if auth_response:
+                return auth_response
+            raise Exception(f"Failed to get access token for {user_email}")
+
+        try:
+            message = self._build_message_payload(
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                to_recipients=to_recipients,
+                cc_recipients=cc_recipients,
+                bcc_recipients=bcc_recipients,
+                attachments=attachments,
+            )
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=message) as response:
+                    # 임시저장은 성공 시 201 Created + 생성된 message 리소스를 돌려준다
+                    if response.status == 201:
+                        data = await response.json()
+                        return {
+                            "status": "success",
+                            "message": "임시저장 완료 (Drafts)",
+                            "draft_id": data.get("id"),
+                            "web_link": data.get("webLink"),
+                            "to": to_recipients or [],
+                            "cc": cc_recipients or [],
+                            "bcc": bcc_recipients or [],
+                            "subject": subject,
+                            "attachments": [a["name"] for a in message.get("attachments", [])],
+                        }
+                    error_text = await response.text()
+                    return {
+                        "status": "error",
+                        "error": f"draft save failed with status {response.status}: {error_text[:300]}",
+                    }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     async def _fetch_parallel_with_url(
         self,
         user_email: str,

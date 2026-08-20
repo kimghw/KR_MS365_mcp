@@ -700,6 +700,97 @@ class GraphMailClient:
             f"Only ProcessingMode.FETCH_ONLY is currently supported."
         )
 
+    async def send_mail(
+        self,
+        user_email: str,
+        to_recipients: List[str],
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+        save_to_sent_items: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        메일 발송 - GraphMailQuery.send_mail 위임
+
+        Args:
+            user_email: 발신자(인증) 이메일
+            to_recipients: 받는 사람 주소 리스트
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트
+            save_to_sent_items: 보낸 편지함 저장 여부
+
+        Returns:
+            발송 결과
+        """
+        self._ensure_initialized()
+
+        try:
+            print(f"\n[SEND] Sending mail to {len(to_recipients)} recipient(s)...")
+            return await self.mail_query.send_mail(
+                user_email=user_email,
+                to_recipients=to_recipients,
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                cc_recipients=cc_recipients,
+                bcc_recipients=bcc_recipients,
+                attachments=attachments,
+                save_to_sent_items=save_to_sent_items,
+            )
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def save_draft(
+        self,
+        user_email: str,
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        to_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        메일 임시저장 - GraphMailQuery.save_draft 위임 (Drafts 폴더에 생성)
+
+        Args:
+            user_email: 작성자(인증) 이메일
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            to_recipients: 받는 사람 주소 리스트 (임시저장은 생략 가능)
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트
+
+        Returns:
+            저장 결과 (draft_id/web_link 포함)
+        """
+        self._ensure_initialized()
+
+        try:
+            print("\n[DRAFT] Saving draft mail...")
+            return await self.mail_query.save_draft(
+                user_email=user_email,
+                subject=subject,
+                body=body,
+                body_type=body_type,
+                to_recipients=to_recipients,
+                cc_recipients=cc_recipients,
+                bcc_recipients=bcc_recipients,
+                attachments=attachments,
+            )
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     async def delete_messages(
         self,
         user_email: str,

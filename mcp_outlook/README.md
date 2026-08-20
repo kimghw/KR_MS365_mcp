@@ -1,6 +1,6 @@
 # MCP Outlook - Microsoft Graph Mail 모듈
 
-Microsoft Graph API를 통한 Outlook 메일 조회, 필터링, 첨부파일 처리를 담당하는 모듈입니다.
+Microsoft Graph API를 통한 Outlook 메일 조회, 필터링, 첨부파일 처리, 발송·임시저장을 담당하는 모듈입니다.
 
 ## 기본 사용법
 
@@ -61,7 +61,7 @@ mcp_outlook/
 ├── outlook_service.py              # 서비스 Facade (MailService)
 ├── outlook_types.py                # 타입 정의 (FilterParams, ExcludeParams, SelectParams)
 ├── graph_mail_client.py            # 통합 메일 클라이언트 (GraphMailClient)
-├── graph_mail_query.py             # 쿼리 실행 및 페이지네이션
+├── graph_mail_query.py             # 쿼리 실행 및 페이지네이션, 메일 발송/임시저장
 ├── graph_mail_url.py               # Graph API URL 빌더
 ├── graph_mail_id_batch.py          # 배치 처리 ($batch API)
 ├── mail_attachment.py              # 첨부파일 핸들러 (BatchAttachmentHandler)
@@ -229,6 +229,31 @@ backend = get_storage_backend(
 - `top > 150` 이면 자동 페이지네이션
 - Filter 최대: 1000건, Search 최대: 250건
 
+## 메일 발송·임시저장 (mail_send / mail_draft)
+
+호출 경로는 `MailService` → `GraphMailClient` → `GraphMailQuery` → Graph API 이며,
+message 리소스 생성은 `GraphMailQuery._build_message_payload` 공용 헬퍼가 담당합니다.
+
+| 도구 | 서비스 함수 | Graph API | 성공 응답 |
+|------|------------|-----------|-----------|
+| `mail_send` | `MailService.send_mail` | `POST /users/{email}/sendMail` | 202 Accepted |
+| `mail_draft` | `MailService.save_draft` | `POST /users/{email}/messages` (Drafts 폴더 생성) | 201 Created |
+
+| 파라미터 | 설명 |
+|----------|------|
+| `to_recipients` | 받는 사람 목록 (mail_send 필수, mail_draft 는 생략 가능) |
+| `subject` / `body` | 제목 / 본문 (필수) |
+| `body_type` | `text` (기본) / `html` |
+| `cc_recipients` / `bcc_recipients` | 참조 / 숨은 참조 목록 |
+| `attachments` | 첨부할 로컬 파일 경로 목록. base64 `fileAttachment`로 인코딩, 파일당 3MB 초과 시 오류 (Graph 직접 첨부 한도) |
+| `save_to_sent_items` | 보낸 편지함 저장 여부 (mail_send 전용, 기본 `true`) |
+| `user_email` | 미지정 시 인증된 기본 사용자 |
+
+- 첨부 경로가 없거나 3MB를 초과하면 `ValueError` → `status: "error"`로 반환됩니다.
+- 반환 필드: `mail_send`는 `status/message/to/cc/bcc/subject/attachments/save_to_sent_items`,
+  `mail_draft`는 `status/message/draft_id/web_link/to/cc/bcc/subject/attachments`.
+- 인증 실패 시 다른 도구들과 동일하게 `auth_required` 응답 또는 예외가 발생합니다.
+
 ## MCP 서버 도구
 
 | 도구 | 설명 |
@@ -242,6 +267,8 @@ backend = get_storage_backend(
 | `handler_mail_batch_and_process` | 배치 조회 + 처리 |
 | `handle_attachments_metadata` | 첨부파일 메타데이터 조회 |
 | `handle_download_attachments` | 첨부파일 다운로드 |
+| `handler_mail_send` | 메일 작성·발송 (`mail_send`) |
+| `handler_mail_draft` | 메일 임시저장 (`mail_draft`, Drafts 폴더) |
 
 ## 환경변수 (.env)
 
@@ -319,6 +346,24 @@ result = await mail_service.batch_and_fetch(
     user_email="kimghw@krs.co.kr",
     message_ids=["id1", "id2", "id3"]
 )
+
+# 메일 발송 (첨부 포함)
+result = await mail_service.send_mail(
+    user_email="kimghw@krs.co.kr",
+    to_recipients=["user@example.com"],
+    subject="주간 보고",
+    body="<p>보고서 첨부합니다.</p>",
+    body_type="html",
+    attachments=["downloads/report.pdf"]  # 파일당 3MB 한도
+)
+
+# 임시보관함 저장 (받는 사람 생략 가능)
+result = await mail_service.save_draft(
+    user_email="kimghw@krs.co.kr",
+    subject="초안",
+    body="나중에 이어서 작성"
+)
+# result["draft_id"], result["web_link"]
 ```
 
 ## 응답 형식

@@ -20,7 +20,7 @@ Outlook MCP — 핸들러. **두 트랜스포트가 공유하는 유일한 원�
   그 dict 로 Pydantic 모델(`FilterParams`/`ExcludeParams`/`SelectParams`)을 만든다.
   값이 없으면(None/빈 dict) 모델을 만들지 않고 None 을 넘긴다 — 기존
   `merge_param_data(...) if ... is not None else None` 과 같은 동작이다.
-- `user_email` 은 spec 이 아니라 정책이 정한다. 10개 도구 모두 기존
+- `user_email` 은 spec 이 아니라 정책이 정한다. 12개 도구 모두 기존
   `resolve_request_user(args)`(= `required=True`)와 동등하게 처리한다.
 """
 
@@ -49,7 +49,7 @@ mail_service = MailService()
 def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """spec 에서 호출 인자를 파생시키고 user_email 만 정책(SSOT)으로 해석한다.
 
-    Outlook 도구 10개는 모두 사용자 컨텍스트가 필요하다. 스키마상 `user_email` 은
+    Outlook 도구 12개는 모두 사용자 컨텍스트가 필요하다. 스키마상 `user_email` 은
     선택이고(`test_handler` 는 아예 없다), 실제 값 결정은 `mcp_common.user_resolver`
     가 한다(명시값 → 환경변수 → auth.db). 끝내 없으면 `ToolExecutionError` 를 올린다.
     """
@@ -149,6 +149,16 @@ async def handle_mail_query_url(args: Dict[str, Any]) -> Dict[str, Any]:
     return await mail_service.fetch_url(**call)
 
 
+async def handle_mail_send(args: Dict[str, Any]) -> Dict[str, Any]:
+    """mail_send → MailService.send_mail"""
+    return await mail_service.send_mail(**_call_args("mail_send", args))
+
+
+async def handle_mail_draft(args: Dict[str, Any]) -> Dict[str, Any]:
+    """mail_draft → MailService.save_draft"""
+    return await mail_service.save_draft(**_call_args("mail_draft", args))
+
+
 async def handle_test_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     """test_handler → MailService.fetch_filter"""
     call = _call_args("test_handler", args)
@@ -169,6 +179,8 @@ TOOL_HANDLERS = {
     "mail_fetch_search": handle_mail_fetch_search,
     "mail_process_with_download": handle_mail_process_with_download,
     "mail_query_url": handle_mail_query_url,
+    "mail_send": handle_mail_send,
+    "mail_draft": handle_mail_draft,
     "test_handler": handle_test_handler,
 }
 

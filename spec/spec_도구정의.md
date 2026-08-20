@@ -25,6 +25,7 @@ MCP 서버가 노출하는 도구(tool)의 이름·설명·파라미터(타입/�
 | 2026-08-12 | **"진자템플릿은 더이상 사용하지 않을거야. 생성기를 사용하지 않고 spec 으로 api를 관리할거야"** — **방향 전환 확정.** 생성기(`generate_universal_server.py`)·jinja 템플릿·자동 생성물(`tool_definition_templates.yaml`)·에디터(`mcp_editor`)를 전부 폐지하고, `spec/param_spec/<도메인>.yaml` **하나만이 계약**이 된다. 이 문서의 "초안→확정→**생성**→검증"(구 S3)과 `tool_definition_templates.yaml` 을 자동 생성물로 다루던 서술은 이 결정으로 무효가 되어 삭제했다. |
 | 2026-08-12 | 범위를 8개 도메인 전체(+ time, file_handler)로 넓혀 이관 완료. |
 | 2026-08-12 | "MCP 서버 툴에 래핑된 함수도 spec 에 정의된 것인가? 이것에 따라 툴이 정의되면 좋겠다" — **`service:` 필드 추가 확정.** 도구→서비스 함수 바인딩(예: `mail_list_keyword` → `MailService.fetch_search`)이 그때까지 `handlers.py` 코드에만 보였는데, 도구 레벨 필수 필드 `service:`(`클래스.메서드`)로 spec 에 선언하게 했다. 60개 도구 전량 주입, 누락 시 기동 실패. 핸들러는 이 선언의 배선일 뿐이며 다르게 배선하면 위반이다. CLAUDE.md 필드 규정에도 반영. |
+| 2026-08-20 | "outlook mail 쓰기 툴을 추가해주세요" + "임시저장 기능도 추가해줘" — **outlook 에 쓰기 도구 2개 추가.** `mail_send`(`MailService.send_mail` → `POST /users/{email}/sendMail`, to/cc/bcc·text/html 본문·로컬 파일 첨부(파일당 3MB)·보낸편지함 저장 여부)와 `mail_draft`(`MailService.save_draft` → `POST /users/{email}/messages`, Drafts 폴더 저장·받는 사람 생략 가능·draft_id/web_link 반환). message 리소스 생성은 `GraphMailQuery._build_message_payload` 공용 헬퍼로 공유. |
 
 ---
 
@@ -137,7 +138,7 @@ mcp_<도메인>/mcp_server/handlers.py    ← 배선만. 도구 정의를 적지
 
 | 도메인 | 포트 | 파일 | 도구 | 줄 | 이관 대조 |
 |---|---:|---|---:|---:|---|
-| outlook | 5001 | `spec/param_spec/outlook.yaml` | 10 | 602 | `top` 2곳에 `default: 50` 추가(개선) |
+| outlook | 5001 | `spec/param_spec/outlook.yaml` | 12 | 735 | `top` 2곳에 `default: 50` 추가(개선). 2026-08-20 쓰기 도구 `mail_send`·`mail_draft` 추가(① 참조) |
 | calendar | 5002 | `spec/param_spec/calendar.yaml` | 7 | 235 | **완전 동일** |
 | teams | 5003 | `spec/param_spec/teams.yaml` | 14 | 291 | **완전 동일** |
 | onedrive | 5004 | `spec/param_spec/onedrive.yaml` | 9 | 176 | **완전 동일** |
@@ -161,7 +162,7 @@ mcp_<도메인>/mcp_server/handlers.py    ← 배선만. 도구 정의를 적지
 | `expose: internal` | outlook 4개 (`FilterParams`/`SelectParams` 계열 주입) |
 | `expose: hidden` | outlook `mail_attachment_meta.select_params` 1개 (3.4 결함 5) |
 | `fields` (객체 하위 필드) | outlook 9곳 |
-| `items` (배열 원소) | todo `categories` 2, teams `names`, calendar `schedules`, file_handler `keywords` |
+| `items` (배열 원소) | todo `categories` 2, teams `names`, calendar `schedules`, file_handler `keywords`, outlook `mail_send`/`mail_draft` 의 수신자·첨부 배열 |
 | `baseModel` | outlook (Pydantic 모델 표식) |
 | `targetParam` | 전 도메인 (todo 는 35개 전부 항등 매핑까지 명시) |
 

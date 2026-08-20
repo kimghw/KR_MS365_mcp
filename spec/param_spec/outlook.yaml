@@ -573,6 +573,143 @@ tools:
             description: "메시지 수신 날짜/시간 (ISO 8601 형식, UTC)"
             default: true
 
+  - name: mail_send
+    description: "Outlook 메일을 작성하여 발송합니다. 받는 사람·참조·숨은 참조, 제목, 본문(text 또는 html), 로컬 파일 첨부(파일당 3MB 한도)를 지원합니다. 발송 성공 시 기본으로 보낸 편지함에 저장됩니다."
+    service: MailService.send_mail
+    params:
+      - name: to_recipients
+        type: array
+        required: true
+        expose: tool
+        description: "받는 사람 이메일 주소 목록"
+        items:
+          type: string
+        targetParam: to_recipients
+      - name: subject
+        type: string
+        required: true
+        expose: tool
+        description: "메일 제목"
+        targetParam: subject
+      - name: body
+        type: string
+        required: true
+        expose: tool
+        description: "메일 본문. body_type=html 이면 HTML 마크업, text 면 일반 텍스트로 해석됨"
+        targetParam: body
+      - name: body_type
+        type: string
+        required: false
+        expose: tool
+        description: "본문 형식"
+        enum:
+          - "text"
+          - "html"
+        default: "text"
+        targetParam: body_type
+      - name: cc_recipients
+        type: array
+        required: false
+        expose: tool
+        description: "참조 (Cc) 이메일 주소 목록"
+        items:
+          type: string
+        targetParam: cc_recipients
+      - name: bcc_recipients
+        type: array
+        required: false
+        expose: tool
+        description: "숨은 참조 (Bcc) 이메일 주소 목록"
+        items:
+          type: string
+        targetParam: bcc_recipients
+      - name: attachments
+        type: array
+        required: false
+        expose: tool
+        description: "첨부할 로컬 파일 경로 목록. 파일당 3MB 초과 시 오류 (Graph sendMail 직접 첨부 한도)"
+        items:
+          type: string
+        targetParam: attachments
+      - name: save_to_sent_items
+        type: boolean
+        required: false
+        expose: tool
+        description: "발송 후 보낸 편지함(Sent Items) 저장 여부"
+        default: true
+        targetParam: save_to_sent_items
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "발신자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
+  - name: mail_draft
+    description: "Outlook 메일을 발송하지 않고 임시보관함(Drafts)에 저장합니다. 받는 사람 없이도 저장할 수 있으며, 저장된 초안의 draft_id 와 web_link 를 반환합니다. 즉시 발송하려면 mail_send 를 사용하세요."
+    service: MailService.save_draft
+    params:
+      - name: subject
+        type: string
+        required: true
+        expose: tool
+        description: "메일 제목"
+        targetParam: subject
+      - name: body
+        type: string
+        required: true
+        expose: tool
+        description: "메일 본문. body_type=html 이면 HTML 마크업, text 면 일반 텍스트로 해석됨"
+        targetParam: body
+      - name: body_type
+        type: string
+        required: false
+        expose: tool
+        description: "본문 형식"
+        enum:
+          - "text"
+          - "html"
+        default: "text"
+        targetParam: body_type
+      - name: to_recipients
+        type: array
+        required: false
+        expose: tool
+        description: "받는 사람 이메일 주소 목록 (임시저장은 생략 가능)"
+        items:
+          type: string
+        targetParam: to_recipients
+      - name: cc_recipients
+        type: array
+        required: false
+        expose: tool
+        description: "참조 (Cc) 이메일 주소 목록"
+        items:
+          type: string
+        targetParam: cc_recipients
+      - name: bcc_recipients
+        type: array
+        required: false
+        expose: tool
+        description: "숨은 참조 (Bcc) 이메일 주소 목록"
+        items:
+          type: string
+        targetParam: bcc_recipients
+      - name: attachments
+        type: array
+        required: false
+        expose: tool
+        description: "첨부할 로컬 파일 경로 목록. 파일당 3MB 초과 시 오류 (직접 첨부 한도)"
+        items:
+          type: string
+        targetParam: attachments
+      - name: user_email
+        type: string
+        required: false
+        expose: tool
+        description: "작성자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        targetParam: user_email
+
   - name: test_handler
     description: "New tool description"
     service: MailService.fetch_filter

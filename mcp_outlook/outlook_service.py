@@ -496,6 +496,109 @@ class MailService:
         )
 
     @mcp_service(
+        tool_name="handler_mail_send",
+        server_name="outlook",
+        service_name="send_mail",
+        category="outlook_mail",
+        tags=["send", "write", "compose"],
+        priority=5,
+        description="메일 작성·발송 기능",
+    )
+    async def send_mail(
+        self,
+        user_email: str,
+        to_recipients: List[str],
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+        save_to_sent_items: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        메일 발송 - GraphMailClient.send_mail 위임
+
+        Args:
+            user_email: 발신자(인증) 이메일
+            to_recipients: 받는 사람 주소 리스트
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트 (파일당 3MB 제한)
+            save_to_sent_items: 보낸 편지함 저장 여부
+
+        Returns:
+            발송 결과
+        """
+        self._ensure_initialized()
+
+        return await self._client.send_mail(
+            user_email=user_email,
+            to_recipients=to_recipients,
+            subject=subject,
+            body=body,
+            body_type=body_type,
+            cc_recipients=cc_recipients,
+            bcc_recipients=bcc_recipients,
+            attachments=attachments,
+            save_to_sent_items=save_to_sent_items,
+        )
+
+    @mcp_service(
+        tool_name="handler_mail_draft",
+        server_name="outlook",
+        service_name="save_draft",
+        category="outlook_mail",
+        tags=["draft", "write", "compose"],
+        priority=5,
+        description="메일 임시저장 기능",
+    )
+    async def save_draft(
+        self,
+        user_email: str,
+        subject: str,
+        body: str,
+        body_type: str = "text",
+        to_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        메일 임시저장 - GraphMailClient.save_draft 위임
+
+        발송하지 않고 Drafts 폴더에 저장한다. 받는 사람 없이도 저장 가능.
+
+        Args:
+            user_email: 작성자(인증) 이메일
+            subject: 제목
+            body: 본문
+            body_type: "text" 또는 "html"
+            to_recipients: 받는 사람 주소 리스트 (생략 가능)
+            cc_recipients: 참조 주소 리스트
+            bcc_recipients: 숨은 참조 주소 리스트
+            attachments: 첨부할 로컬 파일 경로 리스트 (파일당 3MB 제한)
+
+        Returns:
+            저장 결과 (draft_id/web_link 포함)
+        """
+        self._ensure_initialized()
+
+        return await self._client.save_draft(
+            user_email=user_email,
+            subject=subject,
+            body=body,
+            body_type=body_type,
+            to_recipients=to_recipients,
+            cc_recipients=cc_recipients,
+            bcc_recipients=bcc_recipients,
+            attachments=attachments,
+        )
+
+    @mcp_service(
         tool_name="handler_mail_action",
         server_name="outlook",
         service_name="mail_action",

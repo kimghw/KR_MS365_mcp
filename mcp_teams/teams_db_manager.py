@@ -287,13 +287,27 @@ class TeamsDBManager:
             "results": results
         }
 
-    async def sync_chats_to_db(self, user_id: str, chats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    @staticmethod
+    def _member_email(member: Dict[str, Any]) -> str:
+        return (
+            member.get("email")
+            or member.get("user_principal_name")
+            or member.get("userPrincipalName")
+            or ""
+        )
+
+    async def sync_chats_to_db(
+        self, user_id: str, chats: List[Dict[str, Any]], deactivate_missing: bool = True
+    ) -> Dict[str, Any]:
         """
         채팅 목록을 DB에 동기화
 
         Args:
             user_id: 사용자 ID (이메일)
             chats: Graph API에서 조회한 채팅 목록
+            deactivate_missing: True 면 chats 에 없는 기존 채팅을 비활성화한다.
+                chats 가 전체 목록일 때만 True 로 — 부분(첫 페이지) 목록으로 비활성화하면
+                멀쩡한 채팅이 "삭제됨" 으로 바뀐다.
 
         Returns:
             동기화 결과
@@ -314,7 +328,7 @@ class TeamsDBManager:
             existing_chat_ids = {row[0] for row in cursor.fetchall()}
 
             # 삭제된 채팅 비활성화
-            deleted_chat_ids = existing_chat_ids - current_chat_ids
+            deleted_chat_ids = (existing_chat_ids - current_chat_ids) if deactivate_missing else set()
             for chat_id in deleted_chat_ids:
                 cursor.execute(
                     "UPDATE teams_chats SET is_active = FALSE, updated_at = ? WHERE user_id = ? AND chat_id = ?",
@@ -336,14 +350,14 @@ class TeamsDBManager:
                 peer_user_name = None
                 peer_user_email = None
                 if chat_type == "oneOnOne" and len(members) >= 2:
-                    peer_member = members[1] if len(members) > 1 else members[0]
+                    # 멤버 배열 순서는 보장되지 않는다([상대, 본인] 도 옴) — 본인을 제외한 첫 멤버가 상대방
+                    peer_member = next(
+                        (m for m in members if self._member_email(m).lower() != user_id.lower()),
+                        members[1],
+                    )
                     # graph_teams_client가 UserInfo를 asdict로 직렬화하므로 snake_case 키 우선
                     peer_user_name = peer_member.get("display_name") or peer_member.get("displayName", "")
-                    peer_user_email = (
-                        peer_member.get("email")
-                        or peer_member.get("user_principal_name")
-                        or peer_member.get("userPrincipalName", "")
-                    )
+                    peer_user_email = self._member_email(peer_member)
 
                 # 한글 이름(topic_kr) 추정
                 topic_kr = None

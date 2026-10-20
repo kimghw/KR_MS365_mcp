@@ -5,11 +5,11 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 ## 첫 설치 — `/setup_ms365`
 
 ```
-1. 상태: 다 X (venv·.env·deps·등록 모두 없음)
+1. 상태: 다 X (uv·.venv·.env·deps·등록 모두 없음)
 2-A. unhealthy_common 감지 → "지금 셋업할까요?" 예
 3-A-0a. 서버 → 6개 다
 3-A-0b. 타겟 → Code + Desktop
-3-A-1~3. Python 발견 → venv 생성 → pip install
+3-A-1~3. uv 확인(없으면 설치) → uv sync --frozen (Python 조달 + .venv + 의존성)
 3-A-4. .env 입력 → 작성
 3-A-5-CC/CD. register_claude_code.py / register_claude_desktop.py 호출
 4. server_stream.py 6개 백그라운드 실행 → health_check.py 확인
@@ -19,7 +19,7 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 ## 기존 환경 — 일부 누락 — `/setup_ms365`
 
 ```
-1. 상태: venv/deps/.env OK. teams 는 Code만, Desktop 누락. todo 는 둘 다 미등록
+1. 상태: .venv/deps/.env OK (uv.lock 과 일치). teams 는 Code만, Desktop 누락. todo 는 둘 다 미등록
 2-B. AskUserQuestion multiSelect:
      ☐ teams → Claude Desktop (STDIO)
      ☐ todo  → Claude Code (HTTP)
@@ -32,7 +32,7 @@ SKILL.md 의 1~5단계 흐름을 실제 케이스에 매핑한 예시 5개.
 ## 모두 정상 — `/setup_ms365`
 
 ```
-1. 상태: venv/deps/.env/토큰 OK, 6개 서버 모두 Code+Desktop 등록 + 포트 LISTEN
+1. 상태: uv/.venv/deps/.env/토큰 OK, 6개 서버 모두 Code+Desktop 등록 + 포트 LISTEN
 2-D. ✅ 모든 서버 정상 — 추가 작업 메뉴 (선택 안 하면 종료)
 ```
 

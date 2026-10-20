@@ -37,7 +37,7 @@ def _args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """spec 이 파생시킨 호출 인자 + 사용자 해석.
 
     `user_email` 만은 spec 으로 표현할 수 없다 — 값이 비면 mcp_common 정책(SSOT)이
-    기본 사용자를 고른다. 14개 도구가 모두 같은 규칙을 쓰므로 여기 한 곳에 둔다.
+    기본 사용자를 고른다. 15개 도구가 모두 같은 규칙을 쓰므로 여기 한 곳에 둔다.
     """
     call_args = SPEC.call_args(tool_name, args)
     call_args["user_email"] = resolve_user_email(call_args.get("user_email"), required=True)
@@ -66,6 +66,12 @@ async def handle_get_chat_messages(args: Dict[str, Any]) -> Dict[str, Any]:
 async def handle_send_chat_message(args: Dict[str, Any]) -> Dict[str, Any]:
     return await teams_service.send_chat_message(
         **_args("handler_teams_send_chat_message", args)
+    )
+
+
+async def handle_send_chat_file(args: Dict[str, Any]) -> Dict[str, Any]:
+    return await teams_service.send_chat_file(
+        **_args("handler_teams_send_chat_file", args)
     )
 
 
@@ -128,6 +134,7 @@ TOOL_HANDLERS = {
     "handler_teams_get_chat": handle_get_chat,
     "handler_teams_get_chat_messages": handle_get_chat_messages,
     "handler_teams_send_chat_message": handle_send_chat_message,
+    "handler_teams_send_chat_file": handle_send_chat_file,
     "handler_teams_list_teams": handle_list_teams,
     "handler_teams_list_channels": handle_list_channels,
     "handler_teams_get_channel_messages": handle_get_channel_messages,

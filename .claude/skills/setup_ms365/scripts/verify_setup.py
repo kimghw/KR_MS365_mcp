@@ -31,7 +31,23 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # <root>/.claude/skills/setup_ms365/scripts/verify_setup.py → parents[4] == <root>
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-VENV_PYTHON = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+
+#: uv 가 만드는 환경. 전환 전에는 `venv/` 였으므로 남아 있으면 그것도 인정한다
+#: (기존 PC 를 곧바로 깨뜨리지 않기 위해서다. 새로 만들 때는 항상 `.venv`).
+VENV_DIR = PROJECT_ROOT / ".venv"
+LEGACY_VENV_DIR = PROJECT_ROOT / "venv"
+
+
+def _venv_python() -> Path:
+    for base in (VENV_DIR, LEGACY_VENV_DIR):
+        candidate = base / "Scripts" / "python.exe"
+        if candidate.exists():
+            return candidate
+    return VENV_DIR / "Scripts" / "python.exe"
+
+
+VENV_PYTHON = _venv_python()
+LOCK_FILE = PROJECT_ROOT / "uv.lock"
 ENV_FILE = PROJECT_ROOT / ".env"
 DB_FILE = PROJECT_ROOT / "database" / "auth.db"
 
@@ -52,20 +68,41 @@ SERVERS = {
     "todo":     _srv("todo",     5006),
 }
 
+#: 기동에 반드시 필요한 것만 본다. fastapi 는 REST 서버 폐지(2026-08-12)로 의존이 사라졌는데
+#: 이 목록에 남아 "missing: fastapi" 를 계속 보고하고 있었다 — uv 전환 때 걷어냈다.
 CORE_DEPS = [
     ("aiohttp", "aiohttp"),
     ("pydantic", "pydantic"),
     ("yaml", "PyYAML"),
     ("dotenv", "python-dotenv"),
-    ("fastapi", "fastapi"),
+    ("mcp", "mcp"),
+    ("starlette", "starlette"),
     ("uvicorn", "uvicorn"),
 ]
 
 
+def check_uv() -> dict:
+    """uv 설치 여부. 이 프로젝트의 환경 관리는 uv 가 한다."""
+    uv = shutil.which("uv")
+    if not uv:
+        return {"installed": False, "path": None, "version": None}
+    try:
+        out = subprocess.run(
+            [uv, "--version"], capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
+        )
+        version = out.stdout.strip() if out.returncode == 0 else None
+    except Exception:
+        version = None
+    return {"installed": True, "path": uv, "version": version}
+
+
 def check_venv() -> dict:
-    """venv 존재 + Python 버전 확인."""
+    """가상환경 존재 + Python 버전 + 잠금 파일 유무."""
+    legacy = not VENV_DIR.exists() and LEGACY_VENV_DIR.exists()
+    base = {"lock_exists": LOCK_FILE.exists(), "legacy_dir": legacy}
     if not VENV_PYTHON.exists():
-        return {"exists": False, "python": None, "version": None}
+        return {"exists": False, "python": None, "version": None, **base}
     try:
         out = subprocess.run(
             [str(VENV_PYTHON), "-c", "import sys; print(sys.version.split()[0])"],
@@ -75,7 +112,7 @@ def check_venv() -> dict:
         version = out.stdout.strip() if out.returncode == 0 else None
     except Exception:
         version = None
-    return {"exists": True, "python": str(VENV_PYTHON), "version": version}
+    return {"exists": True, "python": str(VENV_PYTHON), "version": version, **base}
 
 
 def check_deps() -> dict:
@@ -295,6 +332,7 @@ def collect() -> dict:
             "server_port": check_server_port(meta["http_port"]),
         }
     return {
+        "uv": check_uv(),
         "venv": check_venv(),
         "deps": check_deps(),
         "env_file": check_env_file(),
@@ -324,8 +362,18 @@ def render_table(data: dict) -> str:
     def mark(ok: bool) -> str:
         return "OK " if ok else "X  "
 
+    uv = data["uv"]
+    venv_detail = f"Python {venv['version']}" if venv["version"] else "missing"
+    if venv.get("legacy_dir"):
+        venv_detail += "  ⚠ venv/ (구버전) — `uv sync` 로 .venv/ 새로 만들 것"
+    if not venv.get("lock_exists"):
+        venv_detail += "  ⚠ uv.lock 없음"
+
     common_rows = [
-        ("venv", mark(venv["exists"]), f"Python {venv['version']}" if venv["version"] else "missing"),
+        ("uv", mark(uv["installed"]),
+         # `uv --version` 은 "uv 0.12.10 (해시 날짜 타깃)" 을 준다 — 버전만 쓴다.
+         (uv["version"] or "").split(" (")[0] if uv["installed"] else "미설치 — https://astral.sh/uv 참조"),
+        ("가상환경 (.venv)", mark(venv["exists"]), venv_detail),
         ("의존성", mark(deps["all_ok"]),
          "all ok" if deps["all_ok"] else f"missing: {', '.join(deps['missing']) or '(no venv)'}"),
         (".env", mark(env["exists"] and env["has_client_id"] and env["has_client_secret"] and env["has_tenant_id"]),
@@ -382,9 +430,10 @@ def render_table(data: dict) -> str:
 
 
 def all_ok(data: dict) -> bool:
-    """venv/deps/.env/토큰 OK + 모든 서버가 Code 또는 Desktop 한 곳 이상 등록되면 OK."""
+    """uv/환경/deps/.env/토큰 OK + 모든 서버가 Code 또는 Desktop 한 곳 이상 등록되면 OK."""
     common = (
-        data["venv"]["exists"]
+        data["uv"]["installed"]
+        and data["venv"]["exists"]
         and data["deps"]["all_ok"]
         and data["env_file"]["exists"]
         and data["env_file"]["has_client_id"]

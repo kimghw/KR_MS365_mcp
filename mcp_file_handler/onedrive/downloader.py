@@ -75,6 +75,12 @@ class OneDriveDownloader:
         """
         results = []
 
+        if not output_dir:
+            # 기준 디렉터리가 없으면 하위 폴더를 만들 수 없어 A/x.txt 와 B/x.txt 가 같은 곳에 덮어써진다
+            if not self.temp_dir:
+                self.temp_dir = tempfile.mkdtemp(prefix='onedrive_')
+            output_dir = self.temp_dir
+
         # Get folder contents
         children = self.client.list_children(folder_id)
 

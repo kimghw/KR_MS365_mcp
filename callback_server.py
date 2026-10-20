@@ -6,6 +6,7 @@ Azure AD 인증 콜백을 처리하는 웹서버입니다.
 """
 
 import asyncio
+import html
 import json
 import socket
 import logging
@@ -80,9 +81,8 @@ class CallbackServer:
 
     async def handle_callback(self, request):
         """OAuth 콜백 처리"""
-        # 전체 URL 로그 (안전한 방식)
+        # 쿼리 문자열은 authorization code 를 담고 있으므로 로그에 남기지 않는다
         logger.info(f"Callback received - Path: {request.path}")
-        logger.info(f"Query string: {request.query_string}")
 
         query_params = parse_qs(request.query_string)
 
@@ -110,8 +110,8 @@ class CallbackServer:
                 <div class="container">
                     <h1>[ERROR] Authentication Failed</h1>
                     <div class="error">
-                        <strong>Error:</strong> {error}<br>
-                        <strong>Description:</strong> {error_description or 'No additional information'}
+                        <strong>Error:</strong> {html.escape(error)}<br>
+                        <strong>Description:</strong> {html.escape(error_description or 'No additional information')}
                     </div>
                     <p>Please try again or contact your administrator if the problem persists.</p>
                     <a href="/" class="button">Try Again</a>
@@ -119,8 +119,13 @@ class CallbackServer:
             </body>
             </html>
             """
-            self.auth_error = f"{error}: {error_description or 'No additional information'}"
-            self.auth_completed.set()
+            # 진행 중인 인증(state 일치)의 오류만 대기자를 깨운다 — state 없는 요청이
+            # 남의 인증을 중단시키지 못하게 한다
+            if state and state in self.auth_service.auth_states:
+                self.auth_error = f"{error}: {error_description or 'No additional information'}"
+                self.auth_completed.set()
+            else:
+                logger.warning(f"Callback error without a pending state ignored: {error}")
             return web.Response(text=html_content, content_type='text/html', status=400)
 
         if not code or not state:
@@ -130,9 +135,8 @@ class CallbackServer:
             if not state:
                 missing.append("state")
             error_msg = f"Missing required parameter(s): {', '.join(missing)}"
+            # state 가 없으면 어느 인증의 응답인지 알 수 없다 — 대기 중인 인증은 건드리지 않는다
             logger.error(f"Callback rejected - {error_msg}")
-            self.auth_error = error_msg
-            self.auth_completed.set()
             return web.Response(text=error_msg, status=400)
 
         logger.info(f"Processing callback with state: {state[:10]}...")
@@ -173,7 +177,7 @@ class CallbackServer:
                     <div class="container">
                         <h1>[OK] Authentication Successful!</h1>
                         <div class="user-info">
-                            <strong>Logged in as:</strong> {user_email}
+                            <strong>Logged in as:</strong> {html.escape(user_email)}
                         </div>
                         <p class="message">This window will close automatically in 3 seconds...</p>
                         <p class="message">You can now return to your application.</p>

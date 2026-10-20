@@ -604,6 +604,7 @@ class BatchAttachmentHandler:
         try:
             folder_path = None
             saved_files = []
+            errors_before = len(result["errors"])
 
             # Step 1: 저장 모드일 때만 폴더 생성
             if save_file and storage:
@@ -631,8 +632,9 @@ class BatchAttachmentHandler:
                 if str(folder_path) not in result.get("saved_folders", []):
                     result.setdefault("saved_folders", []).append(str(folder_path))
 
-            # Step 5: 메타데이터 저장 (저장 모드일 때만)
-            if save_file:
+            # Step 5: 메타데이터 저장 (저장 모드 + 이 메일의 저장이 전부 성공했을 때만).
+            # 실패를 "처리 완료" 로 적으면 중복 제외에 걸려 재시도조차 못 한다.
+            if save_file and len(result["errors"]) == errors_before:
                 self.metadata_manager.add_processed_mail(
                     message_id, mail_data, str(folder_path) if folder_path else "", saved_files
                 )

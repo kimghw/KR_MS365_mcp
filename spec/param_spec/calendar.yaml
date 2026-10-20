@@ -45,13 +45,13 @@ tools:
         required: true
         expose: tool
         targetParam: start_datetime
-        description: "조회 시작 날짜/시간 (ISO 8601 형식, 예: 2024-01-01T00:00:00)"
+        description: "조회 시작 날짜/시간 (ISO 8601, 예: 2024-01-01T00:00:00+09:00. 오프셋 생략 시 +09:00 한국시간으로 해석)"
       - name: end_datetime
         type: string
         required: true
         expose: tool
         targetParam: end_datetime
-        description: "조회 종료 날짜/시간 (ISO 8601 형식, 예: 2024-01-31T23:59:59)"
+        description: "조회 종료 날짜/시간 (ISO 8601, 예: 2024-01-31T23:59:59+09:00. 오프셋 생략 시 +09:00 한국시간으로 해석)"
 
   # 시그니처의 select_params 는 노출하지 않는다.
   - name: get_event

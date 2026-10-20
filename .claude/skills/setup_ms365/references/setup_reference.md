@@ -23,40 +23,57 @@
 | 항목 | 요구 |
 |---|---|
 | OS | Windows 10/11 (WSL Bash 도구로 Windows 바이너리 호출) |
-| Python | Windows 시스템 Python 3.10+ (`C:\Python3*\python.exe`) |
-| venv 위치 | `<PROJECT_ROOT>\venv\` |
+| uv | **필수** — 환경·의존성·Python 조달을 전부 uv 가 한다. 없으면 astral.sh 의 `install.ps1` 한 줄로 설치 (관리자 권한 불필요) |
+| Python | `.python-version` 의 `3.12`. **uv 가 받아온다** — 시스템 Python 을 찾아다니지 않는다 |
+| 환경 위치 | `<PROJECT_ROOT>\.venv\` (`uv sync --frozen` 이 만든다). 전환 전 이름인 `venv\` 가 남아 있으면 `verify_setup.py` 가 경고만 하고 인정한다 |
 | Claude Code CLI | `claude` (PATH에 있어야 함) |
-| 한컴오피스 (선택) | `pyhwpx`로 HWP 변환 시에만 필요 — 기본 스킬에서는 비활성 |
+| 한컴오피스 (선택) | `pyhwpx`로 HWP 변환 시에만 필요 — `converters` extra 에만 들어 있다 |
 
 ## 절대 경로 매핑
 
 | 항목 | Git Bash / WSL 경로 | Windows 경로 |
 |---|---|---|
 | 프로젝트 루트 | `/c/...` 또는 `/mnt/<드라이브>/<PROJECT_ROOT>` | `<PROJECT_ROOT>` |
-| venv Python | `<root>/venv/Scripts/python.exe` | `<PROJECT_ROOT>\venv\Scripts\python.exe` |
-| venv pip | `<root>/venv/Scripts/pip.exe` | `<PROJECT_ROOT>\venv\Scripts\pip.exe` |
+| 환경 Python | `<root>/.venv/Scripts/python.exe` | `<PROJECT_ROOT>\.venv\Scripts\python.exe` |
+| 의존성 잠금 | `<root>/uv.lock` | `<PROJECT_ROOT>\uv.lock` |
+| Python 버전 | `<root>/.python-version` | `<PROJECT_ROOT>\.python-version` |
 | `.env` | `<root>/.env` | `<PROJECT_ROOT>\.env` |
 | 토큰 DB | `<root>/database/auth.db` | `<PROJECT_ROOT>\database\auth.db` |
 | 인증 모듈 | `<root>/session/auth_manager.py` | `<PROJECT_ROOT>\session\auth_manager.py` |
 
 서버별 진입점: 위 "지원 서버" 표 참조.
 
-## 핵심 의존성 (requirements.txt)
+## 핵심 의존성 (`pyproject.toml` + `uv.lock`)
+
+정본은 `pyproject.toml` 의 `[project].dependencies` 이고, 버전 조합은 `uv.lock` 이 고정한다.
+`requirements.txt` 는 `uv export --no-hashes --no-dev --no-emit-project` 산출물(= pip 폴백)이라
+**손으로 고치지 않는다.**
 
 | 패키지 | 용도 |
 |---|---|
 | aiohttp | Graph API HTTP 호출 |
+| requests | 동기 HTTP 호출 |
 | python-dotenv | `.env` 로드 (utf-8-sig BOM 처리) |
-| cryptography | 토큰 암호화 |
-| psutil | 프로세스/포트 점검 |
 | pydantic | 데이터 모델 |
-| PyYAML | 도구 정의 로드 |
-| fastapi, uvicorn | REST/Stream 웹서버 |
-| mcp-proxy | (옵션) Claude Desktop 원격 연결 |
-| pdfplumber, python-docx, olefile, openpyxl, python-pptx | 메일 첨부 변환 |
+| PyYAML | 도구 정의(param_spec) 로드 |
+| starlette, uvicorn | Stream(HTTP) 서버 — fastapi 는 REST 폐지(2026-08-12)로 의존이 사라졌다 |
+| mcp | MCP 프로토콜 SDK. **`mcp>=1.29,<2` 로 제약** — 2.x 가 `Server.list_tools` 를 없애 6개 서버가 전부 기동 실패했다(2026-09-16) |
 
-**비활성 (주석 처리):**
-- `pyhwpx` — Windows 전용, 한컴오피스 ActiveX 의존. 필요 시 별도 `pip install pyhwpx`
+`verify_setup.py` 가 기동 필수로 확인하는 것도 이 목록(aiohttp·pydantic·PyYAML·python-dotenv·
+mcp·starlette·uvicorn)이다.
+
+**선택 의존성 (extra — 기본 `uv sync --frozen` 에는 안 들어온다):**
+
+| extra | 내용 | 설치 |
+|---|---|---|
+| `converters` | pdfplumber, python-docx, python-pptx, openpyxl, olefile, pandas, Pillow, pytesseract, pdf2image, pyhwp, **pyhwpx** — 메일 첨부·로컬 파일 변환 | `uv sync --frozen --extra converters` |
+| `agent` | claude-code-sdk — OneNote 요약 | `uv sync --frozen --extra agent` |
+
+- `pyhwpx` 는 Windows 전용이고 한컴오피스 ActiveX 에 의존한다. `converters` 안에 있으므로
+  위 한 줄이면 같이 깔린다. 그것 하나만 임시로 넣어 볼 때는 `uv pip install pyhwpx`,
+  상시로 쓸 것이면 `uv add pyhwpx` 로 `pyproject.toml`·`uv.lock` 에 남긴다.
+- 개발 도구(pytest, pytest-asyncio, ruff, black)는 extra 가 아니라 `[dependency-groups] dev`
+  라 `uv sync` 가 **기본으로 깔아 준다**. 실행은 `uv run pytest -q`.
 
 ## Azure AD 환경변수
 
@@ -133,7 +150,7 @@ Config 위치: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "outlook": {
-      "command": "c:\\Users\\USER\\KR_MS365_mcp\\venv\\Scripts\\python.exe",
+      "command": "c:\\Users\\USER\\KR_MS365_mcp\\.venv\\Scripts\\python.exe",
       "args": ["c:\\Users\\USER\\KR_MS365_mcp\\mcp_outlook\\mcp_server\\server_stdio.py"],
       "env": {
         "PYTHONPATH": "c:\\Users\\USER\\KR_MS365_mcp",

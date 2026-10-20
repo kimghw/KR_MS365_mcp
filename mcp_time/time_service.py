@@ -29,7 +29,8 @@ class TimeService:
         try:
             return ZoneInfo(name), name
         except Exception:
-            return ZoneInfo("UTC"), "UTC"
+            # tzdata 가 없으면 ZoneInfo("UTC") 도 실패한다 — stdlib 고정 UTC 로
+            return dt_timezone.utc, "UTC"
 
     async def get_current_time(self, timezone: Optional[str] = None) -> Dict[str, Any]:
         """입력은 무시하고 현재 시간을 반환. timezone은 선택 (기본 Asia/Seoul)."""

@@ -26,6 +26,8 @@ MCP 서버가 노출하는 도구(tool)의 이름·설명·파라미터(타입/�
 | 2026-08-12 | 범위를 8개 도메인 전체(+ time, file_handler)로 넓혀 이관 완료. |
 | 2026-08-12 | "MCP 서버 툴에 래핑된 함수도 spec 에 정의된 것인가? 이것에 따라 툴이 정의되면 좋겠다" — **`service:` 필드 추가 확정.** 도구→서비스 함수 바인딩(예: `mail_list_keyword` → `MailService.fetch_search`)이 그때까지 `handlers.py` 코드에만 보였는데, 도구 레벨 필수 필드 `service:`(`클래스.메서드`)로 spec 에 선언하게 했다. 60개 도구 전량 주입, 누락 시 기동 실패. 핸들러는 이 선언의 배선일 뿐이며 다르게 배선하면 위반이다. CLAUDE.md 필드 규정에도 반영. |
 | 2026-08-20 | "outlook mail 쓰기 툴을 추가해주세요" + "임시저장 기능도 추가해줘" — **outlook 에 쓰기 도구 2개 추가.** `mail_send`(`MailService.send_mail` → `POST /users/{email}/sendMail`, to/cc/bcc·text/html 본문·로컬 파일 첨부(파일당 3MB)·보낸편지함 저장 여부)와 `mail_draft`(`MailService.save_draft` → `POST /users/{email}/messages`, Drafts 폴더 저장·받는 사람 생략 가능·draft_id/web_link 반환). message 리소스 생성은 `GraphMailQuery._build_message_payload` 공용 헬퍼로 공유. |
+| 2026-10-03 | (meeting_room 확장의 여비계산서 증빙 송부 작업 중) "KR_MS365_mcp 에 Teams 파일 첨부 전송 도구를 추가할까요?" → "추가해줘" — **teams 에 파일 전송 도구 1개 추가.** `handler_teams_send_chat_file`(`TeamsService.send_chat_file` → 보내는 사람 OneDrive `Microsoft Teams Chat Files` 에 올리기 → 받는 사람(그룹 채팅이면 구성원 모두)에게 읽기 권한 `invite` → `POST /me/chats/{id}/messages` 에 reference 첨부). 파일은 `file_base64` 나 `file_path` 로 받고, `chat_id` → `recipient_email` 과의 1:1 채팅 → 나의 Notes 순으로 보낼 곳을 정한다. 그 전의 채팅 도구는 글만 보냈다. 본인 Notes 로 실제 전송 확인, 다른 사람에게 보내는 길은 실제로 보내 본 적 없음. |
+| 2026-10-16 | (조회) "block@krs.co.kr 은 차단된 거냐, Graph API 로 조회가 안 되는 거냐?" → **둘 다 아니다.** Graph `$search="from:block@krs.co.kr"` 로 정상 조회됨(제목 끝에 `[인증 요청] 본 메일은 인증 요청 메일 입니다` 가 붙은 사내 메일 보안 알림). `mail_list_period` 만 `client_filter.exclude_from_address` 의 internal 기본값([outlook.yaml:58](param_spec/outlook.yaml#L58))으로 응답 후 클라이언트에서 걸러 낸다. `mail_list_keyword`·`mail_fetch_*` 는 거르지 않는다. 이 메일만 조회하는 `MailService.mail_action(action="list_blocked")` 는 서비스에는 있으나 spec 에 도구로 노출되지 않았다. |
 
 ---
 
@@ -140,7 +142,7 @@ mcp_<도메인>/mcp_server/handlers.py    ← 배선만. 도구 정의를 적지
 |---|---:|---|---:|---:|---|
 | outlook | 5001 | `spec/param_spec/outlook.yaml` | 12 | 735 | `top` 2곳에 `default: 50` 추가(개선). 2026-08-20 쓰기 도구 `mail_send`·`mail_draft` 추가(① 참조) |
 | calendar | 5002 | `spec/param_spec/calendar.yaml` | 7 | 235 | **완전 동일** |
-| teams | 5003 | `spec/param_spec/teams.yaml` | 14 | 291 | **완전 동일** |
+| teams | 5003 | `spec/param_spec/teams.yaml` | 15 | 361 | **완전 동일**. 2026-10-03 파일 전송 도구 `handler_teams_send_chat_file` 추가(① 참조) |
 | onedrive | 5004 | `spec/param_spec/onedrive.yaml` | 9 | 176 | **완전 동일** |
 | onenote | 5005 | `spec/param_spec/onenote.yaml` | 4 | 122 | **완전 동일** |
 | todo | 5006 | `spec/param_spec/todo.yaml` | 8 | 287 | **완전 동일** |

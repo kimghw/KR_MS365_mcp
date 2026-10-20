@@ -17,6 +17,7 @@ import sys
 import os
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime
+from urllib.parse import urlparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,6 +44,9 @@ class GraphMailQuery:
         - 페이지네이션 처리
         - 클라이언트 사이드 필터링
     """
+
+    # 토큰을 붙여도 되는 호스트. query_url 은 호출자가 준 URL 을 그대로 받으므로 반드시 검사한다.
+    ALLOWED_GRAPH_HOSTS = frozenset({"graph.microsoft.com"})
 
     def __init__(self, token_provider: Optional["TokenProviderProtocol"] = None):
         """
@@ -744,6 +748,15 @@ class GraphMailQuery:
         Returns:
             All fetched and filtered emails
         """
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https" or parsed.hostname not in self.ALLOWED_GRAPH_HOSTS:
+            return {
+                "status": "error",
+                "error": f"허용되지 않은 URL — https://graph.microsoft.com 만 가능: {base_url}",
+                "value": [],
+                "total": 0,
+            }
+
         page_size = 150
         max_concurrent = 3
 
@@ -812,6 +825,17 @@ class GraphMailQuery:
             # Collect error information if present
             if result.get("error"):
                 errors.append(result)
+
+        # $skip 병렬 조회 중 새 메일이 오면 페이지 경계가 밀려 같은 메일이 두 페이지에 걸친다 — id 로 중복 제거
+        seen: set = set()
+        deduped = []
+        for email in all_emails:
+            eid = email.get("id")
+            if eid and eid in seen:
+                continue
+            seen.add(eid)
+            deduped.append(email)
+        all_emails = deduped
 
         print(f"[DONE] Fetched {len(all_emails)} emails in {elapsed:.2f}s")
         if errors:

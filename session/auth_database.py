@@ -210,16 +210,15 @@ class AuthDatabase:
         finally:
             conn.close()
 
-    def save_token(self, email: str, token_info: Dict[str, Any], reset_refresh_expiry: bool = False) -> bool:
+    def save_token(self, email: str, token_info: Dict[str, Any]) -> bool:
         """
         토큰 정보 저장 (azure_token_info 테이블 사용)
 
         Args:
             email: 사용자 이메일
-            token_info: 토큰 정보
-            reset_refresh_expiry: True면 완전 재인증 경로 — 새 refresh_token 발급에 맞춰
-                refresh_token_expires_at을 새 값(+90일)으로 리셋.
-                False면 토큰 refresh 경로 — 기존 만료 시각을 유지.
+            token_info: 토큰 정보. refresh_token 이 들어 있으면 refresh_token_expires_at 을
+                +90일로 다시 민다 — Azure 는 refresh 마다 새 refresh_token 을 발급하고 비활성
+                90일 창이 다시 시작된다(sliding window). 없으면 기존 만료 시각 유지.
 
         Returns:
             성공 여부
@@ -246,15 +245,9 @@ class AuthDatabase:
                 refresh_expires_at = (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
 
             # azure_token_info에 UPSERT - created_at은 보존.
-            # refresh_token_expires_at 처리 분기:
-            #  - refresh 경로(reset_refresh_expiry=False): 기존 만료 시각 유지
-            #    (매 refresh마다 90일이 리셋되지 않도록 기존 값 우선)
-            #  - 완전 재인증 경로(reset_refresh_expiry=True): 새 refresh_token이 발급되므로
-            #    만료 시각을 새 값(+90일)으로 리셋
-            if reset_refresh_expiry:
-                refresh_expiry_update = "COALESCE(excluded.refresh_token_expires_at, refresh_token_expires_at)"
-            else:
-                refresh_expiry_update = "COALESCE(refresh_token_expires_at, excluded.refresh_token_expires_at)"
+            # refresh_token_expires_at: 새 refresh_token 이 온 경우(excluded 값 non-null)에만 민다.
+            # 최초 인증일+90일로 고정하면 실제로는 살아 있는 토큰의 갱신 시도를 스스로 막게 된다.
+            refresh_expiry_update = "COALESCE(excluded.refresh_token_expires_at, refresh_token_expires_at)"
 
             cursor.execute(f"""
                 INSERT INTO azure_token_info (

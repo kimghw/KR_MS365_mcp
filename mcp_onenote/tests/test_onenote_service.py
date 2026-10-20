@@ -103,6 +103,18 @@ class TestOneNoteService:
         assert result["success"] is True
         assert result["count"] == 1
         assert result["pages"][0]["page_id"] == "p1"
+        assert "web_url" in result["pages"][0]   # 링크 → page_id 대응용 (없으면 None)
+
+    @pytest.mark.asyncio
+    async def test_read_onenote_list_pages_web_url(self, initialized_service, mock_db_service):
+        """read_onenote - list_pages 가 DB 의 web_url(links.oneNoteWebUrl)을 그대로 실어 준다"""
+        mock_db_service.list_items = MagicMock(return_value=[
+            {"item_id": "p1", "item_name": "Page 1", "web_url": "https://x/onenote.aspx?wd=target(a.one|s/|p/)"},
+        ])
+
+        result = await initialized_service.read_onenote(user_email="test@example.com", action="list_pages")
+
+        assert result["pages"][0]["web_url"] == "https://x/onenote.aspx?wd=target(a.one|s/|p/)"
 
     @pytest.mark.asyncio
     async def test_read_onenote_list_pages_with_date_filter(self, initialized_service, mock_db_service):
@@ -199,6 +211,21 @@ class TestOneNoteService:
         assert "content" in result
 
     @pytest.mark.asyncio
+    async def test_read_onenote_get_content_include_ids(self, initialized_service, mock_client):
+        """read_onenote - get_content include_ids 가 클라이언트까지 전달된다 (replace target 용 id·data-id)"""
+        mock_client.get_page_content = AsyncMock(return_value={"success": True, "page_id": "p1", "content": "<div data-id=\"x\"></div>"})
+
+        result = await initialized_service.read_onenote(
+            user_email="test@example.com",
+            action="get_content",
+            page_id="p1",
+            include_ids=True,
+        )
+
+        assert result["success"] is True
+        mock_client.get_page_content.assert_awaited_once_with("p1", "test@example.com", include_ids=True)
+
+    @pytest.mark.asyncio
     async def test_read_onenote_get_content_no_page_id(self, initialized_service):
         """read_onenote - get_content에 page_id 없으면 에러"""
         result = await initialized_service.read_onenote(
@@ -258,6 +285,41 @@ class TestOneNoteService:
         )
 
         assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_write_onenote_replace(self, initialized_service, mock_client, mock_db_service):
+        """write_onenote - replace 라우팅: target 요소를 content 로 교체 (PATCH action=replace)"""
+        mock_client.update_page = AsyncMock(return_value={"success": True})
+        mock_db_service.get_summary = MagicMock(return_value=None)
+        mock_db_service.list_items = MagicMock(return_value=[{"item_id": "p1", "item_name": "Test Page"}])
+        mock_db_service.save_page_change = MagicMock()
+
+        result = await initialized_service.write_onenote(
+            user_email="test@example.com",
+            action="replace",
+            content="<div data-id=\"krx-plan\"><p>new</p></div>",
+            page_id="p1",
+            target="#krx-plan",
+        )
+
+        assert result["success"] is True
+        assert result["target"] == "#krx-plan"
+        kwargs = mock_client.update_page.await_args.kwargs
+        assert kwargs["action"] == PageAction.REPLACE
+        assert kwargs["target"] == "#krx-plan"
+        assert kwargs["page_id"] == "p1"
+
+    @pytest.mark.asyncio
+    async def test_write_onenote_replace_missing_params(self, initialized_service):
+        """write_onenote - replace 에 page_id/target/content 중 하나라도 없으면 에러"""
+        for missing in ("page_id", "target", "content"):
+            args = {"page_id": "p1", "target": "#krx-plan", "content": "<p>x</p>"}
+            args.pop(missing)
+            result = await initialized_service.write_onenote(
+                user_email="test@example.com", action="replace", **args
+            )
+            assert result["success"] is False
+            assert "replace" in result["error"]
 
     @pytest.mark.asyncio
     async def test_write_onenote_append_no_content(self, initialized_service):
@@ -367,13 +429,11 @@ class TestOneNoteService:
         self, initialized_service, mock_client, mock_db_service
     ):
         """Reader: DB 비어있으면 sync_db 호출 후 재조회"""
-        # 첫 호출: 빈 목록, 두 번째 호출(sync 후): 데이터 있음
-        mock_db_service.list_items = MagicMock(side_effect=[
-            [],  # 첫 조회
-            [{"item_id": "p1", "item_name": "Page 1",
-              "section_id": "s1", "section_name": "Sec 1",
-              "notebook_name": "NB 1", "last_accessed": "2026-01-01T00:00:00Z"}],
-        ])
+        # 첫 호출: 빈 목록, 이후(sync 안의 prune 조회, sync 후 재조회): 데이터 있음
+        page_row = {"item_id": "p1", "item_name": "Page 1",
+                    "section_id": "s1", "section_name": "Sec 1",
+                    "notebook_name": "NB 1", "last_accessed": "2026-01-01T00:00:00Z"}
+        mock_db_service.list_items = MagicMock(side_effect=[[], [page_row], [page_row]])
         mock_client.list_pages = AsyncMock(return_value={
             "success": True,
             "pages": [{"id": "p1", "title": "Page 1"}],
@@ -614,8 +674,10 @@ class TestOneNoteService:
             content="<p>Content</p>",
         )
 
-        assert result["success"] is False
-        assert "page_id" in result["error"]
+        # 최근 페이지 없음은 실패가 아니라 soft 안내 (reason=no_recent_page)
+        assert result["success"] is True
+        assert result["appended"] is False
+        assert result["reason"] == "no_recent_page"
 
     @pytest.mark.asyncio
     async def test_writer_sync_db(self, initialized_service, mock_client, mock_db_service):

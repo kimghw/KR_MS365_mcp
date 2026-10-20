@@ -62,6 +62,12 @@ tools:
         required: false
         expose: tool
         default: 50            # 기존 핸들러의 args.get("top", 50) 을 승격
+      - name: include_ids
+        type: boolean
+        required: false
+        expose: tool
+        default: false
+        description: "get_content 에서 Graph includeIDs=true 로 조회해 요소의 생성 id 와 data-id 를 함께 받는다 (write_onenote replace 의 target 지정용)"
 
   - name: write_onenote
     description: "OneNote 생성/수정 라우터. action: append, create_page, create_section"
@@ -75,7 +81,7 @@ tools:
         type: string
         required: true
         expose: tool
-        enum: [append, create_page, create_section]
+        enum: [append, create_page, create_section, replace]
       - name: content
         type: string
         required: false
@@ -85,7 +91,12 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "append용 (없으면 최근 페이지)"
+        description: "append용 (없으면 최근 페이지). replace 는 필수"
+      - name: target
+        type: string
+        required: false
+        expose: tool
+        description: "replace 대상 요소 - include_ids 로 읽은 생성 id (예 'table:{guid}{n}'). 그 요소가 content 로 통째로 바뀐다. '#data-id' 형식은 Graph 가 거부할 수 있고(2026-09-27 확인 - table 500, p/ul 400) div 는 대상이 안 된다"
       - name: section_id
         type: string
         required: false

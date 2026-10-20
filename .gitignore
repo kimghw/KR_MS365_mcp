@@ -21,10 +21,14 @@ wheels/
 *.egg
 
 # Virtual Environment
+# .venv/ 가 현행이다 (uv 기본). venv/ 는 uv 전환 전 것으로, 남아 있어도 무시한다.
+.venv/
 venv/
 ENV/
 env/
-.venv/
+
+# uv.lock 은 커밋한다 — 잠금이 곧 재현성이다. 여기에 추가하지 말 것.
+# (uv 전환 전에는 requirements.txt 에 버전이 없어 새 PC 에서 mcp 2.x 가 깔려 깨졌다)
 
 # Database
 *.db
@@ -97,3 +101,6 @@ backups_*/
 
 # Debug files
 mcp_editor/debug_info.md
+
+# Export/output artifacts
+output/

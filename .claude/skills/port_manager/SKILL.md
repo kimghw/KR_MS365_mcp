@@ -465,7 +465,7 @@ URL 줄은 **기동 후 status 재확인이 `RUNNING` 일 때만** 출력한다.
 ```
 [port_manager] KR_MS365_mcp — NSSM 등록 결과:
   + 등록  5001  Outlook MCP   pm_KR_MS365_mcp_5001
-            exe: C:\Users\USER\KR_MS365_mcp\venv\Scripts\python.exe
+            exe: C:\Users\USER\KR_MS365_mcp\.venv\Scripts\python.exe
             args: mcp_outlook/mcp_server/server_stream.py
             cwd:  C:\Users\USER\KR_MS365_mcp
             log:  C:\Users\USER\AppData\Local\Temp\port_manager\pm_KR_MS365_mcp_5001.log

@@ -78,6 +78,12 @@ venv/Scripts/python.exe mcp_file_handler/mcp_server/server_stream.py
 | `get_file_metadata` | 파일 메타데이터 조회 |
 | `delete_file_metadata` | 파일 메타데이터 삭제 |
 
+OneDrive 연동(`onedrive/client.py`, `onedrive/downloader.py`) 동작 메모:
+
+- 공유 URL 조회는 Graph 가 요구하는 `u!` 접두사 토큰(`/shares/u!{base64url}/driveItem`)을 쓴다.
+- 폴더 재귀 다운로드는 하위 폴더 구조를 그대로 보존한다 — `A/same.txt` 와 `B/same.txt` 가
+  더 이상 한 파일로 겹쳐 쓰이지 않는다.
+
 ## 구조
 
 ```

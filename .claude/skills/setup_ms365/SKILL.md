@@ -1,11 +1,25 @@
 ---
 name: setup_ms365
-description: KR_MS365_mcp 통합 셋업·운영 스킬. 6개 MS365 MCP 서버(outlook/calendar/teams/onedrive/onenote/todo)의 venv·의존성·.env·MCP 등록(셋업)부터 HTTP 서버 백그라운드 실행·중지·상태점검까지 한 스킬에서 처리합니다. AskUserQuestion으로 모드/서버/등록타겟을 받고, Azure OAuth는 MCP 서버가 첫 툴 호출 시 자동 트리거합니다.
+description: KR_MS365_mcp 통합 셋업·운영 스킬. 6개 MS365 MCP 서버(outlook/calendar/teams/onedrive/onenote/todo)의 uv 환경(.venv)·의존성·.env·MCP 등록(셋업)부터 HTTP 서버 백그라운드 실행·중지·상태점검까지 한 스킬에서 처리합니다. 환경 관리는 uv(uv sync --frozen)가 하고, AskUserQuestion으로 모드/서버/등록타겟을 받으며, Azure OAuth는 MCP 서버가 첫 툴 호출 시 자동 트리거합니다.
 ---
 
 # MS365 MCP 통합 셋업·운영 스킬
 
-`/setup_ms365`로 호출. 셋업(venv/.env/등록)과 서버 운영(start/stop/status)을 한 곳에서 처리합니다.
+`/setup_ms365`로 호출. 셋업(환경/.env/등록)과 서버 운영(start/stop/status)을 한 곳에서 처리합니다.
+
+## 환경 관리는 uv 가 한다
+
+의존성은 `pyproject.toml` + **`uv.lock`** 이 정본이고, 환경은 `.venv/` 다. `uv sync --frozen`
+한 줄이면 `.python-version` 의 Python 을 받아오고 잠금 그대로 설치한다 — 시스템 Python 을
+찾아다니거나 `pip install` 을 부를 일이 없다.
+
+- `--frozen` 은 "잠금을 다시 풀지 말라"는 뜻이다. **셋업에서는 항상 붙인다** — 잠금에 적힌
+  조합이 검증된 것이고, 다시 풀면 그날의 최신본이 들어온다(실제로 `mcp` 2.x 가 들어와
+  `Server.list_tools` 가 사라지면서 6개 서버가 전부 기동에 실패한 적이 있다).
+- 의존성을 **의도적으로** 바꿀 때만 `uv add <pkg>` / `uv lock --upgrade-package <pkg>` 를 쓰고,
+  `uv.lock` 을 커밋한다. `requirements.txt` 는 `uv export` 산출물이라 손으로 고치지 않는다.
+- `venv/`(전환 전 이름)가 남아 있으면 `verify_setup.py` 가 경고한다. `uv sync` 로 `.venv/` 를
+  새로 만들면 된다.
 
 ## 인증은 MCP 서버가 자동 처리
 
@@ -38,7 +52,7 @@ OAuth 브라우저 플로우, refresh_token 갱신, 콜백 서버, `auth.db` 저
 
 | 모드 | 동작 |
 |---|---|
-| **setup** | venv + requirements 설치 + `.env` 부트스트랩 + MCP 등록 |
+| **setup** | `uv sync --frozen` (환경 + 의존성) + `.env` 부트스트랩 + MCP 등록 |
 | **env** | Azure 자격증명만 새로 받아 `.env` 덮어쓰기 (백업 포함) |
 | **check** | 토큰 유효성 + Code 등록 + LISTEN 중인 HTTP 서버 Streamable HTTP 8-probe |
 | **status** | 환경 + 6개 서버 상태 스냅샷만 출력 |
@@ -58,7 +72,8 @@ OAuth 브라우저 플로우, refresh_token 갱신, 콜백 서버, `auth.db` 저
 | 항목 | 경로 |
 |---|---|
 | 프로젝트 루트 | `$CLAUDE_PROJECT_DIR` (이 스킬이 속한 프로젝트 루트, 예: `E:\dev\KR_MS365_mcp`) |
-| venv Python | `<루트>\venv\Scripts\python.exe` |
+| 의존성 정본 | `<루트>\pyproject.toml` + `<루트>\uv.lock` |
+| 환경 Python | `<루트>\.venv\Scripts\python.exe` (uv 가 만든다) |
 | `.env` (공통) | `<루트>\.env` |
 | 토큰 DB (공통) | `<루트>\database\auth.db` |
 | Claude Desktop config | `%APPDATA%\Claude\claude_desktop_config.json` |
@@ -95,17 +110,24 @@ setup_ms365/
 
 ```bash
 PROJ="$CLAUDE_PROJECT_DIR"   # 프로젝트 루트 (예: E:\dev\KR_MS365_mcp)
-VENV_PY="$PROJ\venv\Scripts\python.exe"
+VENV_PY="$PROJ\.venv\Scripts\python.exe"
 SCRIPTS="$PROJ\.claude\skills\setup_ms365\scripts"
 ```
+
+스크립트는 `uv run --frozen python "<스크립트>"` 로도, `"$VENV_PY" "<스크립트>"` 로도 돌아간다
+(전부 표준 라이브러리만 쓴다). **환경이 아직 없을 때는 `uv run` 쪽을 쓴다** — uv 가 알아서
+만들어 주므로 "환경이 없어서 진단을 못 한다"는 상황이 없다.
 
 ### 1단계: 상태 스냅샷
 
 ```bash
-"$VENV_PY" "$SCRIPTS\verify_setup.py" --json
+uv run --frozen python "$SCRIPTS\verify_setup.py" --json
 ```
 
-venv 부재 시 시스템 Python(`ls /c/Python3*/python.exe`) 으로 폴백. JSON 결과를 한국어 표로 한 번만 요약 (서버별 Code/Desktop/Port + 공통 venv/.env/토큰). **`status` 인자였다면 여기서 종료**.
+`uv` 가 PATH 에 없으면 `"$VENV_PY" "$SCRIPTS\verify_setup.py" --json` 으로 폴백하고, 그것도
+없으면 시스템 Python(`ls /c/Python3*/python.exe`)으로 돈다 — 스크립트가 표준 라이브러리만
+쓰므로 어느 쪽이든 진단은 나온다. JSON 결과를 한국어 표로 한 번만 요약 (서버별
+Code/Desktop/Port + 공통 uv/.venv/.env/토큰). **`status` 인자였다면 여기서 종료**.
 
 **경로 무결성 체크**: 서버별 `claude_desktop.path_valid == false` 또는 `matches_project == false`이면 경고.
 
@@ -113,7 +135,7 @@ venv 부재 시 시스템 Python(`ls /c/Python3*/python.exe`) 으로 폴백. JSO
 
 1단계 JSON을 분석해 3개 카테고리로 분류:
 
-- **`unhealthy_common`**: venv 없음 OR 의존성 누락 OR `.env` 부재/불완전 — 셋업 필수
+- **`unhealthy_common`**: uv 미설치 OR `.venv` 없음 OR 의존성 누락 OR `.env` 부재/불완전 — 셋업 필수
 - **`unregistered`**: 각 서버에 대해 Code 또는 Desktop에 누락된 항목 (예: `outlook: [Desktop]`)
 - **`stopped`**: Code에 등록되어 있고 포트가 LISTEN 아닌 서버
 
@@ -166,29 +188,27 @@ Code 등록 + 포트 LISTEN 아닌 것만 추림. `AskUserQuestion` (multiSelect
 
 **3-A-0b**. `AskUserQuestion` multiSelect 로 등록 타겟 선택 (`Claude Code (HTTP)` / `Claude Desktop (STDIO)`) → `{targets}`. 둘 다 미선택 시 종료.
 
-**3-A-1. Windows 시스템 Python 탐색**
+**3-A-1. uv 확인 (없으면 설치)**
 
 ```bash
-ls /c/Python3*/python.exe /mnt/c/Python3*/python.exe 2>/dev/null
+command -v uv || powershell.exe -NoProfile -Command "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-여러 개면 사용자 선택, 없으면 직접 입력. `SYSTEM_PYTHON`으로 기억.
+설치 후에도 현재 셸의 PATH 에는 안 잡힐 수 있다 — `~/.local/bin/uv.exe` 를 직접 쓴다.
+**시스템 Python 을 찾아다니지 않는다.** `.python-version` 을 보고 uv 가 받아온다.
 
-**3-A-2. venv 생성 (없으면)**
+**3-A-2~3. 환경 + 의존성 (타임아웃 600초)**
 
 ```bash
-if [ ! -f "$PROJ/venv/Scripts/python.exe" ]; then
-  "$SYSTEM_PYTHON" -m venv "$PROJ\venv"
-fi
+cd "$PROJ" && uv sync --frozen
 ```
 
-**3-A-3. 의존성 설치 (타임아웃 600초)**
+한 번에 끝난다 — Python 조달, `.venv` 생성, `uv.lock` 그대로 설치. 첨부파일 변환기까지
+필요하면 `uv sync --frozen --extra converters`.
 
-```bash
-"$PROJ\venv\Scripts\pip.exe" install -r "$PROJ\requirements.txt"
-```
-
-실패 시 마지막 에러 라인 표시 + 계속 여부 질문.
+실패 시 마지막 에러 라인 표시 + 계속 여부 질문. `uv.lock` 이 `pyproject.toml` 과 어긋났다는
+오류면 **`--frozen` 을 떼지 말고** `uv lock` 으로 잠금을 갱신한 뒤 다시 돌린다(그리고 그
+변경은 커밋 대상이다).
 
 **3-A-4. `.env` 부트스트랩** — `.env`가 없으면 3-B 자격증명 입력 로직 그대로 실행. 있으면 skip.
 
@@ -271,7 +291,7 @@ if powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort {port} -S
   echo "{name}: 포트 {port} 이미 사용 중 — skip"
 else
   cd "$PROJ"
-  nohup ./venv/Scripts/python.exe mcp_{name}/mcp_server/server_stream.py > /tmp/mcp_{name}.log 2>&1 &
+  nohup ./.venv/Scripts/python.exe mcp_{name}/mcp_server/server_stream.py > /tmp/mcp_{name}.log 2>&1 &
   disown
   echo "{name}: launched"
 fi

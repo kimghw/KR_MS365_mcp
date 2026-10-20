@@ -20,6 +20,7 @@ class OneNoteWriter:
     OneNote 생성/수정 전담
 
     - append: 기존 페이지에 내용 추가 (page_id 없으면 최근 페이지)
+    - replace: 페이지의 target 요소('#data-id' 또는 생성 id)를 content 로 교체
     - create_page: 새 페이지 생성 + DB 저장
     - create_section: 새 섹션 생성
     - sync_db: OneNote 전체 페이지를 DB에 동기화
@@ -82,6 +83,33 @@ class OneNoteWriter:
             except Exception as e:
                 logger.warning(f"append 보강용 페이지 정보 조회 실패 (무시): {e}")
 
+        return result
+
+    async def replace(
+        self,
+        user_email: str,
+        page_id: str,
+        target: str,
+        content: str,
+    ) -> Dict[str, Any]:
+        """페이지의 target 요소를 content 로 교체 (Graph PATCH action=replace).
+
+        target 은 include_ids=True 로 읽은 생성 id(예 'table:{guid}{n}'). 같은 data-id 블록을
+        찾아 그 생성 id 로 매번 통째로 바꾸는 식으로 "페이지 한 곳을 갱신"할 때 쓴다 —
+        append 만으로는 페이지가 계속 자라기 때문. '#data-id' 를 target 으로 주면 Graph 가
+        table 은 500, p/ul 은 400 을 내고 div 는 아예 대상이 아니다 (2026-09-27 확인,
+        references 참고).
+        """
+        result = await self.edit_page(
+            user_email=user_email,
+            page_id=page_id,
+            action=PageAction.REPLACE,
+            content=content,
+            target=target,
+        )
+        if result.get("success"):
+            result["page_id"] = page_id
+            result["target"] = target
         return result
 
     async def create_page(

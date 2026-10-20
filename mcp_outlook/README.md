@@ -87,7 +87,7 @@ Graph API 호출마다 `validate_and_refresh_token(email)`을 통해 토큰을 �
 |------|------|------|
 | `FILTER` | OData `$filter` 쿼리 | 날짜, 발신자, 읽음 상태 등 조건 조합 |
 | `SEARCH` | KQL 검색 | 키워드 전문 검색 |
-| `URL` | Graph API URL 직접 지정 | 커스텀 쿼리 |
+| `URL` | Graph API URL 직접 지정 (`mail_query_url`) | 커스텀 쿼리. **`https://graph.microsoft.com`** 이 아닌 URL 에는 토큰을 보내지 않고 `status: "error"` 반환 |
 | `BATCH_ID` | `$batch` 엔드포인트 | 메일 ID 목록으로 일괄 조회 (최대 20개/배치) |
 
 ## 전처리 필터 (FilterParams)
@@ -184,6 +184,9 @@ Graph API `$select`로 반환 필드를 지정합니다. 불필요한 필드를 
 
 ## 첨부파일 저장
 
+- 처리 완료 표시(`add_processed_mail`)는 **그 메일의 본문·첨부 저장이 전부 성공했을 때만** 한다.
+  실패는 `result["errors"]` 에 남고, 그 메일은 다음 실행에서 다시 시도된다.
+
 ### 로컬 저장 (LocalStorageBackend)
 - 폴더 자동 생성: `YYYYMMDD_sender_subject/`
 - 파일명 자동 정리 (특수문자 제거, 길이 제한)
@@ -228,6 +231,8 @@ backend = get_storage_backend(
 - 최대 동시 요청: 3페이지
 - `top > 150` 이면 자동 페이지네이션
 - Filter 최대: 1000건, Search 최대: 250건
+- `$skip` 병렬 조회 중 새 메일이 오면 페이지 경계가 밀려 같은 메일이 두 페이지에 걸칠 수 있다 —
+  수집 후 `id` 로 중복 제거한다(경계 밀림으로 빠지는 누락은 막지 못한다).
 
 ## 메일 발송·임시저장 (mail_send / mail_draft)
 

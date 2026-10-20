@@ -13,12 +13,34 @@ MCP Streamable HTTP 스펙(2025-03-26 이후)의 단일 엔드포인트 `/mcp` �
 
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
 from mcp_common.runtime import build_health_payload, health_status_code
 
 logger = logging.getLogger(__name__)
+
+
+def transport_security():
+    """DNS rebinding 방어 — Host/Origin 허용 목록 (MCP 스펙 transports §Security Warning).
+
+    기본은 loopback 이름만 허용한다. `MCP_BIND_HOST` 로 특정 인터페이스에 바인드하면 그 주소를
+    자동 포함하고, 그 밖의 값은 `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS` (쉼표 구분,
+    `host:*` 와일드카드 가능) 로 더한다. 0.0.0.0 바인드 시에는 접속 주소를 직접 적어야 한다.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    hosts = ["localhost:*", "127.0.0.1:*", "[::1]:*"]
+    origins = ["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"]
+    bind = os.environ.get("MCP_BIND_HOST", "").strip()
+    if bind and bind not in ("0.0.0.0", "::", "*"):
+        hosts.append(f"{bind}:*")
+    hosts += [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    origins += [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
+    )
 
 
 def build_starlette_app(
@@ -41,6 +63,7 @@ def build_starlette_app(
         event_store=None,
         json_response=False,  # Accept 헤더에 따라 JSON/SSE 협상
         stateless=False,
+        security_settings=transport_security(),
     )
 
     class _StreamableHTTPASGI:
@@ -99,4 +122,4 @@ def run_http(app: Any, server_name: str, port: int, host: Optional[str] = None) 
     uvicorn.run(app, host=bind_host, port=port, log_level="info")
 
 
-__all__ = ["build_starlette_app", "run_http"]
+__all__ = ["build_starlette_app", "run_http", "transport_security"]

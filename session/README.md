@@ -37,6 +37,10 @@ python -m session.auth_manager
 6. database/auth.db 에 토큰 저장
 ```
 
+- 콜백 서버(`callback_server.py`)는 쿼리 문자열(code 포함)을 로그에 남기지 않는다.
+  `error` 응답은 **진행 중인 `state` 와 일치할 때만** 대기 중인 인증을 깨우고, 알 수 없는
+  state 나 code/state 가 없는 요청은 400 만 돌려주고 대기 상태를 건드리지 않는다.
+
 ## 토큰 자동 갱신
 
 `validate_and_refresh_token(email, auto_reauth=False)` 호출 시:
@@ -49,7 +53,8 @@ python -m session.auth_manager
 ```
 
 - access_token: ~1시간 유효, 만료 5분 전 자동 갱신
-- refresh_token: 90일 유효
+- refresh_token: 90일 유효. 저장된 `refresh_token_expires_at` 은 **새 refresh_token 이 저장될 때마다
+  +90일로 밀린다**(Azure sliding window) — 최초 인증 시각 +90일로 고정되는 것이 아니다.
 
 ## 주요 메서드 (AuthManager)
 

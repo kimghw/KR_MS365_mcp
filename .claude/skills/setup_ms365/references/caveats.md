@@ -26,8 +26,16 @@
 
 ### 멱등성 / 재실행 안전
 
-- venv 는 재생성하지 않고 `pip install` 만 재실행.
+- `.venv` 는 지우고 다시 만들지 않는다 — `uv sync --frozen` 을 다시 돌리면 잠금과 어긋난 것만 맞춘다 (이미 맞으면 하는 일이 없다).
 - 등록은 read-modify-write — 같은 서버 여러 번 호출해도 idempotent.
+
+### `--frozen` 을 빼면 잠금이 다시 풀린다
+
+- `uv sync` 를 `--frozen` 없이 돌리면 uv 가 `uv.lock` 을 **다시 풀어 갱신한다.** 검증된 조합이 조용히 바뀌고 잠금 파일이 수정된 채 남는다. 셋업·검증에서는 항상 붙인다.
+- `uv sync --frozen` 이 잠금 불일치로 실패하면 `--frozen` 을 떼서 넘기지 말고 `uv lock` 으로 갱신한 뒤 그 변경을 커밋한다 — 의존성은 **의도했을 때만** 움직여야 한다.
+- 잠금 없이 최신본을 받으면 어떻게 되는지는 이미 겪었다: `mcp` 2.x 가 깔려 `Server.list_tools` 가 사라지면서 6개 서버가 전부 기동에 실패했다(2026-09-16). `pyproject.toml` 이 `mcp>=1.29,<2` 로 막아 둔 이유다.
+- `requirements.txt` 는 `uv export` 산출물이라 손으로 고쳐도 다음 export 에 덮인다. 의존성 변경은 `pyproject.toml`(`uv add`)에서만 한다.
+- `venv/`(전환 전 이름)가 남아 있으면 `verify_setup.py` 가 경고한다. 인정은 하되 새로 만들 때는 항상 `.venv` 다.
 
 ### Claude Desktop 재시작 필수
 

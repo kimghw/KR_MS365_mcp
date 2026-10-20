@@ -94,6 +94,12 @@ async def main():
 - `overwrite=True` (기본값): 기존 파일 덮어쓰기
 - `overwrite=False`: 파일이 존재하면 실패
 
+## 경로·검색어 인코딩
+
+- `folder_path`/`file_path` 는 Graph 에 보내기 전에 URL 인코딩한다(`/` 만 보존). `#`, `%`, `?`,
+  공백이 든 이름도 그대로 쓰면 된다 — 예전에는 `report#v2.txt` 가 `report` 로 잘려 나갔다.
+- 검색어의 작은따옴표는 OData 문자열 규칙대로 `''` 로 이스케이프한 뒤 인코딩한다.
+
 ## 인증
 
 `session` 모듈의 `AuthManager`를 사용하여 인증을 처리합니다.

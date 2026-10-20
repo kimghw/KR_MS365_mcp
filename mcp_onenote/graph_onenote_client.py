@@ -413,6 +413,7 @@ class GraphOneNoteClient:
         self,
         page_id: str,
         user_email: Optional[str] = None,
+        include_ids: bool = False,
     ) -> Dict[str, Any]:
         """
         페이지 내용 조회
@@ -420,6 +421,9 @@ class GraphOneNoteClient:
         Args:
             page_id: 페이지 ID
             user_email: 사용자 이메일 (None이면 기본 사용자 사용)
+            include_ids: True 면 ?includeIDs=true — 요소의 생성 id 와 작성 때 붙인 data-id 를
+                         HTML 에 포함해 돌려준다 (update_page 의 target 으로 쓸 수 있음).
+                         기본 응답에는 둘 다 없다.
 
         Returns:
             페이지 내용 (HTML)
@@ -436,6 +440,8 @@ class GraphOneNoteClient:
         }
 
         url = f"{self.GRAPH_BASE_URL}/me/onenote/pages/{page_id}/content"
+        if include_ids:
+            url += "?includeIDs=true"
 
         try:
             async with self._session.get(

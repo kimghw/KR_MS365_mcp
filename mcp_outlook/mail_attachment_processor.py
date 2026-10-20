@@ -116,6 +116,7 @@ async def process_body_content(
         if mail_file:
             result["saved_mails"].append(mail_file)
             return mail_file
+        result["errors"].append(f"본문 저장 실패 ({subject[:30]})")
     else:
         # 메모리 반환
         result["body_contents"].append({
@@ -237,6 +238,7 @@ async def process_attachment_with_conversion(
                 truncate_msg = f" (truncated: {original_tokens:,} → {DEFAULT_MAX_TOKENS:,} tokens)" if was_truncated else ""
                 print(f"  [CONVERTED] {att_name} → {txt_filename}{truncate_msg}")
                 return att_file
+            result["errors"].append(f"첨부 저장 실패: {txt_filename}")
         else:
             # 메모리 반환
             content_info = {
@@ -296,6 +298,7 @@ async def process_attachment_original(
         if att_file:
             result["saved_attachments"].append(att_file)
             return att_file
+        result["errors"].append(f"첨부 저장 실패: {att_name}")
     else:
         result["attachment_contents"].append({
             "message_id": message_id,

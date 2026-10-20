@@ -15,6 +15,8 @@ import sys
 import os
 from typing import Dict, Any, List, Optional, Union, TYPE_CHECKING
 from datetime import datetime
+import re
+from urllib.parse import quote
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,6 +31,18 @@ from .calendar_types import (
     build_event_filter_query,
     build_event_select_query,
 )
+
+
+# calendarView 의 startDateTime/endDateTime 은 오프셋이 없으면 Graph 가 UTC 로 해석한다
+# (Prefer: outlook.timezone 헤더와 무관). 생성 쪽 기본 시간대가 "Korea Standard Time" 이므로
+# 조회도 같은 기준(+09:00)을 기본으로 맞춘다.
+DEFAULT_UTC_OFFSET = "+09:00"
+_HAS_OFFSET = re.compile(r"(Z|[+-]\d{2}:?\d{2})$")
+
+
+def _with_offset(dt: str) -> str:
+    dt = dt.strip()
+    return dt if _HAS_OFFSET.search(dt) else dt + DEFAULT_UTC_OFFSET
 
 
 class GraphCalendarUrlBuilder:
@@ -136,9 +150,10 @@ class GraphCalendarUrlBuilder:
             완전한 URL
         """
         url = self.calendar_view_url
+        # `+09:00` 의 `+` 는 쿼리에서 공백으로 읽히므로 반드시 퍼센트 인코딩
         params = [
-            f"startDateTime={start_datetime}",
-            f"endDateTime={end_datetime}",
+            f"startDateTime={quote(_with_offset(start_datetime), safe='')}",
+            f"endDateTime={quote(_with_offset(end_datetime), safe='')}",
         ]
 
         if select_fields:

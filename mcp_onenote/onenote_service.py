@@ -96,6 +96,7 @@ class OneNoteService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         top: int = 50,
+        include_ids: bool = False,
     ) -> Dict[str, Any]:
         """
         조회 라우터 — action에 따라 Reader 메서드 위임
@@ -104,7 +105,7 @@ class OneNoteService:
             list_pages: 페이지 목록 조회
             list_sections: 섹션 목록 조회
             search: 키워드 기반 페이지 검색
-            get_content: 페이지 본문 조회
+            get_content: 페이지 본문 조회 (include_ids=True 면 요소 id·data-id 포함 — replace target 용)
             get_summary: 페이지 요약 조회
 
         날짜 필터 (ISO 8601 형식, Outlook과 동일):
@@ -137,7 +138,7 @@ class OneNoteService:
         elif act == ReadAction.GET_CONTENT:
             if not page_id:
                 return {"success": False, "error": "get_content action에는 page_id가 필요합니다."}
-            return await self._reader.get_content(user_email, page_id)
+            return await self._reader.get_content(user_email, page_id, include_ids)
 
         elif act == ReadAction.GET_SUMMARY:
             if not page_id:
@@ -156,6 +157,7 @@ class OneNoteService:
         section_id: Optional[str] = None,
         notebook_id: Optional[str] = None,
         title: Optional[str] = None,
+        target: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         생성/수정 라우터 — action에 따라 Writer 메서드 위임
@@ -164,6 +166,7 @@ class OneNoteService:
             append: 기존 페이지에 내용 추가 (page_id 없으면 최근 페이지)
             create_page: 새 페이지 생성
             create_section: 새 섹션 생성
+            replace: page_id 의 target 요소('#data-id' 또는 생성 id)를 content 로 교체
         """
         self._ensure_initialized()
 
@@ -187,6 +190,11 @@ class OneNoteService:
             if not notebook_id or not title:
                 return {"success": False, "error": "create_section action에는 notebook_id, title이 필요합니다."}
             return await self._writer.create_section(user_email, notebook_id, title)
+
+        elif act == WriteAction.REPLACE:
+            if not page_id or not target or not content:
+                return {"success": False, "error": "replace action에는 page_id, target, content가 필요합니다."}
+            return await self._writer.replace(user_email, page_id, target, content)
 
         # WriteAction 이 추가됐는데 분기가 누락된 경우 — None 이 성공처럼 나가지 않도록 방어
         return {"success": False, "error": f"처리되지 않은 action: {action}"}

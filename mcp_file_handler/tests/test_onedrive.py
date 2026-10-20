@@ -54,6 +54,20 @@ class TestOneDriveClient(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]['name'], 'file1.pdf')
 
+    @patch('requests.get')
+    def test_share_url_token_has_u_prefix(self, mock_get):
+        """shares/{token}: token = "u!" + base64url(패딩 제거)."""
+        mock_response = Mock()
+        mock_response.json.return_value = {'id': '1'}
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        self.client.get_item_by_share_url('https://1drv.ms/u/s!abc')
+
+        url = mock_get.call_args.args[0]
+        self.assertIn('/shares/u!aHR0cHM6Ly8xZHJ2Lm1zL3UvcyFhYmM/driveItem', url)
+        self.assertNotIn('=', url.split('/shares/')[1])
+
 
 class TestOneDriveDownloader(unittest.TestCase):
     """Test OneDrive downloader."""
@@ -94,6 +108,23 @@ class TestOneDriveDownloader(unittest.TestCase):
         self.assertEqual(result['name'], 'TestFolder')
         # Should not call download_file for folders
         self.mock_client.download_file.assert_not_called()
+
+    def test_recursive_download_keeps_subfolders(self):
+        """A/same.txt 와 B/same.txt 가 서로 다른 로컬 경로에 저장돼야 한다."""
+        tree = {
+            'root': [{'id': 'A', 'name': 'A', 'folder': {}}, {'id': 'B', 'name': 'B', 'folder': {}}],
+            'A': [{'id': 'fa', 'name': 'same.txt'}],
+            'B': [{'id': 'fb', 'name': 'same.txt'}],
+        }
+        self.mock_client.list_children.side_effect = lambda fid: tree[fid]
+        self.mock_client.download_file.side_effect = lambda item_id, path: path
+
+        results = self.downloader.download_folder('root')
+
+        paths = {r['local_path'] for r in results}
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(p.endswith('same.txt') for p in paths))
+        self.downloader.cleanup()
 
     def test_cleanup(self):
         """Test temp directory cleanup."""

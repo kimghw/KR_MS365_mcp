@@ -4,7 +4,10 @@ Teams Service - GraphTeamsClient Facade
 (mcp_outlook/outlook_service.py 구조 참조)
 """
 
+import base64
+import binascii
 import logging
+import os
 from typing import Dict, Any, Optional, List
 
 from .graph_teams_client import GraphTeamsClient
@@ -172,6 +175,66 @@ class TeamsService:
             user_email=user_email,
             content=content,
             chat_id=chat_id,
+            prefix=prefix,
+            content_type=content_type,
+        )
+
+    @mcp_service(
+        tool_name="handler_teams_send_chat_file",
+        server_name="teams",
+        service_name="send_chat_file",
+        category="teams_message",
+        tags=["send", "message", "file"],
+        priority=5,
+        description="Teams 채팅에 파일을 붙여 메시지 전송",
+    )
+    async def send_chat_file(
+        self,
+        content: str,
+        file_name: Optional[str] = None,
+        file_base64: Optional[str] = None,
+        file_path: Optional[str] = None,
+        recipient_email: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        prefix: str = "",
+        content_type: str = "html",
+        user_email: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """채팅에 파일을 붙여 메시지 전송. 파일은 내용(file_base64)이나 이 PC 의 경로(file_path) 가운데 하나로 준다."""
+        self._ensure_initialized()
+        if not user_email:
+            user_email = _get_default_user_email()
+        if not user_email:
+            return {"success": False, "error": "사용자 이메일이 필요합니다. 로그인이 필요합니다."}
+
+        if file_base64:
+            try:
+                file_bytes = base64.b64decode(file_base64, validate=True)
+            except (binascii.Error, ValueError):
+                return {"success": False, "error": "file_base64 가 올바른 base64 가 아닙니다."}
+        elif file_path:
+            try:
+                with open(file_path, "rb") as f:
+                    file_bytes = f.read()
+            except OSError as e:
+                return {"success": False, "error": f"파일을 읽지 못했습니다: {e}"}
+            file_name = file_name or os.path.basename(file_path)
+        else:
+            return {"success": False, "error": "file_base64 나 file_path 가운데 하나가 필요합니다."}
+        if not file_bytes:
+            return {"success": False, "error": "빈 파일은 보낼 수 없습니다."}
+        # 경로 구분자가 섞인 이름은 OneDrive 의 다른 폴더를 가리키게 된다 — 이름만 남긴다.
+        file_name = os.path.basename((file_name or "").replace("\\", "/")).strip()
+        if not file_name:
+            return {"success": False, "error": "file_name 이 필요합니다(확장자 포함)."}
+
+        return await self._client.send_chat_file(
+            user_email=user_email,
+            content=content,
+            file_name=file_name,
+            file_bytes=file_bytes,
+            chat_id=chat_id,
+            recipient_email=recipient_email,
             prefix=prefix,
             content_type=content_type,
         )
@@ -463,7 +526,9 @@ class TeamsService:
 
         # DB에 동기화
         chats = result.get("chats", [])
-        sync_result = await self._db_manager.sync_chats_to_db(user_email, chats)
+        sync_result = await self._db_manager.sync_chats_to_db(
+            user_email, chats, deactivate_missing=not result.get("has_more")
+        )
         if not sync_result.get("success"):
             return {
                 "success": False,

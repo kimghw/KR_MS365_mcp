@@ -52,7 +52,7 @@ OneNote 데이터는 `database/onenote.db`에 저장됩니다.
 - `list_sections(user_email, notebook_id)` — 섹션 목록 조회
 - `create_section(user_email, notebook_id, section_name)` — 섹션 생성
 - `list_pages(user_email, section_id)` — 페이지 목록 조회 (`@odata.nextLink` 페이징 지원)
-- `get_page_content(user_email, page_id)` — 페이지 내용 조회 (HTML)
+- `get_page_content(user_email, page_id, include_ids=False)` — 페이지 내용 조회 (HTML). `include_ids=True` 면 `?includeIDs=true` 로 요소의 생성 id 와 `data-id` 를 함께 받는다 (replace target 용)
 - `manage_sections(user_email, action, ...)` — 섹션 관리 통합 인터페이스
 - `manage_page_content(user_email, action, ...)` — 페이지 관리 통합 인터페이스
 
@@ -63,6 +63,10 @@ OneNote 데이터는 `database/onenote.db`에 저장됩니다.
   - 편집 시 AI 변경 요약 + 키워드를 자동 생성하여 `onenote_page_changes`에 기록
 - `delete_page(user_email, page_id)` — 페이지 삭제 + DB/요약 삭제
 - `sync_db(user_email)` — 전체 페이지 DB 동기화
+  - MCP 도구 `read_onenote action=list_pages` 는 DB 가 비어 있으면 `sync_db` 를 먼저 부른다. 그 최초
+    동기화가 실패하면 빈 목록으로 포장하지 않고 `success: false` + `error` 를 돌려준다.
+- `replace(user_email, page_id, target, content)` — `target` 요소(생성 id, 예 `table:{guid}{n}`)를 `content` 로 통째로 교체. MCP 도구 `write_onenote action=replace`.
+  `#data-id` 를 target 으로 주면 Graph 가 거부하고(table 500 · p/ul 400) div 는 대상이 안 된다 — [references/graph_onenote_patch.md](../references/graph_onenote_patch.md), 사양 [spec/spec_onenote_페이지블록갱신.md](../spec/spec_onenote_페이지블록갱신.md)
 
 ### svc.agent (OneNoteAgent)
 - `summarize_page(user_email, page_id, force_refresh)` — AI 페이지 요약 생성/갱신

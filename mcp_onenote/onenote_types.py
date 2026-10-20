@@ -45,6 +45,7 @@ class WriteAction(str, Enum):
     APPEND = "append"
     CREATE_PAGE = "create_page"
     CREATE_SECTION = "create_section"
+    REPLACE = "replace"          # page_id 의 target 요소(#data-id 또는 생성 id)를 content 로 교체
 
 
 @dataclass

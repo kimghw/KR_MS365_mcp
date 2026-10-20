@@ -106,7 +106,8 @@ class OneDriveClient:
             share_url.encode('utf-8')
         ).rstrip(b'=').decode('utf-8')
 
-        url = f"{self.base_url}/shares/{encoded_url}/driveItem"
+        # 공유 URL 토큰 형식: "u!" + base64url(패딩 제거) — https://learn.microsoft.com/graph/api/shares-get#encoding-sharing-urls
+        url = f"{self.base_url}/shares/u!{encoded_url}/driveItem"
         response = requests.get(url, headers=self._get_headers())
         response.raise_for_status()
         return response.json()

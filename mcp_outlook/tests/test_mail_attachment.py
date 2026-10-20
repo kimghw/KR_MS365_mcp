@@ -247,15 +247,14 @@ class TestBatchAttachmentHandler:
 
     @pytest.fixture
     def handler(self):
-        with patch('mcp_outlook.mail_attachment.AuthManager'):
-            handler = BatchAttachmentHandler(
-                base_directory=self.temp_dir,
-                metadata_file="test_metadata.json"
-            )
-            handler.auth_manager.validate_and_refresh_token = AsyncMock(
-                return_value="mock_token"
-            )
-            return handler
+        token_provider = MagicMock()
+        token_provider.validate_and_refresh_token = AsyncMock(return_value="mock_token")
+        token_provider.close = AsyncMock()
+        return BatchAttachmentHandler(
+            base_directory=self.temp_dir,
+            metadata_file="test_metadata.json",
+            token_provider=token_provider,
+        )
 
     def test_init(self, handler):
         """초기화 테스트"""
@@ -319,7 +318,7 @@ class TestBatchAttachmentHandler:
     async def test_close(self, handler):
         """리소스 정리"""
         await handler.close()
-        handler.auth_manager.close.assert_called_once()
+        handler.token_provider.close.assert_awaited_once()
 
 
 class TestSingleAttachmentHandler:

@@ -13,10 +13,16 @@ dependencies = [
     "pydantic>=2",
     "requests",
     "PyYAML",
-    "mcp",
+    # mcp 2.x 는 `Server.list_tools` 를 없앴다 — handlers.py 의 build_mcp_server() 가
+    # 기동 시점에 AttributeError 로 죽는다. 2026-09-16 샌드박스 검증에서 6개 서버가
+    # 전부 깨져서 드러났다(호스트에는 1.29.0 이 깔려 있어 보이지 않던 결함).
+    # 2.x 로 올리려면 SDK 이관이 먼저다.
+    "mcp>=1.29,<2",
     # fastapi 는 REST 서버(server_rest.py) 폐지로 런타임 의존이 사라졌다 (2026-08-12).
     "starlette",
     "uvicorn",
+    # zoneinfo 는 OS 시간대 DB 를 쓴다 — Windows 에는 없어서 mcp_time 이 ZoneInfoNotFoundError 로 죽는다.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +46,11 @@ converters = [
 agent = [
     "claude-code-sdk",
 ]
+
+# 개발 도구는 extra 가 아니라 dependency-group 이다 (PEP 735).
+# `uv sync` 가 dev 그룹을 기본으로 깔아 주므로 따로 지정할 필요가 없고,
+# 배포물(wheel)의 extra 목록을 개발 도구로 오염시키지 않는다.
+[dependency-groups]
 dev = [
     "pytest",
     # 다수 테스트가 @pytest.mark.asyncio 를 쓴다. --strict-markers 와 함께면
@@ -110,11 +121,15 @@ py-modules = ["callback_server"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = [
+    "mcp_common/tests",
     "mcp_outlook/tests",
     "mcp_onedrive/tests",
     "mcp_onenote/tests",
     "mcp_teams/tests",
+    "mcp_calendar/tests",
+    "mcp_time/tests",
     "mcp_file_handler/tests",
+    "session/tests",
 ]
 addopts = "-ra --strict-markers"
 # @pytest.mark.asyncio 를 매 테스트에 붙이지 않아도 코루틴 테스트가 실행되도록.

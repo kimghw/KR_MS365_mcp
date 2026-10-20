@@ -4,9 +4,12 @@ Microsoft Graph API를 사용한 Teams 작업 처리
 session 모듈을 통한 인증 관리
 """
 
+import html
 import logging
+import re
 from dataclasses import asdict
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from urllib.parse import quote
 import aiohttp
 
 import sys
@@ -173,6 +176,8 @@ class GraphTeamsClient:
                 # asdict: members(UserInfo 데이터클래스)까지 dict로 변환해 JSON 직렬화 가능하게 함
                 "chats": [asdict(c) for c in chats],
                 "count": len(chats),
+                # 다음 페이지가 있으면 부분 목록 — 동기화에서 비활성화 판단에 쓰지 않는다
+                "has_more": bool(result.get("data", {}).get("@odata.nextLink")),
             }
 
         return result
@@ -285,6 +290,171 @@ class GraphTeamsClient:
             }
 
         return result
+
+    # ------------------------------------------------------------------------
+    # 채팅에 파일 보내기
+    # ------------------------------------------------------------------------
+    # Graph 에는 "채팅에 파일을 올리는" 한 번의 호출이 없다. Teams 앱이 하는 일을 차례대로 한다:
+    #   1) 보내는 사람의 OneDrive "Microsoft Teams Chat Files" 폴더에 파일을 올린다
+    #   2) 받는 사람들에게 그 파일의 읽기 권한을 준다(앱은 이것을 알아서 한다)
+    #   3) 메시지 본문에 <attachment id="…"> 를 넣고 attachments 에 그 파일을 reference 로 단다
+    # attachment 의 id 는 driveItem 의 eTag 안에 있는 GUID, contentUrl 은 webDavUrl 이다.
+
+    CHAT_FILES_FOLDER = "Microsoft Teams Chat Files"
+    UPLOAD_TIMEOUT = 120
+
+    async def _upload_chat_file(self, user_email: str, file_name: str, data: bytes) -> Dict[str, Any]:
+        """파일을 보내는 사람의 OneDrive(Teams 채팅 파일 폴더)에 올리고 첨부에 쓸 값(id·guid·url)을 돌려준다."""
+        if not self._initialized:
+            await self.initialize()
+        access_token = await self._get_access_token(user_email)
+        if not access_token:
+            return {"success": False, "error": "액세스 토큰이 없습니다. 로그인이 필요합니다."}
+
+        path = quote(f"{self.CHAT_FILES_FOLDER}/{file_name}")
+        # 같은 이름이 있으면 덮어쓰지 않고 이름을 바꿔 올린다 — 앞서 보낸 파일이 바뀌면 안 된다.
+        url = f"{self.GRAPH_BASE_URL}/me/drive/root:/{path}:/content?@microsoft.graph.conflictBehavior=rename"
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/octet-stream"}
+        try:
+            async with self._session.put(
+                url, headers=headers, data=data, timeout=aiohttp.ClientTimeout(total=self.UPLOAD_TIMEOUT)
+            ) as response:
+                if response.status not in (200, 201):
+                    error_text = await response.text()
+                    logger.error(f"파일 업로드 실패: {response.status} - {error_text}")
+                    return {"success": False, "error": f"파일 업로드 실패: {response.status}", "details": error_text}
+                item = await response.json()
+        except Exception as e:
+            logger.error(f"파일 업로드 오류: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+        # webDavUrl 은 달라고 해야 준다.
+        detail = await self._make_request(
+            "GET", f"/me/drive/items/{item['id']}?$select=id,name,eTag,webUrl,webDavUrl,sharepointIds", user_email
+        )
+        if not detail.get("success"):
+            return detail
+        info = detail.get("data", {})
+        guid = (info.get("sharepointIds") or {}).get("listItemUniqueId")
+        if not guid:
+            match = re.search(r"\{?([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\}?", info.get("eTag") or "")
+            guid = match.group(1) if match else None
+        content_url = info.get("webDavUrl") or info.get("webUrl")
+        if not guid or not content_url:
+            return {"success": False, "error": "올린 파일의 첨부 정보를 읽지 못했습니다.", "details": str(info)}
+        return {"success": True, "item_id": info["id"], "guid": guid, "content_url": content_url,
+                "name": info.get("name") or file_name, "web_url": info.get("webUrl")}
+
+    async def _one_on_one_chat_id(self, user_email: str, recipient_email: str) -> Dict[str, Any]:
+        """받는 사람과의 1:1 채팅 ID. 이미 있으면 그 채팅이, 없으면 새로 만든 채팅이 온다."""
+        def member(upn: str) -> Dict[str, Any]:
+            return {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": f"{self.GRAPH_BASE_URL}/users('{upn}')",
+            }
+
+        result = await self._make_request(
+            "POST", "/chats", user_email, {"chatType": "oneOnOne", "members": [member(user_email), member(recipient_email)]}
+        )
+        if not result.get("success"):
+            return result
+        chat_id = result.get("data", {}).get("id")
+        if not chat_id:
+            return {"success": False, "error": "1:1 채팅을 찾지 못했습니다."}
+        return {"success": True, "chat_id": chat_id}
+
+    async def _chat_member_emails(self, user_email: str, chat_id: str) -> Optional[List[str]]:
+        """채팅 구성원의 메일(나는 빼고). 못 읽으면 None — 빈 목록(나뿐인 채팅)과 가려야 한다."""
+        result = await self._make_request("GET", f"/chats/{chat_id}/members", user_email)
+        if not result.get("success"):
+            return None
+        emails = [m.get("email") for m in result.get("data", {}).get("value", []) if m.get("email")]
+        return [e for e in emails if e.lower() != user_email.lower()]
+
+    async def send_chat_file(
+        self,
+        user_email: str,
+        content: str,
+        file_name: str,
+        file_bytes: bytes,
+        chat_id: Optional[str] = None,
+        recipient_email: Optional[str] = None,
+        prefix: str = "",
+        content_type: str = "html",
+    ) -> Dict[str, Any]:
+        """
+        채팅에 파일을 붙여 메시지 전송
+
+        Args:
+            user_email: 보내는 사람
+            content: 메시지 본문
+            file_name: 파일 이름(확장자 포함)
+            file_bytes: 파일 내용
+            chat_id: 채팅 ID. 없으면 recipient_email 과의 1:1 채팅, 그것도 없으면(또는 나 자신이면) Notes
+            recipient_email: 받는 사람 메일(1:1 채팅)
+            prefix: 메시지 프리픽스
+            content_type: 본문 형식 (text 또는 html). 첨부 표식 때문에 실제로는 항상 html 로 나간다
+
+        Returns:
+            전송된 메시지와 올린 파일 정보
+        """
+        # 어느 채팅으로 가고 누가 파일을 읽어야 하는지부터 정한다 — 정하지 못하면 아무것도 올리지 않는다.
+        # chat_id 를 주었으면 그 채팅의 구성원 모두가 읽는 사람이다(recipient_email 을 같이 주었어도 chat_id 가 먼저다).
+        to_self = not recipient_email or recipient_email.lower() == user_email.lower()
+        readers: List[str] = []
+        if chat_id:
+            if chat_id != self.NOTES_CHAT_ID:
+                members = await self._chat_member_emails(user_email, chat_id)
+                if members is None:
+                    return {"success": False, "error": "채팅 구성원을 읽지 못해 파일 권한을 줄 수 없습니다(보내지 않았습니다)."}
+                readers = members
+        elif to_self:
+            chat_id = self.NOTES_CHAT_ID   # 나에게 보내기 — 권한을 줄 사람이 없다
+        else:
+            chat = await self._one_on_one_chat_id(user_email, recipient_email)
+            if not chat.get("success"):
+                return chat
+            chat_id = chat["chat_id"]
+            readers = [recipient_email]
+
+        uploaded = await self._upload_chat_file(user_email, file_name, file_bytes)
+        if not uploaded.get("success"):
+            return uploaded
+
+        # 받는 사람이 파일을 열 수 있게 읽기 권한을 준다.
+        if readers:
+            shared = await self._make_request(
+                "POST", f"/me/drive/items/{uploaded['item_id']}/invite", user_email,
+                {"requireSignIn": True, "sendInvitation": False, "roles": ["read"],
+                 "recipients": [{"email": e} for e in readers]},
+            )
+            if not shared.get("success"):
+                return {"success": False, "error": "받는 사람에게 파일 권한을 주지 못했습니다(메시지는 보내지 않았습니다).",
+                        "details": shared.get("details") or shared.get("error"), "file": uploaded}
+
+        body = content if content_type == "html" else html.escape(content).replace("\n", "<br>")
+        if prefix:
+            body = f"{html.escape(prefix)} {body}"
+        json_data = {
+            "body": {"contentType": "html", "content": f'{body}<attachment id="{uploaded["guid"]}"></attachment>'},
+            "attachments": [{
+                "id": uploaded["guid"],
+                "contentType": "reference",
+                "contentUrl": uploaded["content_url"],
+                "name": uploaded["name"],
+            }],
+        }
+        result = await self._make_request("POST", f"/me/chats/{chat_id}/messages", user_email, json_data)
+        if not result.get("success"):
+            return {**result, "file": uploaded}
+        message = MessageInfo.from_dict(result.get("data", {}))
+        return {
+            "success": True,
+            "message_id": message.id,
+            "chat_id": chat_id,
+            "file": {"name": uploaded["name"], "web_url": uploaded.get("web_url")},
+        }
 
     # ========================================================================
     # 팀 관련 메서드

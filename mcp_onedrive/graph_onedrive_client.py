@@ -7,6 +7,7 @@ session 모듈을 통한 인증 관리
 import base64
 import logging
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from urllib.parse import quote
 import aiohttp
 
 import sys
@@ -25,6 +26,11 @@ from .onedrive_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _enc(path: str) -> str:
+    """드라이브 경로를 URL 경로 조각으로 인코딩한다 (`#` `%` `?` 공백 등). `/` 는 구분자로 유지."""
+    return quote(path.strip("/"), safe="/")
 
 
 class GraphOneDriveClient:
@@ -161,7 +167,7 @@ class GraphOneDriveClient:
         """
         if not folder_path or folder_path == "/":
             return "/me/drive/root/children"
-        return f"/me/drive/root:/{folder_path}:/children"
+        return f"/me/drive/root:/{_enc(folder_path)}:/children"
 
     # ========================================================================
     # 드라이브 정보 메서드
@@ -214,7 +220,8 @@ class GraphOneDriveClient:
         """
         if search:
             # 검색 모드
-            endpoint = f"/me/drive/root/search(q='{search}')?$top={limit}"
+            q = quote(search.replace("'", "''"), safe="")  # OData 문자열 리터럴: ' 는 '' 로
+            endpoint = f"/me/drive/root/search(q='{q}')?$top={limit}"
         else:
             # 폴더 목록 모드
             endpoint = self._build_path(folder_path) + f"?$top={limit}"
@@ -247,7 +254,7 @@ class GraphOneDriveClient:
         Returns:
             아이템 정보
         """
-        endpoint = f"/me/drive/root:/{file_path}"
+        endpoint = f"/me/drive/root:/{_enc(file_path)}"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -285,7 +292,7 @@ class GraphOneDriveClient:
             return {"success": False, "error": "액세스 토큰이 없습니다."}
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        endpoint = f"/me/drive/root:/{file_path}:/content"
+        endpoint = f"/me/drive/root:/{_enc(file_path)}:/content"
         url = f"{self.GRAPH_BASE_URL}{endpoint}"
 
         try:
@@ -369,7 +376,7 @@ class GraphOneDriveClient:
 
         # 충돌 동작 설정
         conflict_str = conflict_behavior.value
-        endpoint = f"/me/drive/root:/{file_path}:/content?@microsoft.graph.conflictBehavior={conflict_str}"
+        endpoint = f"/me/drive/root:/{_enc(file_path)}:/content?@microsoft.graph.conflictBehavior={conflict_str}"
         url = f"{self.GRAPH_BASE_URL}{endpoint}"
 
         try:
@@ -413,7 +420,7 @@ class GraphOneDriveClient:
         Returns:
             삭제 결과
         """
-        endpoint = f"/me/drive/root:/{file_path}"
+        endpoint = f"/me/drive/root:/{_enc(file_path)}"
         result = await self._make_request("DELETE", endpoint, user_email)
 
         if result.get("success"):
@@ -443,7 +450,7 @@ class GraphOneDriveClient:
             생성된 폴더 정보
         """
         if parent_path:
-            endpoint = f"/me/drive/root:/{parent_path}:/children"
+            endpoint = f"/me/drive/root:/{_enc(parent_path)}:/children"
         else:
             endpoint = "/me/drive/root/children"
 
@@ -489,7 +496,7 @@ class GraphOneDriveClient:
         if not dest_id:
             return {"success": False, "error": "대상 폴더를 찾을 수 없습니다."}
 
-        endpoint = f"/me/drive/root:/{source_path}:/copy"
+        endpoint = f"/me/drive/root:/{_enc(source_path)}:/copy"
         json_data = {
             "parentReference": {"id": dest_id},
         }
@@ -565,7 +572,7 @@ class GraphOneDriveClient:
         if not dest_id:
             return {"success": False, "error": "대상 폴더를 찾을 수 없습니다."}
 
-        endpoint = f"/me/drive/root:/{source_path}"
+        endpoint = f"/me/drive/root:/{_enc(source_path)}"
         json_data = {
             "parentReference": {"id": dest_id},
         }

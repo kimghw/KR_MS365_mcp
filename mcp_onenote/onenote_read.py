@@ -77,7 +77,15 @@ class OneNoteReader:
 
         # DB가 비어있으면 sync 후 재조회
         if not items and self._writer:
-            await self._writer.sync_db(user_email)
+            sync_result = await self._writer.sync_db(user_email)
+            if not sync_result.get("success", True):
+                # 최초 동기화 실패를 "성공, 페이지 0개" 로 포장하지 않는다
+                return {
+                    "success": False,
+                    "error": sync_result.get("error", "OneNote 동기화 실패"),
+                    "pages": [],
+                    "count": 0,
+                }
             items = self._db_service.list_items(
                 user_id=user_email,
                 item_type="page",
@@ -111,6 +119,9 @@ class OneNoteReader:
                 "section_name": i.get("section_name"),
                 "notebook_name": i.get("notebook_name"),
                 "last_accessed": i.get("last_accessed"),
+                # OneNote 웹 링크(links.oneNoteWebUrl). 사용자가 복사한 "페이지 링크"의 page GUID 는
+                # Graph page_id 와 다르므로, 링크 → page_id 대응은 이 값의 wd=target(...|{page GUID}/) 로 찾는다
+                "web_url": i.get("web_url"),
             }
             for i in items
         ]
@@ -162,9 +173,10 @@ class OneNoteReader:
         self,
         user_email: str,
         page_id: str,
+        include_ids: bool = False,
     ) -> Dict[str, Any]:
-        """특정 페이지 본문 조회"""
-        return await self._client.get_page_content(page_id, user_email)
+        """특정 페이지 본문 조회 (include_ids: 요소 id·data-id 포함 — Writer.replace 의 target 용)"""
+        return await self._client.get_page_content(page_id, user_email, include_ids=include_ids)
 
     async def get_summary(
         self,

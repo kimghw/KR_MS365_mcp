@@ -84,7 +84,7 @@ VSCode 안의 Claude Code 확장도 같은 `~/.claude.json` 을 공유.
 {
   "mcpServers": {
     "outlook": {
-      "command": "c:\\Users\\USER\\KR_MS365_mcp\\venv\\Scripts\\python.exe",
+      "command": "c:\\Users\\USER\\KR_MS365_mcp\\.venv\\Scripts\\python.exe",
       "args":    ["c:\\Users\\USER\\KR_MS365_mcp\\mcp_outlook\\mcp_server\\server_stdio.py"],
       "env": {
         "PYTHONPATH":        "c:\\Users\\USER\\KR_MS365_mcp",

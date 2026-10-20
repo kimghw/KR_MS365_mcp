@@ -50,7 +50,11 @@ def main() -> int:
             return 2
 
     project = Path(args.project)
-    python = project / "venv" / "Scripts" / "python.exe"
+    # uv 가 만드는 `.venv` 가 현행. 전환 전 `venv/` 가 남아 있는 PC 도 있어 그것도 인정한다.
+    # Desktop 은 STDIO 라 **절대 경로가 config 에 박힌다** — 환경을 옮기면 재등록이 필요하다.
+    python = project / ".venv" / "Scripts" / "python.exe"
+    if not python.exists() and (project / "venv" / "Scripts" / "python.exe").exists():
+        python = project / "venv" / "Scripts" / "python.exe"
     cfg = Path(args.config)
     cfg.parent.mkdir(parents=True, exist_ok=True)
 

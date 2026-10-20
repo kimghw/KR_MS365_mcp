@@ -163,7 +163,7 @@ class AuthService:
             # 토큰과 사용자 정보 저장
             # 완전 재인증 경로: 새 refresh_token이 발급되므로 만료 시각(+90일)을 리셋
             self.auth_db.save_user(email, user_info)
-            self.auth_db.save_token(email, token_result, reset_refresh_expiry=True)
+            self.auth_db.save_token(email, token_result)
 
             logger.info(f"Authentication successful for {email}")
 

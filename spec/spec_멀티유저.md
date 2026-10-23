@@ -7,6 +7,8 @@
 | 2026-10-22 | 현재 단일 운영자 방식의 MS365 MCP 서버를 멀티유저 방식으로 변경하고, 사용자별 데이터·인증정보를 완전히 분리하며, 여러 코드 에이전트가 병렬 구현할 수 있는 설계와 작업 계약을 작성한다. |
 | 2026-10-22 | (사용자) "결과 나오면 astra 한테 재검토 해줘" → 구현·통합 검증 완료 후 astra 재검토 실행(2026-10-23). 판정 "출시 불가(High 2: R01 폐기 키 대기 요청, R02 `top` 무제한)" → R01~R15 전부 반영(③). |
 | 2026-10-22 | (구현 후) "approvalinprocedure 웹서버에서 최초 로그인 시 로그인하고, 사용자는 이 정보로 MCP 서버를 사용하고, 그 서버에서도 로그인 정보로 특정 프로젝트에 접근한다. AIP 접수 시 담당자가 되고 중간에 넘길 수도 있다. 그쪽 세션과 대화해서 처리" → AIP 세션(`E:\dev\ApprovalInPrinciple`)에 연동 계약 초안·확인 질문 5개 송부(④ AIP 연동). AIP 는 현재 `currentuser.py` 원천 1 로 이 저장소 `auth.db` 기본 사용자를 읽으므로 mode 1 에서 대체 경로가 필요. |
+| 2026-10-23 | (AIP 세션 검토 결과, 사용자 "MS365 mcp 서버 수정이 필요하면 별도 서브세션으로 처리") **책임 분리 합의**: Microsoft 로그인·동의, 토큰 교환·저장·갱신·재인증·연결 해제는 **이 저장소**가, AIP 는 신원과 '어느 계정으로'만 든다(AIP 쪽 요구 원본 `spec_웹로그인.md` ② 'MS365 인증 책임 분리'). 요구 계약 5항 — ⑴ 로그인 위임(인가 코드 제출 → 등록·토큰 보관 → 신원+연결 상태) ⑵ 연결 상태 조회(4상태 + 기능별 권한) ⑶ 재연결/해제 ⑷ 업무 호출은 사용자 신원으로 ⑸ 인증 오류 분류(재인증 vs 일시 장애). 이 PC 의 AIP 는 당분간 mode 0(auth.db, 이메일 키)로 이 라이브러리를 subprocess 로 쓰므로 **1차 = mode 0 라이브러리 계약**(② 13 — `AuthManager.complete_external_login`·`connection_state`·`reason` 코드, 같은 날 구현 ③), mode 1 gateway `POST /auth/token` 은 후속(④). |
+| 2026-10-23 | (AIP 세션의 codex 교차 검토 2건, 별도 서브세션 반영) ⑴ AIP [MS365 연결] 재연결에서 다른 계정 B 를 고르면 라이브러리가 B 의 토큰을 **먼저 저장한 뒤** AIP 가 400 mismatch — B 의 등록·갱신이 되돌릴 수 없이 남고 사후 삭제는 B 의 기존 정상 연결까지 지운다 → `complete_external_login(expect_email=)` 선택 인자: 저장 **전** `/me` 메일 대조, 다르면 저장 없이 `ACCOUNT_MISMATCH`. ⑵ AIP 확정 사양 "저장이 안 돼도 로그인은 유지(미연결 표시)"인데 `SAVE_FAILED` 가 예외라 신원까지 잃어 503 → 저장 실패는 정상 반환 + `error="SAVE_FAILED"` 키(신원·`state` 는 DB 기준). 둘 다 추가(additive), ② 13 갱신. |
 
 ## ② 확정 사양
 
@@ -1111,6 +1113,55 @@ WP0 계약 고정
 7. **auth gateway 는 별도 프로세스** — `python -m session.auth_gateway` 가 `AZURE_REDIRECT_URI`
    포트에서 `/auth/*` 를 담당한다. 관리 CLI 는 `python -m session.admin_cli`.
 
+### 13. 모드 0 외부 로그인 위임 계약 (AIP, 2026-10-23)
+
+외부 웹 앱(AIP)이 자기 `/auth/callback` 에서 받은 Entra 인가 코드를 넘기면 **이 저장소가** 토큰 교환·Graph `/me`·auth.db 저장·갱신·
+재인증 판정을 맡고, 호출자에게는 **신원과 연결 상태만** 돌려준다. 1차 계약은 mode 0 라이브러리 API(AIP 워커가 `from session import
+AuthManager` 로 subprocess 안에서 부른다)이고, mode 1 gateway 엔드포인트(`POST /auth/token`·세션 토큰·act-as)는 ④ 후속이다. 전부
+**추가(additive)** — 기존 공개 메서드의 시그니처·반환 키·동작은 바꾸지 않았다. 구현 위성 `session/external_login.py`, 관문
+`AuthManager`/`AuthService`. 멀티유저 모드에서는 `LegacyAuthDisabledError` 로 거부.
+
+| API | 입력 | 반환 / 오류 |
+|---|---|---|
+| `await AuthManager.complete_external_login(code, redirect_uri, scopes=None, save=True, expect_email=None)` | `code` 인가 코드 · `redirect_uri` 그 코드를 발급받은 **외부 앱의** redirect_uri · `scopes` 교환 scope(None = `config.default_scopes`, 문자열 또는 목록) · `save` False = 신원만(Graph 동의가 막혔을 때의 `openid profile email User.Read` 폴백, 저장 없음, refresh 없음 허용) · `expect_email`(2026-10-23 codex 교차 검토 ⑴) 호출자가 기대하는 계정(재연결 때의 로그인 사용자) — 값이 있으면 토큰 교환·`/me` 뒤 **저장 전에** `/me` 메일(소문자, `canonical_email` 과 같은 대소문자 무시)과 대조해 다르면 **아무것도 저장하지 않고**(신규 등록·기존 행 갱신 모두 없음) `ACCOUNT_MISMATCH`; None(기본) = 종전(무검증) | `{"email"(소문자), "display_name", "user_info"(id·displayName·mail·userPrincipalName 만), "saved", "has_refresh", "granted_scopes"(권한 이름 목록), "state"(아래 4상태)}`. access/refresh/id token 은 어떤 키·로그에도 없다. **저장 실패(save=True)는 예외가 아니다**(2026-10-23 codex 교차 검토 ⑵ — 저장이 안 돼도 호출자는 신원으로 로그인을 유지하고 미연결로 표시): 같은 꼴로 돌려주되 `"saved": false`, `"has_refresh"` 는 응답 기준, `"state"` 는 DB 기준(`connection_state(email).state` — 보통 `not_connected` 또는 기존 행 상태), **`"error": "SAVE_FAILED"`** 키가 더 있다(저장이 안 된 이유 코드만, 메시지 없음). 정상 저장·`save=False` 에는 `error` 키가 없다. 실패 = `session.ExternalLoginError`(`code` 속성 **EXCHANGE_FAILED**(교환 HTTP 오류·통신 실패·빈 입력·앱 설정 없음, `oauth_error`·`http_status` 동봉) · **USERINFO_FAILED**(`/me` 실패·메일 없음) · **ACCOUNT_MISMATCH**(`expect_email` ≠ `/me` 메일 — 저장 전 판정, `expected_email`·`actual_email` 속성(소문자)에 두 메일, 메시지·로그에는 메일 없음); `str(e)` = `"CODE|메시지"` — 워커 오류 규약과 같은 꼴, 외부 오류 본문·토큰 미포함. `SAVE_FAILED` 코드 상수는 남아 있으나 **예외로는 쓰지 않는다**(반환 `error` 키 전용)) |
+| `AuthManager.connection_state(email)` | 계정 메일(대소문자 무시 — `AuthDatabase.canonical_email` 로 저장 표기를 찾는다) | `{"email", "state", "features", "granted_scopes", "access_token_expires_at"(ISO 또는 None), "refresh_token_expired"}` + `unavailable` 일 때만 `"error"`(예외 종류 이름) |
+
+**연결 상태 4가지** — `connected`(refresh token 보유·만료 전·마지막 갱신 거부 없음. access token 만료는 갱신으로 풀리므로 connected) ·
+`reauth_required`(refresh token 없음 / `refresh_token_expires_at` 경과 / 마지막 갱신이 `invalid_grant`·`interaction_required` 로 거부됨 —
+`azure_token_info.refresh_state = 'reauth_required'`) · `not_connected`(토큰 행 없음) · `unavailable`(auth.db 를 읽지 못함 — 잠김·손상).
+AIP 쪽 `consent_required` 는 별도 상태가 아니라 **`features` 의 기능별 False** 로 표현한다(`.default` 로 받아도 그 사용자·테넌트에 동의되지 않은
+권한은 토큰 응답 `scope` 에 없다).
+
+**features 대응표** — 저장된 granted scope(토큰 응답의 `scope`, `https://graph.microsoft.com/<권한>` 꼴·`openid` 등 혼재)를 권한 이름으로 정규화해
+결정론 판정. 각 기능은 모든 묶음에서 하나 이상 보유해야 True. scope 를 모르는 구형 행은 `features`·`granted_scopes` 둘 다 None. 원본
+`session/external_login.py` `FEATURE_REQUIREMENTS`(이 저장소 각 도메인이 실제로 부르는 Graph 경로 기준).
+
+| 기능 | 필요 위임 권한(묶음마다 하나) | 근거 경로 |
+|---|---|---|
+| mail | {Mail.Read, Mail.ReadWrite} ∧ {Mail.Send} | Outlook `/me/messages`·`$batch` 읽기 + `sendMail`. 임시저장·회신 초안(`POST /me/messages`)은 Mail.ReadWrite 가 더 필요(판정에는 미포함) |
+| teams | {Chat.Read, Chat.ReadWrite} ∧ {Chat.ReadWrite, ChatMessage.Send} | `/me/chats` 읽기 + `POST /me/chats/{id}/messages`. 첨부 업로드의 Files.ReadWrite 는 선택 |
+| onenote | {Notes.ReadWrite, Notes.ReadWrite.All} | `/me/onenote/*` 조회 + 페이지 생성·PATCH(Notes.Create 만으로는 조회 불가) |
+| calendar | {Calendars.ReadWrite} | `/me/events` 조회·생성·PATCH·DELETE |
+| todo | {Tasks.ReadWrite} | `/me/todo/lists` 조회·생성·PATCH·DELETE(Tasks.ReadWrite.Shared 는 공유 목록용이라 제외) |
+
+**auth.db(mode 0) 스키마** — `azure_token_info` 의 nullable 컬럼 `scope`(실제 부여 권한)·`refresh_state`('ok'|'reauth_required')를
+`AuthDatabase.ensure_tables` 가 열 때마다 `PRAGMA table_info` 로 확인하고 없으면 `ALTER TABLE … ADD COLUMN` 으로 idempotent 보강한다
+(mode 0 전용 — mode 1 의 명시 legacy 경로 읽기는 고치지 않아 이전 도구의 fingerprint 가 유지된다. 실패해도 기존 동작 유지, 그 컬럼만 쓰지 않음).
+`save_token` 은 `scope` 를 COALESCE 로 저장(빈 문자열은 NULL)하고 새 refresh_token 이 오면 `refresh_state='ok'`(재인증 완료 = 표식 해제).
+이 PC 의 실 auth.db 는 이미 `scope` 컬럼이 있었다(2026-10-23 확인) — 추가된 것은 `refresh_state` 하나.
+
+**인증 오류 분류(AUTH_REQUIRED 판정)** — 갱신 실패를 재인증과 일시 장애로 구분한다. `AuthService.refresh_tokens` 는 `TokenRefreshError`
+(`Exception` 하위, 메시지 종전 그대로, `code` = OAuth `error`, `reauth_required` = `invalid_grant`|`interaction_required`)를 던지고,
+`AuthManager.refresh_token`·`AuthService.check_and_refresh_if_needed` 의 반환 dict 에 **`reason`** 키가 더해진다 — `ok` ·
+`not_connected`(토큰 행 없음) · `reauth_required`(refresh 없음·만료·endpoint 거부) · `transient`(네트워크·5xx·DB — 재시도 가능). endpoint 거부일 때만
+`refresh_state='reauth_required'` 를 **영구 기록**하므로 반환 형태가 `Optional[str]` 인 `validate_and_refresh_token`(None) 뒤에도
+`connection_state(email).state` 로 같은 판정을 읽을 수 있다. `get_token`/`get_token_status` 에는 `refresh_state`·`state` 키만 추가(`needs_reauth` 의
+종전 의미는 유지 — 거부 표식은 `state` 에만 반영). **워커가 AUTH_REQUIRED 로 분류해야 하는 조건** = `reason ∈ {not_connected, reauth_required}` 또는
+`connection_state().state ∈ {not_connected, reauth_required}`; `transient`·`unavailable` 은 재시도 대상이다.
+
+**하지 않는 것** — 토큰을 반환하는 API, AIP 쪽 범위 정의·계정 선택, 연결 해제의 새 API(기존 `remove_user(email)` = 토큰 행 삭제가 그대로 해제),
+mode 1 코드 변경(`token_store`·`auth_gateway`·principal 규칙 불변).
+
 ## ③ 구현 상태
 
 | WP | 작업 | 상태 |
@@ -1219,6 +1270,21 @@ WP0 계약 고정
 
 전체 pytest(4차 반영 후): **1538 passed, 4 skipped** (2026-10-23). 신규·수정 소스 파일 1,200줄 초과 없음. 추가 astra 검토는 사용자 요청 시 — 코드로 해소하지 않은 잔여는 전부 ④ 에 설계 한계로 기록돼 있다.
 
+**모드 0 외부 로그인 위임 계약(② 13) 구현 (2026-10-23, AIP 세션 요청 서브세션)**
+
+| 파일 | 내용 |
+|---|---|
+| `session/external_login.py` (신규, 303줄) | `complete_external_login`·`connection_state`·`features_from_scopes`·`parse_granted_scopes`·`FEATURE_REQUIREMENTS`·`ExternalLoginError`(`code` + `"CODE|메시지"`) — mode 1 은 `refuse_in_multi_user` |
+| `session/auth_service.py` | `_exchange_code_for_tokens(auth_code, *, redirect_uri=None, scope=None)`(기본값 = 종전 동작, HTTP 오류는 `ExternalLoginError(EXCHANGE_FAILED)` — `Exception` 하위) · `TokenRefreshError`(`code`·`reauth_required`)·`REAUTH_OAUTH_ERRORS`·`refresh_failure_reason` · `check_and_refresh_if_needed` 반환에 `reason` + 거부 표식 · 관문 `complete_external_login`/`connection_state` |
+| `session/auth_manager.py` | 관문 `complete_external_login`/`connection_state` · `refresh_token` 반환에 `reason` + 거부 표식 · `get_token` 에 `refresh_state` · `get_token_status` 에 `refresh_state`·`state`(기존 키 불변) |
+| `session/auth_database.py` | `OPTIONAL_TOKEN_COLUMNS`(`scope`·`refresh_state`) idempotent `ALTER TABLE`(mode 0 전용, 실패 무시) · `save_token` 이 `refresh_state`('ok' on new refresh)·빈 scope→NULL · `get_token(email, strict=False)` · `canonical_email` · `mark_refresh_state` |
+| `session/__init__.py` | 지연 export `ExternalLoginError`·`TokenRefreshError` |
+| `session/tests/test_external_login.py` (신규, 17건) | 교환 요청(redirect_uri·scope·client secret)·저장 순서·토큰 비노출 / scope 기본·목록 / `save=False` / refresh 없는 저장 / EXCHANGE_FAILED(HTTP·통신·빈 입력, 오류 본문 미노출)·USERINFO_FAILED·SAVE_FAILED / connection_state 4상태(+대소문자 표기·표식 해제·access 만 갱신) / features 대응표·구형 행 None / invalid_grant 표식·transient 구분·`validate_and_refresh_token` None 뒤 상태·재로그인 복구 / `check_and_refresh_if_needed` reason 5경우 / `TokenRefreshError` 분류 / 선택 컬럼 보강(mode 0 idempotent·mode 1 legacy 미수정·컬럼 없을 때 no-op) / mode 1 거부 |
+
+실행: `venv\Scripts\python.exe -m pytest session/tests -q` → **119 passed** / 전체 `venv\Scripts\python.exe -m pytest -q` → **1556 passed, 3 failed, 0 skipped (236.54s)**. 실패 3건은 전부 `mcp_file_handler/tests/test_converters.py`(DOCX·Excel = `PermissionError WinError 32` 임시 파일을 다른 프로세스가 사용 중, OCR = `TesseractNotFoundError` tesseract 미설치) — 종전 "4 skipped" 였던 변환기 테스트가 venv 에 converters 의존이 깔리면서 실행된 환경 문제이며 session/ 변경과 무관(단독 재실행도 같은 결과). 기존 공개 메서드의 시그니처·반환 키·동작 불변(추가만). 실 auth.db 에는 첫 `AuthDatabase` 생성 때 `refresh_state` 컬럼이 추가된다(`scope` 는 이미 있었음). 주의: 구현 중 다른 세션의 커밋 `941b53a`(14:42)가 `auth_database.py`·`external_login.py` 2개를 먼저 담았다 — 나머지 변경(관문·테스트·문서)은 미커밋.
+
+**codex 교차 검토 2건 반영(② 13, 2026-10-23, 별도 서브세션)** — `session/external_login.py`(`expect_email` 저장 전 대조 → `ACCOUNT_MISMATCH`(`expected_email`·`actual_email` 속성) · 저장 실패는 예외 대신 반환 `error="SAVE_FAILED"`, `SAVE_FAILED` 상수는 예외 미사용으로 명시) · 관문 `auth_service.py`·`auth_manager.py` 에 `expect_email=None` 인자(기본 = 종전) · `session/README.md`·`CLAUDE.md` 갱신 · `session/tests/test_external_login.py` 3건(저장 실패 반환 꼴 4경우 — save_token False·save_user 예외·기존 행 있는 계정·정상/save=False 에 error 키 없음 / 불일치 때 save_user·save_token 미호출·코드·속성·대소문자 무시·save=False 도 대조·빈 값 무검증 / 다른 계정 B 의 기존 행 불변). 기존 인자·반환 키·동작·mode 1 코드 불변(추가만). 실행: `venv\Scripts\python.exe -m pytest session/tests -q` → **121 passed in 39.28s**(종전 119 + 신규 2, 저장 실패 테스트 1건은 새 반환 꼴로 교체). AIP 쪽 후속: 워커 `vendor/ms365/auth.py` `LOGIN_CODES` 에 `ACCOUNT_MISMATCH` 등재 + `graph_connect` 가 `expect_email` 을 넘기면 사후 비교가 사전 차단으로 바뀐다(AIP 저장소 — 이 서브세션 범위 밖).
+
 ## ④ 미결/후속
 
 아래는 구현 방식을 각 에이전트가 임의로 결정할 항목이 아니라, 운영자가 제공하거나 승인해야 하는 배포 입력이다. 결정 전에는 테스트와 독립 구현을 진행할 수 있지만 운영 활성화는 하지 않는다.
@@ -1245,6 +1311,6 @@ WP0 계약 고정
 | `conversion_workers.py` 사본 2벌 | `mcp_outlook/`·`mcp_file_handler/` 가 실행 로직·자료구조가 동일(주석·로그 문구만 다름)한 worker 추적 모듈을 각자 보유 — 도메인 간 import 금지 규칙 때문 | `mcp_common/conversion_workers.py` 로 올리고 도메인은 재수출 shim 으로. 테스트가 도메인 모듈 속성(`HARD_JOIN_CAP_SECONDS`)을 monkeypatch 하므로 상수 읽기 경로를 정리한 뒤 착수 |
 | Graph ID 퍼센트 인코딩 실측 | Teams chat_id(`19:...@thread.v2`)를 인코딩해 보내도 Graph 가 받는지 실계정 미확인 | 실 Graph 호출로 확인 후 필요 시 `graph_segment` safe 집합 조정 |
 | OS 수준 사용자 격리 | API 사용자 간 격리를 최초 보장 범위로 채택 | 관리자·프로세스 침해까지 분리해야 하면 사용자별 실행 환경 추가 |
-| AIP 웹 로그인 연동 (2026-10-22 요청) | 공통 신원 = Entra (tid, oid). AIP 웹 최초 로그인(OIDC) 후 AIP 서버가 이 저장소의 **프로비저닝 API**(서버 간·전용 자격증명·loopback)로 사용자 등록·bearer key 발급·MS365 연결 링크를 받는다. 프로젝트 접근(담당자·인계)은 AIP 가 요청마다 판정(이 저장소는 캐시하지 않음 → epoch 불필요) | **AIP 세션 확인(사용자 확정, 2026-10-22)**: 웹 로그인 = MS365 / 접근 = AIP 프로젝트 단위·담당자(대표 `project.manager_member_id` + 공동 `project_participant` role '담당')만, 인계 시 새 담당자 즉시·구 담당자는 '공동으로 남김' 선택 시만 유지 / 접수 전 자료 = 로그인 사용자 전원 공유 / 관리자 = kimghw, 루프백 무로그인 = 관리자 / AIP = 이 PC `127.0.0.1:8035`, 이 저장소를 subprocess 워커로 호출 / **AIP 적응 전까지 이 PC 는 mode 0 유지**. **사용자 답(2026-10-23)**: "AIP 웹서버 로그인 기능을 MCP 로 하고, AIP 웹이 쓰는 MCP 서버를 로그인된 사용자만 접속" / 서버측 자격은 "동작 중인 에이전트와 협의". **AIP 세션에 보낸 설계안 v1 (합의 대기)**: A' AIP 가 자체 Entra 로그인(이미 구현, 같은 Entra 앱)으로 받은 **ID token 을 gateway `POST /auth/token`(grant_type=id_token, loopback, client secret)에 제출 → gateway 가 JWKS 서명·iss·aud·tid 검증 후 사용자 등록(허용 tenant 첫 로그인 = 자동 등록) + `session_token`(m365s1, 8h) + `graph_connected`/`connect_url` 반환** / B 대화형 MCP 호출은 session_token 으로 / C 배경 작업은 **서비스 자격증명 `m365svc.*` + `X-MS365-Act-As: <user_key>`**, 사용자가 로그인 시 'aip' 에 위임 부여한 경우만, 감사 actor=aip / D 과도기: mode 1 은 HTTP 서버·gateway 프로세스 env 로만 켜고 AIP 워커(mode 0, auth.db)와 별도 저장소로 공존 |
+| AIP 웹 로그인 연동 (2026-10-22 요청) | 공통 신원 = Entra (tid, oid). AIP 웹 최초 로그인(OIDC) 후 AIP 서버가 이 저장소의 **프로비저닝 API**(서버 간·전용 자격증명·loopback)로 사용자 등록·bearer key 발급·MS365 연결 링크를 받는다. 프로젝트 접근(담당자·인계)은 AIP 가 요청마다 판정(이 저장소는 캐시하지 않음 → epoch 불필요) | **AIP 세션 확인(사용자 확정, 2026-10-22)**: 웹 로그인 = MS365 / 접근 = AIP 프로젝트 단위·담당자(대표 `project.manager_member_id` + 공동 `project_participant` role '담당')만, 인계 시 새 담당자 즉시·구 담당자는 '공동으로 남김' 선택 시만 유지 / 접수 전 자료 = 로그인 사용자 전원 공유 / 관리자 = kimghw, 루프백 무로그인 = 관리자 / AIP = 이 PC `127.0.0.1:8035`, 이 저장소를 subprocess 워커로 호출 / **AIP 적응 전까지 이 PC 는 mode 0 유지**. **사용자 답(2026-10-23)**: "AIP 웹서버 로그인 기능을 MCP 로 하고, AIP 웹이 쓰는 MCP 서버를 로그인된 사용자만 접속" / 서버측 자격은 "동작 중인 에이전트와 협의". **AIP 세션에 보낸 설계안 v1 (합의 대기)**: A' AIP 가 자체 Entra 로그인(이미 구현, 같은 Entra 앱)으로 받은 **ID token 을 gateway `POST /auth/token`(grant_type=id_token, loopback, client secret)에 제출 → gateway 가 JWKS 서명·iss·aud·tid 검증 후 사용자 등록(허용 tenant 첫 로그인 = 자동 등록) + `session_token`(m365s1, 8h) + `graph_connected`/`connect_url` 반환** / B 대화형 MCP 호출은 session_token 으로 / C 배경 작업은 **서비스 자격증명 `m365svc.*` + `X-MS365-Act-As: <user_key>`**, 사용자가 로그인 시 'aip' 에 위임 부여한 경우만, 감사 actor=aip / D 과도기: mode 1 은 HTTP 서버·gateway 프로세스 env 로만 켜고 AIP 워커(mode 0, auth.db)와 별도 저장소로 공존. **합의(2026-10-23, AIP 세션 검토)**: 책임 분리(인증은 이 저장소, AIP 는 신원·계정) 확정 → **mode 0 라이브러리 계약 먼저(② 13 — 구현 완료 ③)**: `AuthManager.complete_external_login(code, redirect_uri, scopes, save)`·`connection_state(email)`·`reason` 코드. AIP 쪽 후속 = `webauth._exchange`·`_import_token`·vendor `auth_import` 를 이 API 호출로 교체(그쪽 ④ 12 ⑶). **이 저장소 후속** = mode 1 gateway `POST /auth/token`(grant_type=id_token 또는 인가 코드, loopback·client secret)·`session_token`·서비스 자격 act-as(설계안 A'·B·C) — AIP 의 mode 1 전환(그쪽 순서 ⑸, 토큰 이관 없음·사용자별 재연결 1회) 때 착수 |
 
 이메일 기반 식별, 기본 계정 폴백, 공용 인증 DB, 공용 다운로드, 사용자 구분 없는 캐시를 유지하는 방향은 미결 선택지에 포함하지 않는다.

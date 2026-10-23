@@ -19,12 +19,43 @@ import aiohttp
 from .azure_config import AzureConfig
 from .auth_database import AuthDatabase
 from .mode_guard import refuse_in_multi_user
+from . import external_login as _external
 
 logger = logging.getLogger(__name__)
 
 
 class InvalidOAuthStateError(Exception):
     """콜백 state 가 진행 중인 인증과 맞지 않는다(없음·만료·재사용). 어느 대기자도 깨우지 않는다."""
+
+
+#: 토큰 endpoint 가 refresh 를 거부하며 돌려주는 OAuth `error` 중 **재인증(브라우저 로그인)이 필요한** 것.
+#: invalid_grant = 만료·회수·비밀번호 변경·비활성 90일, interaction_required = 조건부 접근·MFA 요구.
+REAUTH_OAUTH_ERRORS = frozenset({"invalid_grant", "interaction_required"})
+
+
+class TokenRefreshError(Exception):
+    """refresh token 갱신 실패. `code` = OAuth `error` 식별자(또는 `http_<status>`·`unknown_error`),
+    `reauth_required` = 재인증이 필요한 거부(`REAUTH_OAUTH_ERRORS`)인지 — False 면 일시 장애로 재시도 가능.
+    메시지 문구는 종전(`Exception`)과 같다 — `'invalid_grant' in str(e)` 로 판정하던 호출자도 그대로 동작한다."""
+
+    def __init__(self, message: str, *, code: str = "unknown_error", http_status: Optional[int] = None):
+        super().__init__(message)
+        self.code = code
+        self.http_status = http_status
+
+    @property
+    def reauth_required(self) -> bool:
+        return self.code in REAUTH_OAUTH_ERRORS
+
+
+def refresh_failure_reason(exc: BaseException) -> str:
+    """갱신 실패 예외 → `reason` 코드. `TokenRefreshError` 는 `code` 로, 그 밖(네트워크·DB)은 'transient'."""
+    if isinstance(exc, TokenRefreshError):
+        return _external.STATE_REAUTH_REQUIRED if exc.reauth_required else "transient"
+    text = str(exc).lower()
+    if "invalid_grant" in text:
+        return _external.STATE_REAUTH_REQUIRED
+    return "transient"
 
 
 def _oauth_error_code(error_text: str) -> str:
@@ -219,23 +250,37 @@ class AuthService:
         base_url = f"https://login.microsoftonline.com/{self.config.azure_tenant_id}/oauth2/v2.0/authorize"
         return f"{base_url}?{urlencode(params)}"
 
-    async def _exchange_code_for_tokens(self, auth_code: str) -> Dict[str, Any]:
-        """Authorization code를 토큰으로 교환"""
+    async def _exchange_code_for_tokens(
+        self, auth_code: str, *, redirect_uri: Optional[str] = None, scope: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Authorization code를 토큰으로 교환.
+
+        redirect_uri 기본은 이 저장소 설정(`config.azure_redirect_uri`). 외부 로그인 위임은 그 코드를 발급받은 외부 앱의
+        redirect_uri·scope 를 넘긴다(`external_login`). scope 는 줄 때만 보낸다(종전과 같은 요청 유지).
+        HTTP 오류는 `ExternalLoginError(EXCHANGE_FAILED)` — 종전 `Exception` 의 하위 클래스라 호출자 동작은 그대로다.
+        """
         token_url = f"https://login.microsoftonline.com/{self.config.azure_tenant_id}/oauth2/v2.0/token"
 
         data = {
             'client_id': self.config.azure_client_id,
             'client_secret': self.config.azure_client_secret,
             'code': auth_code,
-            'redirect_uri': self.config.azure_redirect_uri,
+            'redirect_uri': redirect_uri or self.config.azure_redirect_uri,
             'grant_type': 'authorization_code'
         }
+        if scope:
+            data['scope'] = scope
 
         session = await self._get_session()
         async with session.post(token_url, data=data) as response:
             if response.status != 200:
                 error_text = await response.text()
-                raise Exception(f"Token exchange failed (HTTP {response.status}, {_oauth_error_code(error_text)})")
+                oauth_error = _oauth_error_code(error_text)
+                raise _external.ExternalLoginError(
+                    _external.ExternalLoginError.EXCHANGE_FAILED,
+                    f"Token exchange failed (HTTP {response.status}, {oauth_error})",
+                    http_status=response.status, oauth_error=oauth_error,
+                )
 
             token_data = await response.json()
 
@@ -293,8 +338,14 @@ class AuthService:
                 if response.status != 200:
                     error_code = _oauth_error_code(await response.text())
                     if error_code == 'invalid_grant':
-                        raise Exception("Refresh token expired or revoked (invalid_grant)")
-                    raise Exception(f"Token refresh failed (HTTP {response.status}, {error_code})")
+                        raise TokenRefreshError(
+                            "Refresh token expired or revoked (invalid_grant)",
+                            code=error_code, http_status=response.status,
+                        )
+                    raise TokenRefreshError(
+                        f"Token refresh failed (HTTP {response.status}, {error_code})",
+                        code=error_code, http_status=response.status,
+                    )
 
                 token_data = await response.json()
 
@@ -380,6 +431,9 @@ class AuthService:
                 - access_token: 유효한 액세스 토큰
                 - message: 상태 메시지
                 - refreshed: 갱신 여부
+                - reason: 'ok' | 'not_connected'(토큰 행 없음) | 'reauth_required'(refresh 없음·만료·invalid_grant 거부)
+                  | 'transient'(네트워크·DB 등 일시 장애 — 재시도 가능). 2026-10-23 추가 — 호출자가 일시 장애와
+                  재인증을 구분하는 키(기존 status·message 는 그대로).
         """
         if not email:
             email = get_default_user_email()
@@ -387,7 +441,8 @@ class AuthService:
                 return {
                     'status': 'error',
                     'message': 'No email provided and no users found in auth.db',
-                    'refreshed': False
+                    'refreshed': False,
+                    'reason': _external.STATE_NOT_CONNECTED,
                 }
 
         try:
@@ -398,7 +453,8 @@ class AuthService:
                 return {
                     'status': 'error',
                     'message': f'No token found for {email}',
-                    'refreshed': False
+                    'refreshed': False,
+                    'reason': _external.STATE_NOT_CONNECTED,
                 }
 
             # 토큰 만료 확인 (버퍼 시간 포함)
@@ -411,7 +467,8 @@ class AuthService:
                     'refresh_token': token_info.get('refresh_token'),
                     'expires_at': token_info['expires_at'],
                     'message': 'Token is valid',
-                    'refreshed': False
+                    'refreshed': False,
+                    'reason': 'ok',
                 }
 
             # 토큰이 만료되었거나 버퍼 시간 이내 - 리프레시 토큰 확인
@@ -424,7 +481,8 @@ class AuthService:
                     'auth_url': auth_info['auth_url'],
                     'state': auth_info['state'],
                     'message': f'No refresh token available. 재인증이 필요합니다.\n{auth_info["auth_url"]}',
-                    'refreshed': False
+                    'refreshed': False,
+                    'reason': _external.STATE_REAUTH_REQUIRED,
                 }
 
             # 리프레시 토큰 만료 확인 (refresh_token_expires_at 컬럼 직접 비교)
@@ -436,7 +494,8 @@ class AuthService:
                     'auth_url': auth_info['auth_url'],
                     'state': auth_info['state'],
                     'message': f'Refresh token 만료. 재인증이 필요합니다.\n{auth_info["auth_url"]}',
-                    'refreshed': False
+                    'refreshed': False,
+                    'reason': _external.STATE_REAUTH_REQUIRED,
                 }
 
             # 토큰 갱신 시도
@@ -453,16 +512,39 @@ class AuthService:
                 'refresh_token': new_tokens.get('refresh_token', refresh_token),
                 'expires_at': new_tokens['expires_at'],
                 'message': 'Token refreshed successfully',
-                'refreshed': True
+                'refreshed': True,
+                'reason': 'ok',
             }
 
         except Exception as e:
             logger.error("Error checking/refreshing token: %s", type(e).__name__)
+            reason = refresh_failure_reason(e)
+            if reason == _external.STATE_REAUTH_REQUIRED:
+                # 거부 표식 — 이후 connection_state·get_token_status 가 재시도 대신 재인증을 안내한다
+                self.auth_db.mark_refresh_state(email, _external.REFRESH_STATE_REAUTH)
             return {
                 'status': 'error',
                 'message': f'Failed to refresh token: {str(e)}',
-                'refreshed': False
+                'refreshed': False,
+                'reason': reason,
             }
+
+    # ------------------------------------------------------------------
+    # 외부 로그인 위임 (mode 0 라이브러리 계약 — 구현은 session/external_login.py)
+    # ------------------------------------------------------------------
+    async def complete_external_login(
+        self, code: str, redirect_uri: str, scopes: Any = None, save: bool = True, expect_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """외부 앱(AIP)이 받은 인가 코드를 주어진 redirect_uri·scope 로 교환 → /me → (expect_email 대조) → (save) 저장 → 신원·연결 상태.
+        토큰은 반환하지 않는다. 실패는 `ExternalLoginError`(code EXCHANGE_FAILED·USERINFO_FAILED·ACCOUNT_MISMATCH — 대조는 저장 전).
+        저장 실패는 예외가 아니라 반환 `error="SAVE_FAILED"`(신원은 돌려준다)."""
+        return await _external.complete_external_login(
+            self, code, redirect_uri, scopes=scopes, save=save, expect_email=expect_email
+        )
+
+    def connection_state(self, email: str) -> Dict[str, Any]:
+        """`email` 계정의 연결 상태(connected·reauth_required·not_connected·unavailable) + 기능별 권한(features)."""
+        return _external.connection_state(self, email)
 
     async def close(self):
         """리소스 정리"""

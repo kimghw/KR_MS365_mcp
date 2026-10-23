@@ -22,10 +22,11 @@ from dotenv import load_dotenv
 _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 load_dotenv(_env_path, encoding="utf-8-sig")
 
-from .auth_service import AuthService
+from .auth_service import AuthService, refresh_failure_reason
 from .auth_database import AuthDatabase
 from .azure_config import AzureConfig
 from .mode_guard import refuse_in_multi_user
+from . import external_login as _external
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,9 @@ class AuthManager:
             'access_token': token_info['access_token'],
             'refresh_token': token_info.get('refresh_token'),
             'expires_at': token_info['expires_at'],
-            'is_expired': self.auth_service.is_token_expired(token_info['expires_at'])
+            'is_expired': self.auth_service.is_token_expired(token_info['expires_at']),
+            # 2026-10-23 추가 — 마지막 갱신이 invalid_grant 류로 거부됐으면 'reauth_required'(없으면 None|'ok')
+            'refresh_state': token_info.get('refresh_state'),
         }
 
     async def refresh_token(self, email: Optional[str] = None) -> Dict[str, Any]:
@@ -173,7 +176,8 @@ class AuthManager:
                 return {
                     'status': 'error',
                     'error': 'No email provided',
-                    'message': 'No email provided and no users found in auth.db'
+                    'message': 'No email provided and no users found in auth.db',
+                    'reason': _external.STATE_NOT_CONNECTED,
                 }
 
         try:
@@ -184,14 +188,16 @@ class AuthManager:
                 return {
                     'status': 'error',
                     'error': 'No token found',
-                    'message': f'No token found for {email}'
+                    'message': f'No token found for {email}',
+                    'reason': _external.STATE_NOT_CONNECTED,
                 }
 
             if not token_info.get('refresh_token'):
                 return {
                     'status': 'error',
                     'error': 'No refresh token',
-                    'message': 'Refresh token not available, re-authentication required'
+                    'message': 'Refresh token not available, re-authentication required',
+                    'reason': _external.STATE_REAUTH_REQUIRED,
                 }
 
             # 리프레시 토큰 만료 확인 (refresh_token_expires_at 컬럼 직접 비교)
@@ -199,7 +205,8 @@ class AuthManager:
                 return {
                     'status': 'reauth_required',
                     'error': 'Refresh token expired',
-                    'message': 'Refresh token expired, re-authentication required'
+                    'message': 'Refresh token expired, re-authentication required',
+                    'reason': _external.STATE_REAUTH_REQUIRED,
                 }
 
             # 토큰 갱신
@@ -215,7 +222,8 @@ class AuthManager:
                     'email': email,
                     'access_token': new_tokens['access_token'],
                     'expires_at': new_tokens['expires_at'],
-                    'message': 'Token refreshed successfully'
+                    'message': 'Token refreshed successfully',
+                    'reason': 'ok',
                 }
             else:
                 raise Exception("Failed to update token in database")
@@ -223,17 +231,25 @@ class AuthManager:
         except Exception as e:
             logger.error("Token refresh failed: %s", type(e).__name__)
 
-            # refresh token이 revoke된 경우
-            if 'invalid_grant' in str(e).lower() or 'expired' in str(e).lower():
+            # reason 은 2026-10-23 추가 — 일시 장애 'transient' 와 구분. 토큰 endpoint 가 거부(invalid_grant·interaction_required)한
+            # 경우만 영구 표식 — 이후 connection_state 가 reauth_required 를 돌려준다.
+            reason = refresh_failure_reason(e)
+            if reason == _external.STATE_REAUTH_REQUIRED:
+                self.auth_db.mark_refresh_state(email, _external.REFRESH_STATE_REAUTH)
+
+            # refresh token이 revoke된 경우 (종전 문자열 판정은 그대로 유지)
+            if reason == _external.STATE_REAUTH_REQUIRED or 'invalid_grant' in str(e).lower() or 'expired' in str(e).lower():
                 return {
                     'status': 'reauth_required',
                     'error': str(e),
-                    'message': 'Re-authentication required'
+                    'message': 'Re-authentication required',
+                    'reason': _external.STATE_REAUTH_REQUIRED,
                 }
 
             return {
                 'status': 'error',
-                'error': str(e)
+                'error': str(e),
+                'reason': reason,
             }
 
     async def validate_and_refresh_token(self, email: Optional[str] = None, auto_reauth: bool = False) -> Optional[str]:
@@ -453,6 +469,10 @@ class AuthManager:
                 token_info.get('refresh_token_expires_at')
             )
 
+        # 2026-10-23 추가 키(기존 키·의미는 그대로): refresh_state = 마지막 갱신 거부 표식, state = connection_state 의 4상태
+        # (거부 표식이 있으면 needs_reauth 가 False 여도 state 는 'reauth_required' — 호출자는 state 를 보는 것이 정확하다).
+        refresh_state = token_info.get('refresh_state')
+        rejected = refresh_state == _external.REFRESH_STATE_REAUTH
         return {
             'status': 'found',
             'email': email,
@@ -461,8 +481,53 @@ class AuthManager:
             'has_refresh_token': has_refresh,
             'refresh_token_expired': refresh_expired,
             'needs_refresh': access_expired and has_refresh and not refresh_expired,
-            'needs_reauth': not has_refresh or refresh_expired
+            'needs_reauth': not has_refresh or refresh_expired,
+            'refresh_state': refresh_state,
+            'state': (_external.STATE_REAUTH_REQUIRED if (not has_refresh or refresh_expired or rejected)
+                      else _external.STATE_CONNECTED),
         }
+
+    # ------------------------------------------------------------------
+    # 외부 로그인 위임 — mode 0 라이브러리 계약 (spec/spec_멀티유저.md ② '모드 0 외부 로그인 위임 계약(AIP)')
+    # ------------------------------------------------------------------
+    async def complete_external_login(
+        self, code: str, redirect_uri: str, scopes: Any = None, save: bool = True, expect_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """외부 웹 앱(AIP)이 자기 콜백에서 받은 Entra 인가 코드를 이 저장소 설정(client_id·secret)으로 교환한다.
+
+        Args:
+            code: 인가 코드.
+            redirect_uri: 그 코드를 발급받은 외부 앱의 redirect_uri(토큰 교환 때 같은 값이어야 한다).
+            scopes: 교환 scope(None = `config.default_scopes`). 문자열(공백 구분) 또는 목록.
+            save: True = `save_user` → `save_token`(complete_auth_flow 와 같은 순서, 토큰 응답의 scope 도 저장).
+                  False = 신원만(저장 없음 — Graph 동의가 막혔을 때의 `openid profile email User.Read` 폴백).
+            expect_email: 기대 계정(로그인 사용자 — 재연결 때). 값이 있으면 `/me` 메일과 **저장 전에** 대소문자 무시로 대조해
+                  다르면 아무것도 저장하지 않고 ACCOUNT_MISMATCH. None = 종전(무검증). 2026-10-23 codex 교차 검토 반영.
+
+        Returns:
+            {"email"(소문자), "display_name", "user_info"(id·displayName·mail·userPrincipalName), "saved", "has_refresh",
+             "granted_scopes", "state"} — access/refresh/id token 은 어떤 키에도 없다.
+            save=True 인데 auth.db 저장에 실패하면 예외가 아니라 같은 꼴에 "saved": False · "state"(DB 기준) · **"error": "SAVE_FAILED"**
+            가 더 있다(신원은 돌려준다 — 호출자는 로그인을 유지하고 미연결로 표시). 그 밖에는 "error" 키가 없다.
+
+        Raises:
+            session.external_login.ExternalLoginError: `code` = EXCHANGE_FAILED | USERINFO_FAILED | ACCOUNT_MISMATCH
+                (`expected_email`·`actual_email` 속성), `str(e)` = "CODE|메시지". SAVE_FAILED 는 예외로 쓰지 않는다.
+        """
+        return await self.auth_service.complete_external_login(
+            code, redirect_uri, scopes=scopes, save=save, expect_email=expect_email
+        )
+
+    def connection_state(self, email: str) -> Dict[str, Any]:
+        """`email` 계정의 연결 상태.
+
+        Returns:
+            {"email", "state": connected|reauth_required|not_connected|unavailable,
+             "features": {mail, teams, onenote, calendar, todo} → bool (scope 를 모르는 구형 행은 None),
+             "granted_scopes": list|None, "access_token_expires_at": ISO|None, "refresh_token_expired": bool}
+            unavailable 일 때만 "error"(예외 종류 이름) 키가 더 있다.
+        """
+        return self.auth_service.connection_state(email)
 
     def is_callback_server_running(self) -> bool:
         """

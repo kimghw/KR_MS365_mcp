@@ -73,10 +73,15 @@ python -m session.auth_manager
 | `validate_and_refresh_token(email, auto_reauth)` | 토큰 검증 + 자동 갱신 (auto_reauth=True 시 재인증) |
 | `refresh_token(email)` | refresh_token으로 갱신 |
 | `get_token(email)` | 토큰 정보 조회 |
-| `get_token_status(email)` | 토큰 상태 조회 |
+| `get_token_status(email)` | 토큰 상태 조회 (2026-10-23 부터 `refresh_state`·`state` 키 추가) |
 | `list_users()` | 인증된 사용자 목록 |
 | `remove_user(email)` | 사용자 제거 |
 | `cleanup_expired_tokens()` | 만료 토큰 정리 |
+| `complete_external_login(code, redirect_uri, scopes=None, save=True, expect_email=None)` | **외부 로그인 위임**(AIP 등) — 외부 앱 콜백의 인가 코드를 이 저장소 설정으로 교환·`/me`·저장, 신원과 연결 상태만 반환(토큰 비반환). `expect_email` 을 주면 저장 전에 `/me` 메일과 대조(다르면 저장 없이 ACCOUNT_MISMATCH). 실패 `session.ExternalLoginError`(code EXCHANGE_FAILED·USERINFO_FAILED·ACCOUNT_MISMATCH). auth.db 저장 실패는 예외가 아니라 반환 `error="SAVE_FAILED"`(신원은 돌려준다) |
+| `connection_state(email)` | 연결 상태 `connected`·`reauth_required`·`not_connected`·`unavailable` + 기능별(`mail`·`teams`·`onenote`·`calendar`·`todo`) 권한 보유 여부 |
+
+`refresh_token()`·`check_and_refresh_if_needed()` 의 반환 dict 에는 `reason`(`ok`·`not_connected`·`reauth_required`·`transient`)이 더 있다 —
+재인증과 일시 장애를 구분하는 키. 계약 원본: [spec_멀티유저.md](../spec/spec_멀티유저.md) ② 13 '모드 0 외부 로그인 위임 계약'.
 
 ## 필수 환경변수 (.env)
 
@@ -106,6 +111,25 @@ auth_manager = AuthManager()
 access_token = await auth_manager.validate_and_refresh_token("user@example.com")
 # auto_reauth=True: refresh 실패 시 브라우저 재인증 자동 시작
 access_token = await auth_manager.validate_and_refresh_token("user@example.com", auto_reauth=True)
+```
+
+외부 웹 앱(AIP)이 자기 콜백에서 받은 인가 코드를 넘기는 **로그인 위임**(mode 0, 2026-10-23):
+
+```python
+from session import AuthManager, ExternalLoginError
+
+am = AuthManager()
+try:
+    r = await am.complete_external_login(code, "https://aip.example/auth/callback",
+                                         scopes="https://graph.microsoft.com/.default offline_access openid",
+                                         expect_email="user@example.com")   # 재연결 때 — 다른 계정이면 저장 없이 ACCOUNT_MISMATCH
+    # r = {"email", "display_name", "user_info", "saved", "has_refresh", "granted_scopes", "state"} — 토큰 없음
+    # 저장 실패면 예외 대신 r["saved"] is False, r["error"] == "SAVE_FAILED" (신원은 그대로 — 로그인은 유지, 미연결 표시)
+except ExternalLoginError as e:
+    e.code            # EXCHANGE_FAILED | USERINFO_FAILED | ACCOUNT_MISMATCH  (str(e) == "CODE|메시지")
+    e.expected_email, e.actual_email   # ACCOUNT_MISMATCH 일 때 두 메일(소문자) — 메시지·로그에는 없다
+state = am.connection_state("user@example.com")
+# state["state"] ∈ connected | reauth_required | not_connected | unavailable, state["features"]["mail"] → bool|None
 ```
 
 ## 멀티유저 모드 (`MS365_MULTI_USER=1`)

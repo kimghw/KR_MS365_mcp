@@ -4,10 +4,12 @@
 외부 웹 앱(AIP)이 자기 `/auth/callback` 에서 받은 Entra 인가 코드를 넘기면 이 저장소가 토큰 교환·Graph `/me`·
 auth.db 저장을 맡고, 호출자에게는 **신원과 연결 상태만** 돌려준다(access/refresh/id token 은 반환·로그 어디에도 싣지 않는다).
 
-- `complete_external_login(service, code, redirect_uri, scopes, save)` — 인가 코드 → 신원·연결 상태
+- `complete_external_login(service, code, redirect_uri, scopes, save, expect_email)` — 인가 코드 → 신원·연결 상태.
+  `expect_email` 을 주면 **저장 전에** `/me` 메일과 대조해 다르면 아무것도 저장하지 않고 ACCOUNT_MISMATCH(2026-10-23 codex 교차 검토).
+  저장 실패는 예외가 아니라 정상 반환에 `error="SAVE_FAILED"`(신원은 돌려준다 — 호출자는 로그인을 유지하고 미연결로 표시).
 - `connection_state(service, email)` — 4상태(connected·reauth_required·not_connected·unavailable) + 기능별 권한
 - `features_from_scopes(scope)` — 저장된 granted scope 문자열 → 기능(mail·teams·onenote·calendar·todo) 판정(결정론)
-- `ExternalLoginError` — `code`(EXCHANGE_FAILED·USERINFO_FAILED·SAVE_FAILED) 속성, `str()` 은 `"CODE|메시지"`
+- `ExternalLoginError` — `code`(EXCHANGE_FAILED·USERINFO_FAILED·ACCOUNT_MISMATCH) 속성, `str()` 은 `"CODE|메시지"`
 
 관문은 `AuthService.complete_external_login/connection_state` 와 `AuthManager` 의 같은 이름 메서드다(이 모듈을 직접
 import 하는 외부 코드는 두지 않는다). 멀티유저 모드(`MS365_MULTI_USER=1`)에서는 `refuse_in_multi_user` 로 거부한다 —
@@ -63,22 +65,37 @@ USER_INFO_KEYS = ("id", "displayName", "mail", "userPrincipalName")
 class ExternalLoginError(Exception):
     """외부 로그인 위임 실패. `code` 로 단계를 구분하고 `str()` 은 `"CODE|메시지"` 다(워커 오류 규약과 같은 꼴).
 
-    - EXCHANGE_FAILED : 인가 코드 → 토큰 교환 실패(HTTP 오류·네트워크). `oauth_error` 에 Entra `error` 식별자만.
-    - USERINFO_FAILED : Graph `/me` 실패 또는 메일을 알 수 없음.
-    - SAVE_FAILED     : auth.db 저장 실패.
-    메시지에 토큰·client secret·외부 오류 본문을 넣지 않는다.
+    - EXCHANGE_FAILED  : 인가 코드 → 토큰 교환 실패(HTTP 오류·네트워크). `oauth_error` 에 Entra `error` 식별자만.
+    - USERINFO_FAILED  : Graph `/me` 실패 또는 메일을 알 수 없음.
+    - ACCOUNT_MISMATCH : `expect_email` 과 `/me` 메일이 다름 — **저장 전** 판정이라 아무것도 저장되지 않는다(신규 등록·기존 행 갱신
+                         모두 없음). `expected_email`·`actual_email` 속성(소문자)에 두 메일 — 메시지·로그에는 싣지 않는다.
+    - SAVE_FAILED      : 코드 상수만 남긴다 — **예외로는 쓰지 않는다**(2026-10-23). auth.db 저장 실패는 `complete_external_login` 이
+                         신원과 함께 정상 반환하고 `error` 키에 이 코드를 담는다(호출자가 로그인을 유지하고 미연결로 표시).
+    메시지에 토큰·client secret·외부 오류 본문·메일을 넣지 않는다.
     """
 
     EXCHANGE_FAILED = "EXCHANGE_FAILED"
     USERINFO_FAILED = "USERINFO_FAILED"
+    ACCOUNT_MISMATCH = "ACCOUNT_MISMATCH"
     SAVE_FAILED = "SAVE_FAILED"
 
-    def __init__(self, code: str, message: str, *, http_status: Optional[int] = None, oauth_error: Optional[str] = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        http_status: Optional[int] = None,
+        oauth_error: Optional[str] = None,
+        expected_email: Optional[str] = None,
+        actual_email: Optional[str] = None,
+    ):
         super().__init__(f"{code}|{message}")
         self.code = code
         self.message = message
         self.http_status = http_status
         self.oauth_error = oauth_error
+        self.expected_email = expected_email
+        self.actual_email = actual_email
 
 
 # ----------------------------------------------------------------------
@@ -194,8 +211,10 @@ async def complete_external_login(
     redirect_uri: str,
     scopes: Union[str, Iterable[str], None] = None,
     save: bool = True,
+    expect_email: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """외부 앱이 받은 인가 코드를 **주어진 redirect_uri·scope** 로 교환 → Graph `/me` → (save) auth.db 저장 → 신원·연결 상태.
+    """외부 앱이 받은 인가 코드를 **주어진 redirect_uri·scope** 로 교환 → Graph `/me` → (expect_email 대조) → (save) auth.db 저장
+    → 신원·연결 상태.
 
     Args:
         service: `AuthService`(mode 0). client_id·client secret·tenant 는 이 저장소 설정(.env → auth.db)만 쓴다.
@@ -204,13 +223,18 @@ async def complete_external_login(
         scopes: 교환 때 보낼 scope(None 이면 `config.default_scopes`). 문자열(공백 구분) 또는 목록.
         save: True 면 `complete_auth_flow` 와 같은 순서(`save_user` → `save_token`)로 저장. False 는 신원만(저장 없음 —
               Graph 동의가 막혔을 때의 `openid profile email User.Read` 폴백 로그인. refresh token 없음 허용).
+        expect_email: 호출자가 기대하는 계정(로그인 사용자 — 재연결 때). 값이 있으면 `/me` 메일과 **저장 전에** 대조(둘 다 소문자·공백
+              제거, `canonical_email` 과 같은 대소문자 무시 규칙)해 다르면 아무것도 저장하지 않고 ACCOUNT_MISMATCH. None = 종전(무검증).
 
     Returns:
         {"email"(소문자), "display_name", "user_info"(id·displayName·mail·userPrincipalName), "saved", "has_refresh",
          "granted_scopes", "state"(connection_state 의 상태)} — 토큰은 어떤 키에도 없다.
+        auth.db 저장에 실패하면(save=True) 예외 대신 같은 꼴로 돌려주되 "saved": False, "state" 는 DB 기준(보통 not_connected
+        또는 기존 행 상태), **"error": "SAVE_FAILED"** 키가 더 있다(저장이 안 된 이유 코드만, 메시지 없음 — 2026-10-23 codex 교차 검토:
+        저장이 안 돼도 호출자는 신원으로 로그인을 유지한다). 그 밖에는 "error" 키가 없다.
 
     Raises:
-        ExternalLoginError: code = EXCHANGE_FAILED | USERINFO_FAILED | SAVE_FAILED.
+        ExternalLoginError: code = EXCHANGE_FAILED | USERINFO_FAILED | ACCOUNT_MISMATCH. (SAVE_FAILED 는 예외로 쓰지 않는다.)
     """
     refuse_in_multi_user("complete_external_login()")
     if not code or not str(code).strip():
@@ -252,11 +276,25 @@ async def complete_external_login(
     if not email:
         raise ExternalLoginError(ExternalLoginError.USERINFO_FAILED, "사용자 메일을 확인할 수 없습니다.")
 
+    # 3. 예상 계정 대조 — 저장 **전**. 다른 계정(B)의 토큰이 남으면 되돌릴 수 없고(사후 삭제는 B 의 기존 정상 연결까지 지운다),
+    #    그래서 여기서 끊는다. 비교 규칙은 canonical_email 과 같은 대소문자 무시(둘 다 소문자·공백 제거).
+    wanted = _normalize_email(expect_email)
+    if wanted and wanted != email:
+        logger.warning("External login: account mismatch — nothing saved")
+        raise ExternalLoginError(
+            ExternalLoginError.ACCOUNT_MISMATCH,
+            "로그인한 계정이 예상 계정과 다릅니다(저장하지 않음).",
+            expected_email=wanted,
+            actual_email=email,
+        )
+
     granted = parse_granted_scopes(token_result.get("scope")) or []
     has_refresh = bool(token_result.get("refresh_token"))
 
-    # 3. 저장 — complete_auth_flow 와 같은 순서. refresh token 이 없어도 access token 은 저장(기존 refresh 는 COALESCE 로 유지)
+    # 4. 저장 — complete_auth_flow 와 같은 순서. refresh token 이 없어도 access token 은 저장(기존 refresh 는 COALESCE 로 유지).
+    #    저장 실패는 예외가 아니라 반환 `error` 키(신원은 돌려준다 — 호출자는 로그인 유지·미연결 표시).
     saved = False
+    save_error: Optional[str] = None
     if save:
         try:
             service.auth_db.ensure_tables()
@@ -264,16 +302,18 @@ async def complete_external_login(
             ok_token = ok_user and service.auth_db.save_token(email, token_result)
         except Exception as e:
             logger.error("External login: save failed: %s", type(e).__name__)
-            raise ExternalLoginError(ExternalLoginError.SAVE_FAILED, f"auth.db 저장 실패({type(e).__name__})") from None
-        if not ok_token:
-            raise ExternalLoginError(ExternalLoginError.SAVE_FAILED, "auth.db 저장 실패")
-        saved = True
-        logger.info("External login saved")
+            ok_token = False
+        if ok_token:
+            saved = True
+            logger.info("External login saved")
+        else:
+            save_error = ExternalLoginError.SAVE_FAILED
+            logger.error("External login: not saved (identity returned with error=%s)", save_error)
     else:
         logger.info("External login identity only (not saved)")
 
     state = connection_state(service, email)
-    return {
+    result: Dict[str, Any] = {
         "email": email,
         "display_name": user_info.get("displayName"),
         "user_info": {k: user_info.get(k) for k in USER_INFO_KEYS},
@@ -282,6 +322,9 @@ async def complete_external_login(
         "granted_scopes": granted,
         "state": state["state"],
     }
+    if save_error:
+        result["error"] = save_error
+    return result
 
 
 __all__ = [

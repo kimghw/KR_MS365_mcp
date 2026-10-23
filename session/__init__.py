@@ -20,6 +20,9 @@ _LAZY = {
     "AuthManager": ".auth_manager",
     "AzureConfig": ".azure_config",
     "AuthDatabase": ".auth_database",
+    # 외부 로그인 위임(mode 0 라이브러리 계약, 2026-10-23) — 호출자가 예외를 구분할 때 쓴다
+    "ExternalLoginError": ".external_login",
+    "TokenRefreshError": ".auth_service",
 }
 
 # 메인 인터페이스
@@ -29,6 +32,8 @@ __all__ = [
     'AuthService',           # 인증 서비스 - OAuth 플로우 (mode 0)
     'AzureConfig',           # Azure 설정 관리 (mode 0)
     'AuthDatabase',          # 인증 데이터베이스 관리 (mode 0)
+    'ExternalLoginError',    # 외부 로그인 위임 실패 (code: EXCHANGE_FAILED·USERINFO_FAILED·SAVE_FAILED)
+    'TokenRefreshError',     # refresh 갱신 실패 (reauth_required 로 재인증/일시 장애 구분)
 ]
 
 __version__ = '1.1.0'

@@ -67,6 +67,11 @@
   `open_for_read`)를 거친다. 원격 이름을 경로에 직접 결합하지 않는다.
 - 로그·오류·감사에 토큰·키·state·이메일·사용자 절대경로·외부 오류 본문을 싣지 않는다. 감사는
   `mcp_common/audit.audit()` 허용 필드만. 멀티유저와 충돌하는 설정 검사는 `security_policy.validate_startup()` 한 곳에 더한다.
+- **외부 웹 앱(AIP) 로그인 위임은 mode 0 라이브러리 계약** `AuthManager.complete_external_login`·`connection_state`(위성
+  `session/external_login.py`, 2026-10-23 — 토큰은 반환하지 않고 신원·연결 상태만, 기능별 권한은 `FEATURE_REQUIREMENTS` 결정론, 갱신 거부는
+  `refresh_state`·`reason` 으로 분류. 같은 날 codex 교차 검토 2건: `expect_email` 은 **저장 전** 계정 대조(다르면 저장 없이 ACCOUNT_MISMATCH),
+  auth.db 저장 실패는 예외가 아니라 반환 `error="SAVE_FAILED"` — 신원은 돌려준다). 원본 [spec/spec_멀티유저.md](spec/spec_멀티유저.md) ② 13.
+  다른 곳에 토큰 교환·scope→기능 판정을 새로 만들지 않는다.
 
 # API·툴 파라미터 — "파라미터 리스트(param_spec)" 하나로 관리
 

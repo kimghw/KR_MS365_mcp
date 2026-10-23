@@ -77,6 +77,8 @@ class AuthDatabase:
             assert_legacy_store_not_frozen(resolved_path)
         # 기본 app_id (환경 변수에서 가져옴)
         self.default_client_id = os.getenv('AZURE_CLIENT_ID')
+        # 선택 컬럼(scope·refresh_state) 보유 여부 — ensure_tables 가 채운다. 없으면 그 컬럼을 쓰지 않는다.
+        self._optional_columns: set = set()
         self.ensure_tables()
         self.ensure_default_app()
 
@@ -150,11 +152,43 @@ class AuthDatabase:
                 conn.commit()
                 logger.info("Database tables created directly")
 
+            self._ensure_optional_columns(conn)
+
         except Exception as e:
             logger.error(f"[ERROR] Failed to create tables: {e}")
             raise
         finally:
             conn.close()
+
+    #: 구형 auth.db 에 없을 수 있는 `azure_token_info` 의 nullable 컬럼 — 열 때마다 idempotent 하게 보강한다(mode 0 전용).
+    #: scope = 토큰 응답의 실제 부여 권한(기능별 판정 근거), refresh_state = 마지막 갱신 거부 표식('ok'|'reauth_required').
+    OPTIONAL_TOKEN_COLUMNS = ("scope", "refresh_state")
+
+    def _ensure_optional_columns(self, conn: sqlite3.Connection) -> None:
+        """`ALTER TABLE … ADD COLUMN` 으로 선택 컬럼을 보강한다. 실패(잠김·권한)해도 기존 동작은 그대로 — 그 컬럼만 쓰지 않는다.
+
+        멀티유저 모드에서는 legacy DB 를 고치지 않는다(이전 도구가 fingerprint 로 원본을 지킨다 — 읽기만).
+        """
+        try:
+            present = {row[1] for row in conn.execute("PRAGMA table_info(azure_token_info)")}
+        except sqlite3.Error as e:
+            logger.error("[ERROR] Failed to inspect azure_token_info: %s", type(e).__name__)
+            return
+        if not present:  # 표가 없다(스키마 생성 실패) — 위 생성 단계가 이미 보고했다
+            return
+        self._optional_columns = present & set(self.OPTIONAL_TOKEN_COLUMNS)
+        missing = [c for c in self.OPTIONAL_TOKEN_COLUMNS if c not in present]
+        if not missing or multi_user_active():
+            return
+        for column in missing:
+            try:
+                conn.execute(f"ALTER TABLE azure_token_info ADD COLUMN {column} TEXT")
+                conn.commit()
+                self._optional_columns.add(column)
+                logger.info("azure_token_info.%s column added", column)
+            except sqlite3.Error as e:
+                conn.rollback()
+                logger.error("[ERROR] Failed to add azure_token_info.%s: %s", column, type(e).__name__)
 
     def ensure_default_app(self):
         """기본 Azure AD 앱 정보 확인/생성"""
@@ -290,6 +324,15 @@ class AuthDatabase:
             # 최초 인증일+90일로 고정하면 실제로는 살아 있는 토큰의 갱신 시도를 스스로 막게 된다.
             refresh_expiry_update = "COALESCE(excluded.refresh_token_expires_at, refresh_token_expires_at)"
 
+            # refresh_state(선택 컬럼): 새 refresh_token 이 저장되면 'ok' 로 되돌린다(재인증 완료 = 거부 표식 해제).
+            # refresh_token 없는 저장(access 만 갱신)은 기존 표식을 유지한다. 컬럼이 없으면 SQL 에 넣지 않는다.
+            state_col = state_val = state_update = ""
+            state_params: tuple = ()
+            if 'refresh_state' in self._optional_columns:
+                state_col, state_val = ", refresh_state", ", ?"
+                state_update = ", refresh_state = CASE WHEN excluded.refresh_token IS NOT NULL THEN 'ok' ELSE refresh_state END"
+                state_params = ('ok' if token_info.get('refresh_token') else None,)
+
             cursor.execute(f"""
                 INSERT INTO azure_token_info (
                     user_email,
@@ -299,8 +342,8 @@ class AuthDatabase:
                     access_token_expires_at,
                     refresh_token_expires_at,
                     scope,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    updated_at{state_col}
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP{state_val})
                 ON CONFLICT(user_email) DO UPDATE SET
                     access_token = excluded.access_token,
                     refresh_token = COALESCE(excluded.refresh_token, refresh_token),
@@ -308,7 +351,7 @@ class AuthDatabase:
                     access_token_expires_at = excluded.access_token_expires_at,
                     refresh_token_expires_at = {refresh_expiry_update},
                     scope = COALESCE(excluded.scope, scope),
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP{state_update}
             """, (
                 email,
                 token_info.get('access_token'),
@@ -316,8 +359,8 @@ class AuthDatabase:
                 token_info.get('id_token'),
                 token_info.get('expires_at'),  # access token 만료 시간
                 refresh_expires_at,  # refresh token 만료 시간 (신규 row 또는 재인증 시 사용)
-                token_info.get('scope')
-            ))
+                token_info.get('scope') or None,  # 빈 문자열은 모름(NULL)으로 — 기존 scope 를 지우지 않는다
+            ) + state_params)
 
             conn.commit()
             logger.info("Token saved to azure_token_info")
@@ -330,15 +373,17 @@ class AuthDatabase:
         finally:
             conn.close()
 
-    def get_token(self, email: str) -> Optional[Dict[str, Any]]:
+    def get_token(self, email: str, strict: bool = False) -> Optional[Dict[str, Any]]:
         """
         사용자의 토큰 정보 조회 (azure_token_info에서)
 
         Args:
             email: 사용자 이메일
+            strict: True 면 DB 오류(잠김·손상)를 삼키지 않고 다시 던진다 — "없음" 과 "읽지 못함" 을 구분해야 하는
+                연결 상태 조회용. 기본 False 는 종전대로 None.
 
         Returns:
-            토큰 정보 또는 None
+            토큰 정보 또는 None (행에 scope·refresh_state 컬럼이 있으면 같은 이름 키로 함께 온다)
         """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -370,7 +415,57 @@ class AuthDatabase:
 
         except Exception as e:
             logger.error(f"[ERROR] Failed to get token: {e}")
+            if strict:
+                raise
             return None
+        finally:
+            conn.close()
+
+    def canonical_email(self, email: str) -> Optional[str]:
+        """`email` 과 대소문자만 다른 저장 표기를 찾는다(토큰 행 기준, 정확히 같은 표기 우선). 없으면 None.
+
+        `user_email` 기본키는 대소문자를 구분하므로 브라우저 인증(Graph 표기 그대로)과 외부 로그인(소문자)이 섞인
+        DB 에서 같은 사람의 행을 찾을 때 쓴다. 쓰기 키를 바꾸지는 않는다.
+        """
+        wanted = (email or "").strip()
+        if not wanted:
+            return None
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT user_email FROM azure_token_info WHERE user_email = ? COLLATE NOCASE ORDER BY updated_at DESC",
+                (wanted,),
+            ).fetchall()
+        except sqlite3.Error as e:
+            logger.error("[ERROR] Failed to resolve email: %s", type(e).__name__)
+            return None
+        finally:
+            conn.close()
+        for (stored,) in rows:
+            if stored == wanted:
+                return stored
+        return rows[0][0] if rows else None
+
+    def mark_refresh_state(self, email: str, state: str) -> bool:
+        """토큰 행의 `refresh_state` 를 기록한다('ok' | 'reauth_required'). 컬럼이 없거나 행이 없으면 False.
+
+        갱신이 `invalid_grant` 류로 거부됐을 때 'reauth_required' 로 두면 다음 호출·연결 상태 조회가 재시도 대신
+        재인증을 안내한다. 새 refresh_token 저장(`save_token`)이 'ok' 로 되돌린다.
+        """
+        if 'refresh_state' not in self._optional_columns or state not in ('ok', 'reauth_required'):
+            return False
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.execute(
+                "UPDATE azure_token_info SET refresh_state = ?, updated_at = CURRENT_TIMESTAMP WHERE user_email = ?",
+                (state, email),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error("[ERROR] Failed to mark refresh_state: %s", type(e).__name__)
+            conn.rollback()
+            return False
         finally:
             conn.close()
 

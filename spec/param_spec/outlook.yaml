@@ -41,7 +41,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "이메일 주소를 입력하고 입력하지 않을 경우 내부에서 연결정보를 메일 주소를 추정함"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
       - name: client_filter
         type: object
@@ -200,6 +200,8 @@ tools:
         expose: internal
         description: "서버가 주입하는 값"
         default: 500
+        minimum: 1
+        maximum: 1000
         targetParam: top
 
   - name: mail_list_keyword
@@ -218,13 +220,15 @@ tools:
         expose: tool
         description: ""
         default: 50
+        minimum: 1
+        maximum: 1000
         # 핸들러 코드에 하드코딩돼 있던 기본값을 spec 으로 승격
         targetParam: top
       - name: user_email
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_query_if_emaidID
@@ -235,13 +239,14 @@ tools:
         type: array
         required: true
         expose: tool
-        description: "조회할 메일 ID 목록"
+        description: "조회할 메일 ID 목록 (최대 500개)"
+        maxItems: 500
         targetParam: message_ids
       - name: user_email
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_attachment_meta
@@ -253,12 +258,13 @@ tools:
         required: true
         expose: tool
         description: ""
+        maxItems: 500
         targetParam: message_ids
       - name: user_email
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
       - name: select_params
         type: object
@@ -312,7 +318,8 @@ tools:
         type: array
         required: true
         expose: tool
-        description: "메일 ID 리스트 또는 첨부파일 ID 쌍. 예: [\"msg_id1\", \"msg_id2\"] 또는 [{\"message_id\": \"...\", \"attachment_id\": \"...\"}]"
+        description: "메일 ID 리스트 또는 첨부파일 ID 쌍 (최대 500개). 예: [\"msg_id1\", \"msg_id2\"] 또는 [{\"message_id\": \"...\", \"attachment_id\": \"...\"}]"
+        maxItems: 500
         targetParam: message_attachment_ids
       - name: onedrive_folder
         type: string
@@ -363,7 +370,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_fetch_filter
@@ -409,7 +416,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_fetch_search
@@ -441,14 +448,16 @@ tools:
         type: integer
         required: false
         expose: tool
-        description: "반환할 최대 메일 수"
+        description: "반환할 최대 메일 수 (1~1000)"
         default: 50
+        minimum: 1
+        maximum: 1000
         targetParam: top
       - name: user_email
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_process_with_download
@@ -489,14 +498,16 @@ tools:
         type: integer
         required: false
         expose: tool
-        description: "반환할 최대 메일 수"
+        description: "반환할 최대 메일 수 (1~1000)"
         default: 50
+        minimum: 1
+        maximum: 1000
         targetParam: top
       - name: user_email
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_query_url
@@ -525,8 +536,10 @@ tools:
         type: integer
         required: false
         expose: tool
-        description: "최대 결과 수"
+        description: "최대 결과 수 (1~1000)"
         default: 50
+        minimum: 1
+        maximum: 1000
         targetParam: top
       - name: url
         type: string
@@ -539,7 +552,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (인증용)"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
       - name: select
         type: object
@@ -581,7 +594,8 @@ tools:
         type: array
         required: true
         expose: tool
-        description: "받는 사람 이메일 주소 목록"
+        description: "받는 사람 이메일 주소 목록 (to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: to_recipients
@@ -611,7 +625,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "참조 (Cc) 이메일 주소 목록"
+        description: "참조 (Cc) 이메일 주소 목록 (to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: cc_recipients
@@ -619,7 +634,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "숨은 참조 (Bcc) 이메일 주소 목록"
+        description: "숨은 참조 (Bcc) 이메일 주소 목록 (to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: bcc_recipients
@@ -627,7 +643,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "첨부할 로컬 파일 경로 목록. 파일당 3MB 초과 시 오류 (Graph sendMail 직접 첨부 한도)"
+        description: "첨부할 로컬 파일 경로 목록 (최대 20개). 파일당 3MB 초과 시 오류 (Graph sendMail 직접 첨부 한도)"
+        maxItems: 20
         items:
           type: string
         targetParam: attachments
@@ -642,7 +659,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "발신자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "발신자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: mail_draft
@@ -675,7 +692,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "받는 사람 이메일 주소 목록 (임시저장은 생략 가능)"
+        description: "받는 사람 이메일 주소 목록 (임시저장은 생략 가능, to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: to_recipients
@@ -683,7 +701,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "참조 (Cc) 이메일 주소 목록"
+        description: "참조 (Cc) 이메일 주소 목록 (to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: cc_recipients
@@ -691,7 +710,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "숨은 참조 (Bcc) 이메일 주소 목록"
+        description: "숨은 참조 (Bcc) 이메일 주소 목록 (to/cc/bcc 합계 최대 500)"
+        maxItems: 500
         items:
           type: string
         targetParam: bcc_recipients
@@ -699,7 +719,8 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "첨부할 로컬 파일 경로 목록. 파일당 3MB 초과 시 오류 (직접 첨부 한도)"
+        description: "첨부할 로컬 파일 경로 목록 (최대 20개). 파일당 3MB 초과 시 오류 (직접 첨부 한도)"
+        maxItems: 20
         items:
           type: string
         targetParam: attachments
@@ -707,7 +728,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "작성자 이메일 주소 (미지정 시 인증된 기본 사용자로 자동 결정)"
+        description: "작성자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 인증된 기본 사용자). 다른 계정은 선택할 수 없다."
         targetParam: user_email
 
   - name: test_handler
@@ -744,6 +765,8 @@ tools:
         expose: tool
         description: ""
         default: 50
+        minimum: 1
+        maximum: 1000
         # 핸들러 코드에 하드코딩돼 있던 기본값을 spec 으로 승격
         targetParam: top
 

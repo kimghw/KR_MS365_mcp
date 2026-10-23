@@ -9,6 +9,18 @@ MCP Streamable HTTP 스펙(2025-03-26 이후)의 단일 엔드포인트 `/mcp` �
 `json_response=False` 라 Accept 헤더에 따라 JSON 또는 SSE 프레이밍으로 응답한다 —
 이때의 SSE 는 폐기된 HTTP+SSE 트랜스포트가 아니라 Streamable HTTP **안쪽의 응답 형식**
 이다(②-4).
+
+## 모드별 차이 (spec/spec_멀티유저.md ②-4.4, ②-4.5)
+
+| 항목 | mode 0 (기본) | mode 1 (`MS365_MULTI_USER=1`) |
+|------|---------------|-------------------------------|
+| `/mcp` 앞단 | Host/Origin 검사(SDK) | `BearerAuthMiddleware` — Host/Origin → 크기 → bearer → scope |
+| SDK 세션 | `stateless=False` | `stateless=True`, `event_store=None` — 매 요청 인증 |
+| GET·DELETE `/mcp` | SDK 처리 | 인증 뒤 405 |
+| `Mcp-Session-Id` | SDK 처리 | 인증 뒤 400 |
+| `/health` | 상태·도구 수·초기화 오류 | `status`·`server`·`version` 만 |
+| 기동 검사 | 없음 | `validate_startup(server, "http")` + registry 진입점 확인 |
+| 종료 | lifecycle.shutdown | + 사용자 서비스 풀 close |
 """
 
 import contextlib
@@ -20,6 +32,9 @@ from typing import Any, Optional
 from mcp_common.runtime import build_health_payload, health_status_code
 
 logger = logging.getLogger(__name__)
+
+#: mode 1 `/health` 가 공개하는 필드 (인증 없이 응답하므로 최소한만).
+PUBLIC_HEALTH_FIELDS = ("status", "server", "version")
 
 
 def transport_security():
@@ -43,6 +58,31 @@ def transport_security():
     )
 
 
+def _prepare_multi_user(server_name: str, runtime: Any, authenticator: Any, active_checker: Any) -> int:
+    """mode 1 기동 검사. 문제가 있으면 `StartupConfigError` — 앱을 만들지 않는다.
+
+    Returns:
+        요청 크기 상한(바이트)
+    """
+    from mcp_common.http_identity import max_request_bytes
+    from mcp_common.mcp_identity_bridge import preflight_registry
+    from mcp_common.security_policy import validate_startup
+
+    validate_startup(server_name, "http")
+    limit = max_request_bytes()
+
+    if active_checker is not None:
+        runtime.active_checker = active_checker
+    needed = []
+    if authenticator is None:
+        needed.append("authenticate_bearer")
+    if getattr(runtime, "active_checker", None) is None:
+        needed.append("assert_active")
+    if needed:
+        preflight_registry(*needed)
+    return limit
+
+
 def build_starlette_app(
     server_name: str,
     mcp_server: Any,
@@ -50,21 +90,45 @@ def build_starlette_app(
     lifecycle: Any,
     *,
     version: str = "1.0.0",
+    authenticator: Any = None,
+    active_checker: Any = None,
 ):
-    """`/mcp` + `/health` 두 라우트를 가진 Starlette ASGI 앱을 만든다."""
+    """`/mcp` + `/health` 두 라우트를 가진 Starlette ASGI 앱을 만든다.
+
+    Args:
+        authenticator: mode 1 bearer 검증 함수 `async (authorization, *, domain) -> Principal`.
+            없으면 `session.identity_registry.authenticate_bearer`. mode 0 에서는 쓰지 않는다.
+        active_checker: mode 1 계정 상태 재확인 `async (principal) -> None`. 주면
+            `runtime.active_checker` 로 설정한다. 없으면 runtime 의 것(기본은 registry).
+    """
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.requests import Request as StarletteRequest
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    session_manager = StreamableHTTPSessionManager(
-        app=mcp_server,
-        event_store=None,
-        json_response=False,  # Accept 헤더에 따라 JSON/SSE 협상
-        stateless=False,
-        security_settings=transport_security(),
-    )
+    from mcp_common.security_policy import multi_user_enabled
+
+    multi_user = multi_user_enabled()
+    security_settings = transport_security()
+    if multi_user:
+        body_limit = _prepare_multi_user(server_name, runtime, authenticator, active_checker)
+        session_manager = StreamableHTTPSessionManager(
+            app=mcp_server,
+            event_store=None,
+            json_response=False,
+            stateless=True,  # 요청 간 MCP 세션에 인증 주체를 보관하지 않는다 (②-4.4)
+            security_settings=security_settings,
+            max_request_body_size=body_limit,
+        )
+    else:
+        session_manager = StreamableHTTPSessionManager(
+            app=mcp_server,
+            event_store=None,
+            json_response=False,  # Accept 헤더에 따라 JSON/SSE 협상
+            stateless=False,
+            security_settings=security_settings,
+        )
 
     class _StreamableHTTPASGI:
         """SessionManager 를 ASGI 콜러블로 감싼다."""
@@ -75,25 +139,49 @@ def build_starlette_app(
         async def __call__(self, scope, receive, send) -> None:
             await self._sm.handle_request(scope, receive, send)
 
-    handle_streamable_http = _StreamableHTTPASGI(session_manager)
+    handle_streamable_http: Any = _StreamableHTTPASGI(session_manager)
+    if multi_user:
+        from mcp_common.http_identity import BearerAuthMiddleware
+
+        handle_streamable_http = BearerAuthMiddleware(
+            handle_streamable_http,
+            server_name=server_name,
+            authenticator=authenticator,
+            security_settings=security_settings,
+            max_body_bytes=body_limit,
+        )
 
     async def health(_request: "StarletteRequest") -> "JSONResponse":
         payload = build_health_payload(server_name, runtime, lifecycle, version=version)
-        return JSONResponse(payload, status_code=health_status_code(payload))
+        status_code = health_status_code(payload)
+        if multi_user:
+            # 인증 없이 응답하므로 오류 문구·도구 수·경로를 싣지 않는다 (②-4.5)
+            payload = {key: payload[key] for key in PUBLIC_HEALTH_FIELDS if key in payload}
+        return JSONResponse(payload, status_code=status_code)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: "Starlette") -> AsyncIterator[None]:
         async with session_manager.run():
             await lifecycle.startup()
             logger.info(
-                "[%s] Streamable HTTP server ready with %d tools",
+                "[%s] Streamable HTTP server ready with %d tools%s",
                 server_name,
                 len(runtime.tools),
+                " (multi-user, stateless, bearer)" if multi_user else "",
             )
             try:
                 yield
             finally:
                 await lifecycle.shutdown()
+                if multi_user:
+                    from mcp_common import service_pool
+
+                    try:
+                        await service_pool.get_service_pool().close()
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] service pool close failed: %s", server_name, type(exc).__name__
+                        )
 
     # Mount 대신 Route 를 쓴다 — Mount 는 `/mcp` 를 `/mcp/` 로 리다이렉트해 클라이언트가
     # 307 을 따라가지 못하는 경우가 있다.
@@ -122,4 +210,4 @@ def run_http(app: Any, server_name: str, port: int, host: Optional[str] = None) 
     uvicorn.run(app, host=bind_host, port=port, log_level="info")
 
 
-__all__ = ["build_starlette_app", "run_http", "transport_security"]
+__all__ = ["build_starlette_app", "run_http", "transport_security", "PUBLIC_HEALTH_FIELDS"]

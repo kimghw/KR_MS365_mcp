@@ -33,10 +33,10 @@ class AttachmentAPI:
             if result.get('success'):
                 return result.get('text', '')
             else:
-                logger.error(f"Failed to convert {file_path}: {result.get('errors')}")
+                logger.error("Failed to convert an attachment (%d errors)", len(result.get('errors') or []))
                 return ''
         except Exception as e:
-            logger.error(f"Error converting file {file_path}: {e}")
+            logger.error("Error converting an attachment: %s", type(e).__name__)
             return ''
 
     def process_attachment(self, attachment_path: str) -> Dict[str, Any]:

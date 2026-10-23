@@ -22,12 +22,22 @@ Outlook MCP — 핸들러. **두 트랜스포트가 공유하는 유일한 원�
   `merge_param_data(...) if ... is not None else None` 과 같은 동작이다.
 - `user_email` 은 spec 이 아니라 정책이 정한다. 12개 도구 모두 기존
   `resolve_request_user(args)`(= `required=True`)와 동등하게 처리한다.
+
+## 서비스 배선 (spec/spec_멀티유저.md ②-12 2항)
+
+- mode 1: 런타임이 서비스 풀에서 **호출자 본인의** `MailService` 를 lease 해 묶고
+  (`create_service` 가 사용자 고정 provider·`UserPaths` 로 생성만 한다), 핸들러는
+  `_service()` 로 꺼낸다. 전역 서비스는 만들지 않는다(공유 AuthManager 를 끌어오므로).
+- mode 0: 기존 전역 `mail_service` 1개. `ServiceLifecycle` 이 initialize/close 한다.
 """
 
 from typing import Any, Dict, List, Optional, Type
 
 from mcp_common.param_spec import load_param_spec
 from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.security_policy import multi_user_enabled
+from mcp_common.service_context import service_for
+from mcp_common.service_pool import register_service_factory
 from mcp_common.user_resolver import resolve_user_email
 
 from mcp_outlook.outlook_service import MailService
@@ -43,7 +53,20 @@ DEFAULT_PORT = SPEC.port or 5001
 MCP_TOOLS: List[Dict[str, Any]] = SPEC.mcp_tools()
 
 
-mail_service = MailService()
+async def create_service(principal, paths, tokens) -> MailService:
+    """서비스 풀 factory — **생성만** 한다(initialize/close 는 풀이 부른다)."""
+    return MailService(token_provider=tokens, paths=paths)
+
+
+register_service_factory(SERVER_NAME, create_service)
+
+# mode 0 전용 전역 인스턴스. mode 1 에서는 만들지 않는다(공용 AuthManager 를 끌어오므로).
+mail_service: Optional[MailService] = None if multi_user_enabled() else MailService()
+
+
+def _service() -> MailService:
+    """mode 1 → lease 된 호출자 서비스, mode 0 → 전역 `mail_service`."""
+    return service_for(SERVER_NAME, legacy=mail_service)
 
 
 def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -51,7 +74,8 @@ def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     Outlook 도구 12개는 모두 사용자 컨텍스트가 필요하다. 스키마상 `user_email` 은
     선택이고(`test_handler` 는 아예 없다), 실제 값 결정은 `mcp_common.user_resolver`
-    가 한다(명시값 → 환경변수 → auth.db). 끝내 없으면 `ToolExecutionError` 를 올린다.
+    가 한다(mode 0: 명시값 → 환경변수 → auth.db / mode 1: 호출자 본인 — 런타임이 이미
+    `user_email` == 호출자를 확인했다). 끝내 없으면 `ToolExecutionError` 를 올린다.
     """
     call = SPEC.call_args(tool_name, args)
     call["user_email"] = resolve_user_email(call.get("user_email"), required=True)
@@ -86,24 +110,24 @@ async def handle_mail_list_period(args: Dict[str, Any]) -> Dict[str, Any]:
     call["filter_params"] = _model(FilterParams, call.get("filter_params"))
     call["client_filter"] = _model(ExcludeParams, call.get("client_filter"))
     call["select_params"] = _model(SelectParams, call.get("select_params"))
-    return await mail_service.query_mail_list(**call)
+    return await _service().query_mail_list(**call)
 
 
 async def handle_mail_list_keyword(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_list_keyword → MailService.fetch_search (search_keywords → search_term)"""
-    return await mail_service.fetch_search(**_call_args("mail_list_keyword", args))
+    return await _service().fetch_search(**_call_args("mail_list_keyword", args))
 
 
 async def handle_mail_query_if_emaidID(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_query_if_emaidID → MailService.batch_and_fetch"""
-    return await mail_service.batch_and_fetch(**_call_args("mail_query_if_emaidID", args))
+    return await _service().batch_and_fetch(**_call_args("mail_query_if_emaidID", args))
 
 
 async def handle_mail_attachment_meta(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_attachment_meta → MailService.fetch_attachments_metadata"""
     call = _call_args("mail_attachment_meta", args)
     call["select_params"] = _model(SelectParams, call.get("select_params"))
-    return await mail_service.fetch_attachments_metadata(**call)
+    return await _service().fetch_attachments_metadata(**call)
 
 
 async def handle_mail_attachment_download(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -111,7 +135,7 @@ async def handle_mail_attachment_download(args: Dict[str, Any]) -> Dict[str, Any
 
     boolean 파라미터의 enabled/disabled → bool 복원은 `SPEC.call_args()` 가 한다.
     """
-    return await mail_service.download_attachments(**_call_args("mail_attachment_download", args))
+    return await _service().download_attachments(**_call_args("mail_attachment_download", args))
 
 
 async def handle_mail_fetch_filter(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,21 +143,21 @@ async def handle_mail_fetch_filter(args: Dict[str, Any]) -> Dict[str, Any]:
     call = _call_args("mail_fetch_filter", args)
     call["filter_params"] = _model(FilterParams, call.get("filter_params"))
     call["exclude_params"] = _model(ExcludeParams, call.get("exclude_params"))
-    return await mail_service.fetch_filter(**call)
+    return await _service().fetch_filter(**call)
 
 
 async def handle_mail_fetch_search(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_fetch_search → MailService.fetch_search"""
     call = _call_args("mail_fetch_search", args)
     call["select_params"] = _model(SelectParams, call.get("select_params"))
-    return await mail_service.fetch_search(**call)
+    return await _service().fetch_search(**call)
 
 
 async def handle_mail_process_with_download(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_process_with_download → MailService.process_with_download"""
     call = _call_args("mail_process_with_download", args)
     call["filter_params"] = _model(FilterParams, call.get("filter_params"))
-    return await mail_service.process_with_download(**call)
+    return await _service().process_with_download(**call)
 
 
 async def handle_mail_query_url(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -146,17 +170,17 @@ async def handle_mail_query_url(args: Dict[str, Any]) -> Dict[str, Any]:
     call = _call_args("mail_query_url", args)
     call["filter_params"] = _model(FilterParams, call.get("filter_params"))
     call["select_params"] = _model(SelectParams, call.get("select_params"))
-    return await mail_service.fetch_url(**call)
+    return await _service().fetch_url(**call)
 
 
 async def handle_mail_send(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_send → MailService.send_mail"""
-    return await mail_service.send_mail(**_call_args("mail_send", args))
+    return await _service().send_mail(**_call_args("mail_send", args))
 
 
 async def handle_mail_draft(args: Dict[str, Any]) -> Dict[str, Any]:
     """mail_draft → MailService.save_draft"""
-    return await mail_service.save_draft(**_call_args("mail_draft", args))
+    return await _service().save_draft(**_call_args("mail_draft", args))
 
 
 async def handle_test_handler(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -166,7 +190,7 @@ async def handle_test_handler(args: Dict[str, Any]) -> Dict[str, Any]:
     call["exclude_params"] = _model(ExcludeParams, call.get("exclude_params"))
     call["select_params"] = _model(SelectParams, call.get("select_params"))
     call["client_filter"] = _model(ExcludeParams, call.get("client_filter"))
-    return await mail_service.fetch_filter(**call)
+    return await _service().fetch_filter(**call)
 
 
 TOOL_HANDLERS = {
@@ -187,6 +211,7 @@ TOOL_HANDLERS = {
 
 # 기본값 주입 + 스키마 검증 + 오류 정규화는 ToolRuntime 이 담당한다.
 runtime = ToolRuntime(SERVER_NAME, MCP_TOOLS, TOOL_HANDLERS)
+# mode 1 에서는 mail_service 가 None 이라 걸러진다 — 사용자 서비스 수명은 서비스 풀이 관리한다.
 lifecycle = ServiceLifecycle(SERVER_NAME, [mail_service])
 
 
@@ -221,6 +246,7 @@ __all__ = [
     "SERVER_VERSION",
     "DEFAULT_PORT",
     "MCP_TOOLS",
+    "create_service",
     "TOOL_HANDLERS",
     "runtime",
     "lifecycle",

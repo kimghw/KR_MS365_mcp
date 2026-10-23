@@ -1,4 +1,4 @@
-"""STDIO MCP Server for mcp_file_handler. 인증 불필요(로컬 파일 처리).
+"""STDIO MCP Server for mcp_file_handler (mode 0 전용 — 멀티유저 모드는 stdio 를 지원하지 않는다).
 
 도구 정의·핸들러·`Server` 구성은 `handlers.py` 한 벌을 쓰고, 구동은 공식 SDK 기반
 `mcp_common.stdio_transport` 를 쓴다. 이 파일에는 **stdio 고유의 것만** 남는다
@@ -25,6 +25,11 @@ from mcp_common.bootstrap import bootstrap_stdio
 
 # stdout 보호가 최우선이다 — 서비스 모듈 import 보다 먼저 호출해야 한다.
 BOOT = bootstrap_stdio(__file__, package_name="mcp_file_handler")
+
+from mcp_common.security_policy import assert_transport_allowed
+
+# 멀티유저(MS365_MULTI_USER=1) + stdio 는 기동 실패 — 사용자 서비스를 만들기 전에 막는다.
+assert_transport_allowed("stdio")
 
 from mcp_common.stdio_transport import run_stdio
 

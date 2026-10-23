@@ -10,7 +10,9 @@ Stream 서버들이 `@server.call_tool(validate_input=False)` 로 검증을 꺼�
 required / type / enum / nested object / array items 만 확인한다.
 알 수 없는 추가 속성은 거부하지 않는다(하위 호환).
 
-MCP_VALIDATE_INPUT=0 으로 끌 수 있다(긴급 우회용).
+MCP_VALIDATE_INPUT=0 으로 끌 수 있다(긴급 우회용). **멀티유저 모드(MS365_MULTI_USER=1)
+에서는 이 스위치가 효과가 없다** — 검증은 항상 켜지고, 설정 자체가 기동 오류다
+(spec/spec_멀티유저.md ②-5.4, `security_policy.startup_problems`).
 """
 
 import os
@@ -44,6 +46,16 @@ def _type_ok(value: Any, expected: Any) -> bool:
     return isinstance(value, py_type)
 
 
+def _check_bounds(value: Any, schema: Dict[str, Any], path: str, errors: List[str]) -> None:
+    label = path or "<root>"
+    maximum = schema.get("maximum")
+    minimum = schema.get("minimum")
+    if isinstance(maximum, (int, float)) and value > maximum:
+        errors.append(f"{label}: value {value!r} exceeds maximum {maximum}")
+    if isinstance(minimum, (int, float)) and value < minimum:
+        errors.append(f"{label}: value {value!r} below minimum {minimum}")
+
+
 def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[str]) -> None:
     if not isinstance(schema, dict):
         return
@@ -58,6 +70,25 @@ def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[s
     enum = schema.get("enum")
     if isinstance(enum, list) and value not in enum:
         errors.append(f"{path or '<root>'}: value {value!r} not in {enum}")
+
+    # 수치·길이 상한 — 무제한 `top` 같은 값이 작업 선생성으로 공유 프로세스를 고갈시키는 것을
+    # 스키마 계층에서 막는다 (astra 재검토 R02). 도메인 경계의 clamp 와 이중 방어다.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        _check_bounds(value, schema, path, errors)
+    elif isinstance(value, str):
+        max_len = schema.get("maxLength")
+        min_len = schema.get("minLength")
+        if isinstance(max_len, int) and len(value) > max_len:
+            errors.append(f"{path or '<root>'}: length {len(value)} exceeds maxLength {max_len}")
+        if isinstance(min_len, int) and len(value) < min_len:
+            errors.append(f"{path or '<root>'}: length {len(value)} below minLength {min_len}")
+    elif isinstance(value, list):
+        max_items = schema.get("maxItems")
+        min_items = schema.get("minItems")
+        if isinstance(max_items, int) and len(value) > max_items:
+            errors.append(f"{path or '<root>'}: {len(value)} items exceeds maxItems {max_items}")
+        if isinstance(min_items, int) and len(value) < min_items:
+            errors.append(f"{path or '<root>'}: {len(value)} items below minItems {min_items}")
 
     if isinstance(value, dict):
         properties = schema.get("properties") or {}
@@ -76,6 +107,11 @@ def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[s
 
 
 def validation_enabled() -> bool:
+    from mcp_common.security_policy import multi_user_enabled
+
+    if multi_user_enabled():
+        # 인증·소유권 검증 경로를 환경변수로 해제할 수 없다 (②-5.4)
+        return True
     flag = os.environ.get("MCP_VALIDATE_INPUT")
     if flag is None:
         return True

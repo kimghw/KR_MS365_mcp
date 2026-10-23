@@ -9,12 +9,19 @@ folder_path·search·as_text·content·parent_path 의 description 이 빠져 �
 
 이 모듈은 트랜스포트를 import 하지 않는다(단방향 의존). 또한 프로세스 부트스트랩을
 수행하지 않는다 — 호출자가 `mcp_common.bootstrap` 을 먼저 돌린 뒤 import 해야 한다.
+
+서비스 배선(spec/spec_멀티유저.md ②-12 항목 2): 멀티유저(mode 1)에서는 서비스 풀이
+`create_service()` 로 사용자별 서비스를 만들고 요청마다 lease 해 묶는다. 핸들러는
+`_service()` 로 꺼내 쓴다. 전역 `onedrive_service` 는 mode 0 에서만 만든다.
 """
 
 from typing import Any, Dict, List, Optional
 
 from mcp_common.param_spec import load_param_spec
 from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.security_policy import multi_user_enabled
+from mcp_common.service_context import service_for
+from mcp_common.service_pool import register_service_factory
 from mcp_common.user_resolver import resolve_user_email
 
 from mcp_onedrive.onedrive_service import OneDriveService
@@ -29,15 +36,28 @@ DEFAULT_PORT = SPEC.port or 5004
 MCP_TOOLS: List[Dict[str, Any]] = SPEC.mcp_tools()
 
 
-onedrive_service = OneDriveService()
+async def create_service(principal, paths, tokens) -> OneDriveService:
+    """사용자별 서비스 factory — **생성만** 한다. initialize()/close() 는 풀이 부른다."""
+    return OneDriveService(token_provider=tokens, paths=paths)
+
+
+register_service_factory(SERVER_NAME, create_service)
+
+# mode 0 전용 전역 인스턴스. mode 1 에서는 만들지 않는다(공용 AuthManager 를 끌어오므로).
+onedrive_service: Optional[OneDriveService] = None if multi_user_enabled() else OneDriveService()
+
+
+def _service() -> OneDriveService:
+    """mode 1 → 현재 요청에 lease 된 사용자 서비스, mode 0 → 전역 인스턴스."""
+    return service_for(SERVER_NAME, legacy=onedrive_service)
 
 
 def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """spec 에서 호출 인자를 파생시키고 user_email 만 정책(SSOT)으로 해석한다.
 
     OneDrive 도구는 9개 모두 `user_email` 을 받는다. 스키마상으로는 선택이지만
-    실제 값 결정은 `mcp_common.user_resolver` 가 하고(명시값 → 환경변수 → auth.db),
-    끝내 없으면 `ToolExecutionError` 를 올린다.
+    실제 값 결정은 `mcp_common.user_resolver` 가 한다 — mode 0 은 명시값 → 환경변수 →
+    auth.db(끝내 없으면 `ToolExecutionError`), mode 1 은 인증된 호출자의 연결 계정만.
     """
     call = SPEC.call_args(tool_name, args)
     call["user_email"] = resolve_user_email(call.get("user_email"), required=True)
@@ -45,43 +65,43 @@ def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_get_drive_info(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.get_drive_info(
+    return await _service().get_drive_info(
         **_call_args("handler_onedrive_get_drive_info", args)
     )
 
 
 async def handle_list_files(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.list_files(**_call_args("handler_onedrive_list_files", args))
+    return await _service().list_files(**_call_args("handler_onedrive_list_files", args))
 
 
 async def handle_get_item(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.get_item(**_call_args("handler_onedrive_get_item", args))
+    return await _service().get_item(**_call_args("handler_onedrive_get_item", args))
 
 
 async def handle_read_file(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.read_file(**_call_args("handler_onedrive_read_file", args))
+    return await _service().read_file(**_call_args("handler_onedrive_read_file", args))
 
 
 async def handle_write_file(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.write_file(**_call_args("handler_onedrive_write_file", args))
+    return await _service().write_file(**_call_args("handler_onedrive_write_file", args))
 
 
 async def handle_delete_file(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.delete_file(**_call_args("handler_onedrive_delete_file", args))
+    return await _service().delete_file(**_call_args("handler_onedrive_delete_file", args))
 
 
 async def handle_create_folder(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.create_folder(
+    return await _service().create_folder(
         **_call_args("handler_onedrive_create_folder", args)
     )
 
 
 async def handle_copy_file(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.copy_file(**_call_args("handler_onedrive_copy_file", args))
+    return await _service().copy_file(**_call_args("handler_onedrive_copy_file", args))
 
 
 async def handle_move_file(args: Dict[str, Any]) -> Any:
-    return await onedrive_service.move_file(**_call_args("handler_onedrive_move_file", args))
+    return await _service().move_file(**_call_args("handler_onedrive_move_file", args))
 
 
 TOOL_HANDLERS = {
@@ -129,6 +149,7 @@ def build_mcp_server():
 
 
 __all__ = [
+    "create_service",
     "SERVER_NAME",
     "SERVER_VERSION",
     "DEFAULT_PORT",

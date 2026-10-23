@@ -23,6 +23,7 @@ tools:
         type: string
         required: false
         expose: tool
+        description: "사용자 이메일 (선택). 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 기본 사용자). 다른 계정은 선택할 수 없다."
       - name: action
         type: string
         required: true
@@ -62,6 +63,9 @@ tools:
         required: false
         expose: tool
         default: 50            # 기존 핸들러의 args.get("top", 50) 을 승격
+        minimum: 1
+        maximum: 500
+        description: "최대 결과 수 (1~500). list_pages 는 이 수만큼만 DB 에서 읽고, search 는 이 수만큼의 페이지만 가져와 분석한다"
       - name: include_ids
         type: boolean
         required: false
@@ -77,6 +81,7 @@ tools:
         type: string
         required: false
         expose: tool
+        description: "사용자 이메일 (선택). 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 기본 사용자). 다른 계정은 선택할 수 없다."
       - name: action
         type: string
         required: true
@@ -121,6 +126,7 @@ tools:
         type: string
         required: false
         expose: tool
+        description: "사용자 이메일 (선택). 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 기본 사용자). 다른 계정은 선택할 수 없다."
       - name: page_id
         type: string
         required: true
@@ -128,10 +134,11 @@ tools:
 
   - name: sync_onenote_db
     description: "OneNote 전체 페이지를 DB에 동기화 (/me/onenote/pages 전체 조회)"
-    service: OneNoteService.writer.sync_db
+    service: OneNoteService.sync_db
     params:
       # 이전 inputSchema 에는 required 키 자체가 없었다 — 전원 선택 파라미터다.
       - name: user_email
         type: string
         required: false
         expose: tool
+        description: "사용자 이메일 (선택). 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 한다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드는 기본 사용자). 다른 계정은 선택할 수 없다."

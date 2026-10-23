@@ -1,6 +1,9 @@
 """
 Azure AD configuration management module.
-Azure AD 앱 설정 및 토큰 관리를 담당합니다.
+Azure AD 앱 설정 및 토큰 관리를 담당합니다 — **단일 운영자(mode 0) 전용**.
+
+이 클래스는 client secret 을 공용 auth.db 에 저장한다. 멀티유저 모드에서는 생성 자체를 거부하고,
+앱 설정은 `session.app_settings`(환경변수 전용, secret 비저장)를 쓴다.
 """
 
 import os
@@ -35,6 +38,9 @@ class AzureConfig:
             auth_db: AuthDatabase 인스턴스 (선택적)
             client_id: 사용할 client_id (None이면 환경변수에서 로드)
         """
+        from .mode_guard import refuse_in_multi_user
+
+        refuse_in_multi_user("AzureConfig()")
         self.auth_db = auth_db
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         default_db_path = os.getenv("DB_PATH", os.path.join(base_dir, "database", "auth.db"))
@@ -288,7 +294,7 @@ class AzureConfig:
 
     def list_all_apps(self) -> List[Dict[str, Any]]:
         """
-        모든 Azure AD 앱 정보 조회
+        모든 Azure AD 앱 정보 조회 (client secret 은 목록에 싣지 않는다)
 
         Returns:
             앱 정보 리스트
@@ -299,7 +305,12 @@ class AzureConfig:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM azure_app_config ORDER BY created_at DESC")
             rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            apps = []
+            for row in rows:
+                app = dict(row)
+                app.pop('client_secret', None)
+                apps.append(app)
+            return apps
 
         except Exception as e:
             logger.error(f"[ERROR] Failed to list apps: {e}")

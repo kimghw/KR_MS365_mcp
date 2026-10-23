@@ -27,3 +27,10 @@
 ## 5,000개 제한
 - OneNote `/sections/{id}/pages` 는 섹션당 5,000개를 넘기면 403. 전체 페이지(`/me/onenote/pages`)
   기준으로 돌면 회피된다 — 프로젝트 내 적용은 [graph_onenote_patch.md](graph_onenote_patch.md).
+
+## `/me` 는 로그인 사용자의 별칭
+- delegated 토큰에서 `/me/...` 는 `/users/{로그인 사용자 id 또는 UPN}/...` 과 같은 리소스를 가리킨다.
+  그래서 "현재 사용자 경로만 허용"하는 URL 정책은 `/me/...` 와 `/users/{자기 id·UPN}/...` 를 둘 다
+  받아야 하고, `/users/{다른 사용자}/...` 는 따로 막아야 한다(Graph 가 공유 권한으로 허용할 수 있다).
+- app-only(클라이언트 자격증명) 토큰에는 로그인 사용자가 없어 `/me` 를 쓸 수 없다.
+- https://learn.microsoft.com/en-us/graph/call-api#me

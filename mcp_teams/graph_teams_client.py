@@ -5,16 +5,20 @@ session 모듈을 통한 인증 관리
 """
 
 import html
+import json
 import logging
 import re
 from dataclasses import asdict
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
-from urllib.parse import quote
 import aiohttp
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mcp_common.graph_paths import graph_error_summary, graph_segment
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -30,6 +34,47 @@ from .teams_types import (
 logger = logging.getLogger(__name__)
 
 
+def _parse_json(text: Optional[str]) -> Any:
+    try:
+        return json.loads(text or "")
+    except (ValueError, TypeError):
+        return None
+
+
+def graph_error_code(error_text: Optional[str]) -> Optional[str]:
+    """Graph 오류 본문에서 형식 검사를 통과한 `error.code` 만 꺼낸다 (로그·응답 공용)."""
+    return graph_error_summary(None, _parse_json(error_text)).get("graph_error_code")
+
+
+def graph_failure(message: str, status: Optional[int], error_text: Optional[str] = None) -> Dict[str, Any]:
+    """실패 페이로드 — 고정 메시지 + `status_code`·`graph_error_code` 만.
+
+    Graph 오류 본문 원문은 싣지 않는다(spec/spec_멀티유저.md ②-9). 두 모드 공통.
+    """
+    return {"success": False, "error": message, **graph_error_summary(status, _parse_json(error_text))}
+
+
+def redirect_failure(method: str, status: int) -> Dict[str, Any]:
+    """bearer 요청의 3xx — 따라가지 않고(Location 미기록) 정리된 실패로 돌려준다 (R08).
+
+    Teams 클라이언트는 `@odata.nextLink` 를 따라가지 않는다(`list_chats` 는 `has_more` 만
+    보고한다). 페이징을 추가할 때는 OneNote 의 `is_allowed_next_link` 처럼 최초 요청의
+    사용자·endpoint 계열·method 를 다시 검사해야 한다.
+    """
+    logger.error("Graph redirect 거부: %s %s", method, status)
+    return graph_failure(f"Graph redirect 거부: {status}", status)
+
+
+def _error_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    """실패 결과에서 공개 가능한 요약 필드만 옮긴다."""
+    return {k: result[k] for k in ("status_code", "graph_error_code") if k in result}
+
+
+#: 호출자·Graph 가 준 ID 를 URL 경로 성분 하나로 인코딩한다 (G01, `..`·`/` 로 경로 탈출 금지).
+#: 위반은 `SecurityError(not_found)` — 오류 dict 로 바꾸지 않고 그대로 올린다.
+_seg = graph_segment
+
+
 class GraphTeamsClient:
     """Teams Graph API 클라이언트"""
 
@@ -41,9 +86,15 @@ class GraphTeamsClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
+            token_provider: 토큰 제공자. mode 1 에서는 사용자에 고정된 `BoundTokenProvider`
+                가 필수다(없으면 공용 AuthManager 로 되돌아가지 않고 실패).
+                mode 0 에서 없으면 프로세스 공유 AuthManager 를 쓴다.
+
+        close() 는 자기 HTTP 세션만 닫는다 — 토큰 공급자는 소유자(서비스 풀)가 닫는다.
         """
         if token_provider is None:
+            if multi_user_enabled():
+                raise SecurityError(ErrorCode.MISSING_PRINCIPAL)
             # AuthManager 를 새로 만들면 per-email refresh lock 이 인스턴스별로 갈려
             # 무의미해진다. 프로세스 단일 인스턴스를 공유한다.
             from mcp_common.auth import get_shared_auth_manager
@@ -78,12 +129,18 @@ class GraphTeamsClient:
 
         Returns:
             유효한 액세스 토큰 또는 None
+
+        Raises:
+            SecurityError: 계정 불일치·미연결·재인증 필요 — 연결 안내가 붙도록 그대로 올린다
+                (mode 1 의 고정 공급자는 email 일치 확인만 하고 계정을 고르지 않는다)
         """
         try:
             token = await self.token_provider.validate_and_refresh_token(user_email)
             return token
+        except SecurityError:
+            raise
         except Exception as e:
-            logger.error(f"토큰 조회 실패: {str(e)}")
+            logger.error("토큰 조회 실패: %s", type(e).__name__)
             return None
 
     async def _make_request(
@@ -128,23 +185,27 @@ class GraphTeamsClient:
                 headers=headers,
                 json=json_data if json_data else None,
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,  # bearer 요청은 자동 redirect 를 따라가지 않는다 (R08)
             ) as response:
                 if response.status in (200, 201, 204):
                     if response.status == 204:
                         return {"success": True}
                     result = await response.json()
                     return {"success": True, "data": result}
+                elif 300 <= response.status < 400:
+                    return redirect_failure(method, response.status)
                 else:
                     error_text = await response.text()
-                    logger.error(f"API 요청 실패: {response.status} - {error_text}")
-                    return {
-                        "success": False,
-                        "error": f"API 요청 실패: {response.status}",
-                        "details": error_text,
-                    }
+                    logger.error(
+                        "API 요청 실패: %s %s (code=%s)",
+                        method, response.status, graph_error_code(error_text),
+                    )
+                    return graph_failure(
+                        f"API 요청 실패: {response.status}", response.status, error_text
+                    )
         except Exception as e:
-            logger.error(f"API 요청 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("API 요청 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"API 요청 오류: {type(e).__name__}"}
 
     # ========================================================================
     # 채팅 관련 메서드
@@ -165,7 +226,7 @@ class GraphTeamsClient:
         Returns:
             채팅 목록
         """
-        endpoint = f"/me/chats?$top={limit}&$expand=members,lastMessagePreview"
+        endpoint = f"/me/chats?$top={int(limit)}&$expand=members,lastMessagePreview"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -197,7 +258,7 @@ class GraphTeamsClient:
         Returns:
             채팅 정보
         """
-        endpoint = f"/me/chats/{chat_id}"
+        endpoint = f"/me/chats/{_seg(chat_id)}"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -228,7 +289,7 @@ class GraphTeamsClient:
             메시지 목록
         """
         chat_id = chat_id or self.NOTES_CHAT_ID
-        endpoint = f"/me/chats/{chat_id}/messages?$top={limit}&$orderby=createdDateTime desc"
+        endpoint = f"/me/chats/{_seg(chat_id)}/messages?$top={int(limit)}&$orderby=createdDateTime desc"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -271,7 +332,7 @@ class GraphTeamsClient:
         else:
             full_content = content
 
-        endpoint = f"/me/chats/{chat_id}/messages"
+        endpoint = f"/me/chats/{_seg(chat_id)}/messages"
         json_data = {
             "body": {
                 "contentType": content_type,
@@ -305,32 +366,38 @@ class GraphTeamsClient:
 
     async def _upload_chat_file(self, user_email: str, file_name: str, data: bytes) -> Dict[str, Any]:
         """파일을 보내는 사람의 OneDrive(Teams 채팅 파일 폴더)에 올리고 첨부에 쓸 값(id·guid·url)을 돌려준다."""
+        # 폴더·파일 이름을 각각 단일 성분으로 — 이름이 경로 구조를 바꾸지 못한다 (토큰 전에 검사)
+        path = f"{_seg(self.CHAT_FILES_FOLDER)}/{_seg(file_name)}"
         if not self._initialized:
             await self.initialize()
         access_token = await self._get_access_token(user_email)
         if not access_token:
             return {"success": False, "error": "액세스 토큰이 없습니다. 로그인이 필요합니다."}
 
-        path = quote(f"{self.CHAT_FILES_FOLDER}/{file_name}")
         # 같은 이름이 있으면 덮어쓰지 않고 이름을 바꿔 올린다 — 앞서 보낸 파일이 바뀌면 안 된다.
         url = f"{self.GRAPH_BASE_URL}/me/drive/root:/{path}:/content?@microsoft.graph.conflictBehavior=rename"
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/octet-stream"}
         try:
             async with self._session.put(
-                url, headers=headers, data=data, timeout=aiohttp.ClientTimeout(total=self.UPLOAD_TIMEOUT)
+                url, headers=headers, data=data, timeout=aiohttp.ClientTimeout(total=self.UPLOAD_TIMEOUT),
+                allow_redirects=False,
             ) as response:
+                if 300 <= response.status < 400:
+                    return redirect_failure("PUT", response.status)
                 if response.status not in (200, 201):
                     error_text = await response.text()
-                    logger.error(f"파일 업로드 실패: {response.status} - {error_text}")
-                    return {"success": False, "error": f"파일 업로드 실패: {response.status}", "details": error_text}
+                    logger.error(
+                        "파일 업로드 실패: %s (code=%s)", response.status, graph_error_code(error_text)
+                    )
+                    return graph_failure(f"파일 업로드 실패: {response.status}", response.status, error_text)
                 item = await response.json()
         except Exception as e:
-            logger.error(f"파일 업로드 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("파일 업로드 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"파일 업로드 오류: {type(e).__name__}"}
 
         # webDavUrl 은 달라고 해야 준다.
         detail = await self._make_request(
-            "GET", f"/me/drive/items/{item['id']}?$select=id,name,eTag,webUrl,webDavUrl,sharepointIds", user_email
+            "GET", f"/me/drive/items/{_seg(item.get('id'))}?$select=id,name,eTag,webUrl,webDavUrl,sharepointIds", user_email
         )
         if not detail.get("success"):
             return detail
@@ -341,7 +408,7 @@ class GraphTeamsClient:
             guid = match.group(1) if match else None
         content_url = info.get("webDavUrl") or info.get("webUrl")
         if not guid or not content_url:
-            return {"success": False, "error": "올린 파일의 첨부 정보를 읽지 못했습니다.", "details": str(info)}
+            return {"success": False, "error": "올린 파일의 첨부 정보를 읽지 못했습니다."}
         return {"success": True, "item_id": info["id"], "guid": guid, "content_url": content_url,
                 "name": info.get("name") or file_name, "web_url": info.get("webUrl")}
 
@@ -366,7 +433,7 @@ class GraphTeamsClient:
 
     async def _chat_member_emails(self, user_email: str, chat_id: str) -> Optional[List[str]]:
         """채팅 구성원의 메일(나는 빼고). 못 읽으면 None — 빈 목록(나뿐인 채팅)과 가려야 한다."""
-        result = await self._make_request("GET", f"/chats/{chat_id}/members", user_email)
+        result = await self._make_request("GET", f"/chats/{_seg(chat_id)}/members", user_email)
         if not result.get("success"):
             return None
         emails = [m.get("email") for m in result.get("data", {}).get("value", []) if m.get("email")]
@@ -401,6 +468,8 @@ class GraphTeamsClient:
         """
         # 어느 채팅으로 가고 누가 파일을 읽어야 하는지부터 정한다 — 정하지 못하면 아무것도 올리지 않는다.
         # chat_id 를 주었으면 그 채팅의 구성원 모두가 읽는 사람이다(recipient_email 을 같이 주었어도 chat_id 가 먼저다).
+        if chat_id:
+            _seg(chat_id)  # 어떤 Graph 호출(구성원 조회·업로드)보다 먼저 ID 를 검사한다
         to_self = not recipient_email or recipient_email.lower() == user_email.lower()
         readers: List[str] = []
         if chat_id:
@@ -425,13 +494,13 @@ class GraphTeamsClient:
         # 받는 사람이 파일을 열 수 있게 읽기 권한을 준다.
         if readers:
             shared = await self._make_request(
-                "POST", f"/me/drive/items/{uploaded['item_id']}/invite", user_email,
+                "POST", f"/me/drive/items/{_seg(uploaded['item_id'])}/invite", user_email,
                 {"requireSignIn": True, "sendInvitation": False, "roles": ["read"],
                  "recipients": [{"email": e} for e in readers]},
             )
             if not shared.get("success"):
                 return {"success": False, "error": "받는 사람에게 파일 권한을 주지 못했습니다(메시지는 보내지 않았습니다).",
-                        "details": shared.get("details") or shared.get("error"), "file": uploaded}
+                        **_error_summary(shared), "file": uploaded}
 
         body = content if content_type == "html" else html.escape(content).replace("\n", "<br>")
         if prefix:
@@ -445,7 +514,7 @@ class GraphTeamsClient:
                 "name": uploaded["name"],
             }],
         }
-        result = await self._make_request("POST", f"/me/chats/{chat_id}/messages", user_email, json_data)
+        result = await self._make_request("POST", f"/me/chats/{_seg(chat_id)}/messages", user_email, json_data)
         if not result.get("success"):
             return {**result, "file": uploaded}
         message = MessageInfo.from_dict(result.get("data", {}))
@@ -502,7 +571,7 @@ class GraphTeamsClient:
         Returns:
             채널 목록
         """
-        endpoint = f"/teams/{team_id}/channels"
+        endpoint = f"/teams/{_seg(team_id)}/channels"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -535,7 +604,7 @@ class GraphTeamsClient:
         Returns:
             메시지 목록
         """
-        endpoint = f"/teams/{team_id}/channels/{channel_id}/messages?$top={limit}"
+        endpoint = f"/teams/{_seg(team_id)}/channels/{_seg(channel_id)}/messages?$top={int(limit)}"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):
@@ -570,7 +639,7 @@ class GraphTeamsClient:
         Returns:
             전송된 메시지 정보
         """
-        endpoint = f"/teams/{team_id}/channels/{channel_id}/messages"
+        endpoint = f"/teams/{_seg(team_id)}/channels/{_seg(channel_id)}/messages"
         json_data = {
             "body": {
                 "contentType": content_type,
@@ -609,7 +678,7 @@ class GraphTeamsClient:
         Returns:
             답글 목록
         """
-        endpoint = f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies"
+        endpoint = f"/teams/{_seg(team_id)}/channels/{_seg(channel_id)}/messages/{_seg(message_id)}/replies"
         result = await self._make_request("GET", endpoint, user_email)
 
         if result.get("success"):

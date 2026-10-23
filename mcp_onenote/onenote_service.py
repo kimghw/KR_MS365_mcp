@@ -5,11 +5,16 @@ MCP 툴 3개 (read_onenote, write_onenote, delete_onenote) 라우팅
 """
 
 import logging
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, Union
+
+from mcp_common.principal import MISSING, Principal, assert_owner, assert_user_email
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
 
 from .graph_onenote_client import GraphOneNoteClient
 from .onenote_db_service import OneNoteDBService
-from .onenote_types import ReadAction, WriteAction
+from .onenote_types import ReadAction, WriteAction, check_top
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +33,25 @@ class OneNoteService:
     - svc.writer → OneNoteWriter
     - svc.deleter → OneNoteDeleter
     - svc.agent  → OneNoteAgent (AI 요약/검색)
+
+    모드 (spec/spec_멀티유저.md ②-7.6):
+    - mode 0: `OneNoteService()` — 공용 AuthManager·`database/onenote.db`, 소유자 = user_email.
+    - mode 1: `OneNoteService(principal=..., token_provider=..., db_path=paths.onenote_db)` —
+      한 사용자에 고정. 생성자는 아무 I/O 도 하지 않고 `initialize()` 가 DB·세션을 연다.
+      MCP 진입점은 호출 principal 이 이 서비스의 소유자인지, user_email 이 연결 계정과
+      같은지 먼저 확인한다(서비스 직접 호출 포함, ②-5.4).
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        principal: Optional[Principal] = None,
+        token_provider: Any = None,
+        db_path: Optional[Union[str, "os.PathLike[str]"]] = None,
+    ):
+        self._principal = principal
+        self._token_provider = token_provider
+        self._db_path = db_path
         self._client: Optional[GraphOneNoteClient] = None
         self._db_service: Optional[OneNoteDBService] = None
         self._agent = None
@@ -39,13 +60,23 @@ class OneNoteService:
         self._deleter = None
         self._initialized = False
 
+    def _make_db_service(self) -> OneNoteDBService:
+        if self._principal is not None:
+            if self._db_path is None:
+                raise RuntimeError("사용자 전용 OneNote DB 경로가 없습니다")
+            return OneNoteDBService(self._db_path, owner_key=self._principal.user_key)
+        if multi_user_enabled():
+            # 공용 DB·공용 인증으로 되돌아가지 않는다
+            raise SecurityError(ErrorCode.MISSING_PRINCIPAL)
+        return OneNoteDBService(self._db_path) if self._db_path is not None else OneNoteDBService()
+
     async def initialize(self) -> bool:
         """서비스 초기화"""
         if self._initialized:
             return True
 
-        self._client = GraphOneNoteClient()
-        self._db_service = OneNoteDBService()
+        self._db_service = self._make_db_service()
+        self._client = GraphOneNoteClient(token_provider=self._token_provider)
 
         if await self._client.initialize():
             from .onenote_agent import OneNoteAgent
@@ -74,8 +105,21 @@ class OneNoteService:
         if not self._initialized or not self._client:
             raise RuntimeError("OneNoteService not initialized. Call initialize() first.")
 
+    def _caller(self, user_email: Optional[str]) -> Optional[str]:
+        """MCP 진입점의 사용자 확정.
+
+        mode 0: 핸들러가 해석한 값을 그대로 쓴다.
+        mode 1: 요청 principal 이 이 서비스의 소유자여야 하고(아니면 not_found),
+        user_email 은 연결 계정과 같아야 한다(아니면 identity_mismatch). 반환값은
+        연결 계정 이메일 — 다른 계정을 고를 수 없다.
+        """
+        if self._principal is None:
+            return user_email
+        assert_owner(self._principal.user_key)
+        return assert_user_email(MISSING if user_email is None else user_email)
+
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 자기 HTTP 세션만 닫는다(토큰 공급자는 서비스 풀이 닫는다)."""
         if self._client:
             await self._client.close()
             self._client = None
@@ -113,6 +157,8 @@ class OneNoteService:
             date_to: 종료 날짜 (포함, <= 이 값) 예: "2024-12-31T23:59:59Z"
         """
         self._ensure_initialized()
+        user_email = self._caller(user_email)
+        top = check_top(top)  # 1~500 — 조회·분석 작업량의 상한 (R02)
 
         try:
             act = ReadAction(action)
@@ -169,6 +215,7 @@ class OneNoteService:
             replace: page_id 의 target 요소('#data-id' 또는 생성 id)를 content 로 교체
         """
         self._ensure_initialized()
+        user_email = self._caller(user_email)
 
         try:
             act = WriteAction(action)
@@ -208,11 +255,18 @@ class OneNoteService:
         삭제 라우터 — Deleter에 위임
         """
         self._ensure_initialized()
+        user_email = self._caller(user_email)
 
         if not page_id:
             return {"success": False, "error": "page_id가 필요합니다."}
 
         return await self._deleter.delete_page(user_email, page_id)
+
+    async def sync_db(self, user_email: str) -> Dict[str, Any]:
+        """전체 페이지 DB 동기화 (MCP `sync_onenote_db`) — Writer.sync_db 에 위임"""
+        self._ensure_initialized()
+        user_email = self._caller(user_email)
+        return await self._writer.sync_db(user_email)
 
     # ========================================================================
     # 접근자

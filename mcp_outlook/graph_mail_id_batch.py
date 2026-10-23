@@ -1,9 +1,14 @@
 """
 Graph Mail ID Batch - 메일 ID 기반 배치 조회
 Microsoft Graph API의 $batch 기능을 활용하여 여러 메일을 효율적으로 조회
+
+멀티유저(spec/spec_멀티유저.md ②-2.4, WP4): 토큰 공급자는 주입받아 빌려 쓰고 `close()` 에서
+닫지 않는다. 메일 ID·사용자 경로 성분은 인코딩하고, Authorization 을 단 요청은 redirect 를
+따라가지 않는다. 로그에는 이메일·폴더명·Graph 오류 본문 대신 건수·상태 코드만 남긴다.
 """
 
 import asyncio
+import logging
 import aiohttp
 from typing import Dict, Any, List, Optional
 
@@ -17,6 +22,21 @@ if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
 
 from .outlook_types import SelectParams, build_select_query
+from .outlook_security import (
+    BEARER_KW,
+    GRAPH_BASE,
+    acquire_token,
+    check_list_size,
+    graph_error_detail,
+    graph_error_entry,
+    legacy_token_provider,
+    public_error,
+    request_headers,
+    seg,
+    user_seg,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GraphMailIdBatch:
@@ -32,14 +52,13 @@ class GraphMailIdBatch:
         초기화
 
         Args:
-            token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
+            token_provider: 토큰 제공자 (None이면 mode 0 공유 AuthManager — mode 1 은 주입 필수)
         """
         if token_provider is None:
-            # 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
-            from mcp_common.auth import get_shared_auth_manager
-            token_provider = get_shared_auth_manager()
+            # mode 0: 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
+            token_provider = legacy_token_provider()
         self.token_provider = token_provider
-        self.batch_url = "https://graph.microsoft.com/v1.0/$batch"
+        self.batch_url = f"{GRAPH_BASE}/$batch"
         self.max_batch_size = 20  # Microsoft Graph API 제한
 
     async def initialize(self) -> bool:
@@ -61,17 +80,11 @@ class GraphMailIdBatch:
         Returns:
             액세스 토큰 또는 None
         """
-        try:
-            access_token = await self.token_provider.validate_and_refresh_token(user_email)
+        return await acquire_token(self.token_provider, user_email)
 
-            if not access_token:
-                print(f"Failed to get access token for {user_email}")
-
-            return access_token
-
-        except Exception as e:
-            print(f"Token retrieval error for {user_email}: {str(e)}")
-            return None
+    async def _request_headers(self, user_email: str) -> Dict[str, str]:
+        """요청 1건 직전에 토큰을 새로 얻는다 (N01)."""
+        return await request_headers(self.token_provider, user_email)
 
     def _split_into_batches(self, items: List[Any], batch_size: int) -> List[List[Any]]:
         """
@@ -124,21 +137,21 @@ class GraphMailIdBatch:
         # 액세스 토큰 획득
         access_token = await self._get_access_token(user_email)
         if not access_token:
-            return {"success": False, "error": f"Failed to get access token for {user_email}"}
+            return {"success": False, "error": "Failed to get access token"}
 
         # URL 구성
-        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages/{message_id}"
+        url = f"{GRAPH_BASE}/users/{user_seg(user_email)}/messages/{seg(message_id)}"
 
         # 선택 필드 추가
         select_fields = self._build_select_fields(select_params)
         if select_fields:
             url += f"?$select={select_fields}"
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
+                headers = await self._request_headers(user_email)
+                async with session.get(url, headers=headers, **BEARER_KW) as response:
                     if response.status == 200:
                         data = await response.json()
                         return {"success": True, "mail": data}
@@ -147,11 +160,11 @@ class GraphMailIdBatch:
                         return {
                             "success": False,
                             "error": f"Failed to fetch mail: {response.status}",
-                            "details": error_text[:500],
+                            "details": graph_error_detail(error_text, 500),
                         }
 
         except Exception as e:
-            return {"success": False, "error": f"Request failed: {str(e)}"}
+            return {"success": False, "error": f"Request failed: {public_error(e)}"}
 
     async def batch_fetch_by_ids(
         self, user_email: str, message_ids: List[str], select_params: Optional[SelectParams] = None
@@ -169,16 +182,17 @@ class GraphMailIdBatch:
         """
         if not message_ids:
             return {"success": True, "value": [], "total": 0, "message": "No message IDs provided"}
+        check_list_size(message_ids, "message_ids")
 
         # 액세스 토큰 획득
         access_token = await self._get_access_token(user_email)
         if not access_token:
-            return {"success": False, "error": f"Failed to get access token for {user_email}", "value": []}
+            return {"success": False, "error": "Failed to get access token", "value": []}
 
         # 20개씩 배치로 분할
         batches = self._split_into_batches(message_ids, self.max_batch_size)
 
-        print(f"Processing {len(message_ids)} mail IDs in {len(batches)} batch(es)")
+        logger.info("[BATCH] %d mail IDs in %d batch(es)", len(message_ids), len(batches))
 
         # 선택 필드 준비
         select_fields = self._build_select_fields(select_params)
@@ -187,12 +201,11 @@ class GraphMailIdBatch:
         all_results = []
         errors = []
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         # 각 배치 처리
         async with aiohttp.ClientSession() as session:
             for batch_num, batch_ids in enumerate(batches, 1):
-                print(f"  Processing batch {batch_num}/{len(batches)} ({len(batch_ids)} mails)...")
+                logger.debug("[BATCH] batch %d/%d (%d mails)", batch_num, len(batches), len(batch_ids))
 
                 # 배치 요청 본문 생성
                 requests = []
@@ -201,7 +214,7 @@ class GraphMailIdBatch:
                         {
                             "id": str(i + 1),
                             "method": "GET",
-                            "url": f"/users/{user_email}/messages/{mail_id}{select_query}",
+                            "url": f"/users/{user_seg(user_email)}/messages/{seg(mail_id)}{select_query}",
                         }
                     )
 
@@ -209,7 +222,8 @@ class GraphMailIdBatch:
 
                 try:
                     # $batch API 호출
-                    async with session.post(self.batch_url, headers=headers, json=batch_body) as response:
+                    headers = await self._request_headers(user_email)  # 배치마다 재획득 (N01)
+                    async with session.post(self.batch_url, headers=headers, json=batch_body, **BEARER_KW) as response:
                         if response.status == 200:
                             batch_data = await response.json()
                             responses = batch_data.get("responses", [])
@@ -223,33 +237,28 @@ class GraphMailIdBatch:
                                     # 에러 처리
                                     req_id = resp.get("id")
                                     mail_id = batch_ids[int(req_id) - 1] if req_id else "unknown"
+                                    # R06: 원문 message 대신 상태 코드 + 검증된 error.code 만
                                     errors.append(
-                                        {
-                                            "mail_id": mail_id,
-                                            "status": resp.get("status"),
-                                            "error": resp.get("body", {})
-                                            .get("error", {})
-                                            .get("message", "Unknown error"),
-                                        }
+                                        graph_error_entry(resp.get("status"), resp.get("body"), mail_id=mail_id)
                                     )
 
                             success_count = len([r for r in responses if r.get("status") == 200])
                             fail_count = len([r for r in responses if r.get("status") != 200])
-                            print(f"    Batch {batch_num}: {success_count} successful, {fail_count} failed")
+                            logger.info("[BATCH] batch %d: %d ok, %d failed", batch_num, success_count, fail_count)
                         else:
                             error_text = await response.text()
-                            print(f"    Batch {batch_num}: Request failed with status {response.status}")
-                            errors.append({"batch": batch_num, "status": response.status, "error": error_text[:500]})
+                            logger.warning("[BATCH] batch %d: HTTP %s", batch_num, response.status)
+                            errors.append(graph_error_entry(response.status, error_text, batch=batch_num))
 
                 except Exception as e:
-                    print(f"    Batch {batch_num}: Exception - {str(e)}")
-                    errors.append({"batch": batch_num, "error": str(e)})
+                    logger.warning("[BATCH] batch %d: %s", batch_num, type(e).__name__)
+                    errors.append({"batch": batch_num, "error": public_error(e)})
 
         # 결과 정리
         success_count = len(all_results)
         total_count = len(message_ids)
 
-        print(f"Fetched {success_count}/{total_count} mails successfully")
+        logger.info("[BATCH] fetched %d/%d mails", success_count, total_count)
 
         return {
             "success": success_count > 0,
@@ -332,25 +341,25 @@ class GraphMailIdBatch:
         """
         if not message_ids:
             return {"success": True, "deleted": 0, "failed": 0, "total": 0, "message": "No message IDs provided"}
+        check_list_size(message_ids, "message_ids")
 
         # 액세스 토큰 획득
         access_token = await self._get_access_token(user_email)
         if not access_token:
-            return {"success": False, "error": f"Failed to get access token for {user_email}"}
+            return {"success": False, "error": "Failed to get access token"}
 
         # 20개씩 배치로 분할
         batches = self._split_into_batches(message_ids, self.max_batch_size)
 
-        print(f"[DELETE] Deleting {len(message_ids)} mail(s) in {len(batches)} batch(es)")
+        logger.info("[DELETE] %d mail(s) in %d batch(es)", len(message_ids), len(batches))
 
         deleted_ids = []
         failed_items = []
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         async with aiohttp.ClientSession() as session:
             for batch_num, batch_ids in enumerate(batches, 1):
-                print(f"  Processing batch {batch_num}/{len(batches)} ({len(batch_ids)} mails)...")
+                logger.debug("[BATCH] batch %d/%d (%d mails)", batch_num, len(batches), len(batch_ids))
 
                 # DELETE 배치 요청 생성
                 requests = []
@@ -359,14 +368,15 @@ class GraphMailIdBatch:
                         {
                             "id": str(i + 1),
                             "method": "DELETE",
-                            "url": f"/users/{user_email}/messages/{mail_id}",
+                            "url": f"/users/{user_seg(user_email)}/messages/{seg(mail_id)}",
                         }
                     )
 
                 batch_body = {"requests": requests}
 
                 try:
-                    async with session.post(self.batch_url, headers=headers, json=batch_body) as response:
+                    headers = await self._request_headers(user_email)  # 배치마다 재획득 (N01)
+                    async with session.post(self.batch_url, headers=headers, json=batch_body, **BEARER_KW) as response:
                         if response.status == 200:
                             batch_data = await response.json()
                             responses = batch_data.get("responses", [])
@@ -378,32 +388,27 @@ class GraphMailIdBatch:
                                 if resp.get("status") == 204:
                                     deleted_ids.append(mail_id)
                                 else:
-                                    error_msg = (
-                                        resp.get("body", {})
-                                        .get("error", {})
-                                        .get("message", "Unknown error")
-                                    )
                                     failed_items.append(
-                                        {"mail_id": mail_id, "status": resp.get("status"), "error": error_msg}
+                                        graph_error_entry(resp.get("status"), resp.get("body"), mail_id=mail_id)
                                     )
 
                             success_count = len([r for r in responses if r.get("status") == 204])
                             fail_count = len(responses) - success_count
-                            print(f"    Batch {batch_num}: {success_count} deleted, {fail_count} failed")
+                            logger.info("[DELETE] batch %d: %d deleted, %d failed", batch_num, success_count, fail_count)
                         else:
                             error_text = await response.text()
-                            print(f"    Batch {batch_num}: Request failed with status {response.status}")
+                            logger.warning("[BATCH] batch %d: HTTP %s", batch_num, response.status)
                             for mail_id in batch_ids:
                                 failed_items.append(
-                                    {"mail_id": mail_id, "status": response.status, "error": error_text[:200]}
+                                    graph_error_entry(response.status, error_text, mail_id=mail_id)
                                 )
 
                 except Exception as e:
-                    print(f"    Batch {batch_num}: Exception - {str(e)}")
+                    logger.warning("[BATCH] batch %d: %s", batch_num, type(e).__name__)
                     for mail_id in batch_ids:
-                        failed_items.append({"mail_id": mail_id, "error": str(e)})
+                        failed_items.append({"mail_id": mail_id, "error": public_error(e)})
 
-        print(f"[DONE] Deleted {len(deleted_ids)}/{len(message_ids)} mails")
+        logger.info("[DELETE] deleted %d/%d mails", len(deleted_ids), len(message_ids))
 
         return {
             "success": len(deleted_ids) > 0,
@@ -435,24 +440,24 @@ class GraphMailIdBatch:
         """
         if not message_ids:
             return {"success": True, "reported": 0, "failed": 0, "total": 0, "message": "No message IDs provided"}
+        check_list_size(message_ids, "message_ids")
 
         access_token = await self._get_access_token(user_email)
         if not access_token:
-            return {"success": False, "error": f"Failed to get access token for {user_email}"}
+            return {"success": False, "error": "Failed to get access token"}
 
         batches = self._split_into_batches(message_ids, self.max_batch_size)
         beta_batch_url = "https://graph.microsoft.com/beta/$batch"
 
-        print(f"[REPORT] Reporting {len(message_ids)} mail(s) as notJunk in {len(batches)} batch(es)")
+        logger.info("[REPORT] %d mail(s) as notJunk in %d batch(es)", len(message_ids), len(batches))
 
         reported_ids = []
         failed_items = []
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         async with aiohttp.ClientSession() as session:
             for batch_num, batch_ids in enumerate(batches, 1):
-                print(f"  Processing batch {batch_num}/{len(batches)} ({len(batch_ids)} mails)...")
+                logger.debug("[BATCH] batch %d/%d (%d mails)", batch_num, len(batches), len(batch_ids))
 
                 requests = []
                 for i, mail_id in enumerate(batch_ids):
@@ -460,7 +465,7 @@ class GraphMailIdBatch:
                         {
                             "id": str(i + 1),
                             "method": "POST",
-                            "url": f"/users/{user_email}/messages/{mail_id}/reportMessage",
+                            "url": f"/users/{user_seg(user_email)}/messages/{seg(mail_id)}/reportMessage",
                             "headers": {"Content-Type": "application/json"},
                             "body": {"reportAction": "notJunk"},
                         }
@@ -469,7 +474,8 @@ class GraphMailIdBatch:
                 batch_body = {"requests": requests}
 
                 try:
-                    async with session.post(beta_batch_url, headers=headers, json=batch_body) as response:
+                    headers = await self._request_headers(user_email)  # 배치마다 재획득 (N01)
+                    async with session.post(beta_batch_url, headers=headers, json=batch_body, **BEARER_KW) as response:
                         if response.status == 200:
                             batch_data = await response.json()
                             responses = batch_data.get("responses", [])
@@ -483,32 +489,27 @@ class GraphMailIdBatch:
                                 if status_code in (200, 202, 204):
                                     reported_ids.append(mail_id)
                                 else:
-                                    error_msg = (
-                                        resp.get("body", {})
-                                        .get("error", {})
-                                        .get("message", "Unknown error")
-                                    )
                                     failed_items.append(
-                                        {"mail_id": mail_id, "status": status_code, "error": error_msg}
+                                        graph_error_entry(status_code, resp.get("body"), mail_id=mail_id)
                                     )
 
                             success_count = len([r for r in responses if r.get("status") in (200, 202, 204)])
                             fail_count = len(responses) - success_count
-                            print(f"    Batch {batch_num}: {success_count} reported, {fail_count} failed")
+                            logger.info("[REPORT] batch %d: %d reported, %d failed", batch_num, success_count, fail_count)
                         else:
                             error_text = await response.text()
-                            print(f"    Batch {batch_num}: Request failed with status {response.status}")
+                            logger.warning("[BATCH] batch %d: HTTP %s", batch_num, response.status)
                             for mail_id in batch_ids:
                                 failed_items.append(
-                                    {"mail_id": mail_id, "status": response.status, "error": error_text[:200]}
+                                    graph_error_entry(response.status, error_text, mail_id=mail_id)
                                 )
 
                 except Exception as e:
-                    print(f"    Batch {batch_num}: Exception - {str(e)}")
+                    logger.warning("[BATCH] batch %d: %s", batch_num, type(e).__name__)
                     for mail_id in batch_ids:
-                        failed_items.append({"mail_id": mail_id, "error": str(e)})
+                        failed_items.append({"mail_id": mail_id, "error": public_error(e)})
 
-        print(f"[DONE] Reported {len(reported_ids)}/{len(message_ids)} mails as notJunk")
+        logger.info("[REPORT] reported %d/%d mails", len(reported_ids), len(message_ids))
 
         return {
             "success": len(reported_ids) > 0,
@@ -539,23 +540,23 @@ class GraphMailIdBatch:
         """
         if not message_ids:
             return {"success": True, "moved": 0, "failed": 0, "total": 0, "message": "No message IDs provided"}
+        check_list_size(message_ids, "message_ids")
 
         access_token = await self._get_access_token(user_email)
         if not access_token:
-            return {"success": False, "error": f"Failed to get access token for {user_email}"}
+            return {"success": False, "error": "Failed to get access token"}
 
         batches = self._split_into_batches(message_ids, self.max_batch_size)
 
-        print(f"[MOVE] Moving {len(message_ids)} mail(s) to '{destination_id}' in {len(batches)} batch(es)")
+        logger.info("[MOVE] %d mail(s) in %d batch(es)", len(message_ids), len(batches))
 
         moved_ids = []
         failed_items = []
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         async with aiohttp.ClientSession() as session:
             for batch_num, batch_ids in enumerate(batches, 1):
-                print(f"  Processing batch {batch_num}/{len(batches)} ({len(batch_ids)} mails)...")
+                logger.debug("[BATCH] batch %d/%d (%d mails)", batch_num, len(batches), len(batch_ids))
 
                 requests = []
                 for i, mail_id in enumerate(batch_ids):
@@ -563,7 +564,7 @@ class GraphMailIdBatch:
                         {
                             "id": str(i + 1),
                             "method": "POST",
-                            "url": f"/users/{user_email}/messages/{mail_id}/move",
+                            "url": f"/users/{user_seg(user_email)}/messages/{seg(mail_id)}/move",
                             "headers": {"Content-Type": "application/json"},
                             "body": {"destinationId": destination_id},
                         }
@@ -572,7 +573,8 @@ class GraphMailIdBatch:
                 batch_body = {"requests": requests}
 
                 try:
-                    async with session.post(self.batch_url, headers=headers, json=batch_body) as response:
+                    headers = await self._request_headers(user_email)  # 배치마다 재획득 (N01)
+                    async with session.post(self.batch_url, headers=headers, json=batch_body, **BEARER_KW) as response:
                         if response.status == 200:
                             batch_data = await response.json()
                             responses = batch_data.get("responses", [])
@@ -584,32 +586,27 @@ class GraphMailIdBatch:
                                 if resp.get("status") == 201:
                                     moved_ids.append(mail_id)
                                 else:
-                                    error_msg = (
-                                        resp.get("body", {})
-                                        .get("error", {})
-                                        .get("message", "Unknown error")
-                                    )
                                     failed_items.append(
-                                        {"mail_id": mail_id, "status": resp.get("status"), "error": error_msg}
+                                        graph_error_entry(resp.get("status"), resp.get("body"), mail_id=mail_id)
                                     )
 
                             success_count = len([r for r in responses if r.get("status") == 201])
                             fail_count = len(responses) - success_count
-                            print(f"    Batch {batch_num}: {success_count} moved, {fail_count} failed")
+                            logger.info("[MOVE] batch %d: %d moved, %d failed", batch_num, success_count, fail_count)
                         else:
                             error_text = await response.text()
-                            print(f"    Batch {batch_num}: Request failed with status {response.status}")
+                            logger.warning("[BATCH] batch %d: HTTP %s", batch_num, response.status)
                             for mail_id in batch_ids:
                                 failed_items.append(
-                                    {"mail_id": mail_id, "status": response.status, "error": error_text[:200]}
+                                    graph_error_entry(response.status, error_text, mail_id=mail_id)
                                 )
 
                 except Exception as e:
-                    print(f"    Batch {batch_num}: Exception - {str(e)}")
+                    logger.warning("[BATCH] batch %d: %s", batch_num, type(e).__name__)
                     for mail_id in batch_ids:
-                        failed_items.append({"mail_id": mail_id, "error": str(e)})
+                        failed_items.append({"mail_id": mail_id, "error": public_error(e)})
 
-        print(f"[DONE] Moved {len(moved_ids)}/{len(message_ids)} mails to '{destination_id}'")
+        logger.info("[MOVE] moved %d/%d mails", len(moved_ids), len(message_ids))
 
         return {
             "success": len(moved_ids) > 0,
@@ -623,8 +620,8 @@ class GraphMailIdBatch:
         }
 
     async def close(self):
-        """리소스 정리"""
-        await self.token_provider.close()
+        """리소스 정리 — 토큰 공급자는 빌린 것이므로 닫지 않는다 (②-2.4 종료 경로 소유권)."""
+        return None
 
 
 # 테스트 코드

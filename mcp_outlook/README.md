@@ -64,10 +64,15 @@ mcp_outlook/
 ├── graph_mail_query.py             # 쿼리 실행 및 페이지네이션, 메일 발송/임시저장
 ├── graph_mail_url.py               # Graph API URL 빌더
 ├── graph_mail_id_batch.py          # 배치 처리 ($batch API)
-├── mail_attachment.py              # 첨부파일 핸들러 (BatchAttachmentHandler)
+├── mail_attachment.py              # 첨부파일 핸들러 (BatchAttachmentHandler, 관문)
+├── mail_attachment_single.py       # 개별 첨부 핸들러 (SingleAttachmentHandler, 토큰 미보관)
 ├── mail_attachment_storage.py      # 저장 백엔드 (Local / OneDrive)
+├── mail_attachment_user_storage.py # mode 1 사용자 files/ 전용 로컬 저장소
 ├── mail_attachment_converter.py    # 파일 변환 (PDF, DOCX, HWP 등 → TXT)
 ├── mail_attachment_processor.py    # 첨부파일 처리 유틸리티
+├── outlook_security.py             # Graph URL 정책·경로 인코딩·토큰 획득·공개 오류
+├── outlook_file_policy.py          # 로컬 파일 배치 정책 (mode 0/1)
+├── storage_schema.py               # mode 1 사용자 db/outlook.db (처리 메일 메타데이터)
 └── mcp_server/
     ├── server_stdio.py             # STDIO 프로토콜 서버
     ├── server_stream.py            # Streamable HTTP 서버 (port 5001)
@@ -80,6 +85,31 @@ mcp_outlook/
 
 `session.AuthManager`를 `TokenProviderProtocol`로 사용합니다.
 Graph API 호출마다 `validate_and_refresh_token(email)`을 통해 토큰을 자동 검증/갱신합니다.
+
+## 멀티유저 모드 (`MS365_MULTI_USER=1`)
+
+원본 사양은 [spec/spec_멀티유저.md](../spec/spec_멀티유저.md) (WP4). 요약:
+
+| 항목 | mode 0 (기본) | mode 1 |
+|------|------|------|
+| 서비스 | `handlers.py` 전역 `MailService()` | 서비스 풀이 `create_service(principal, paths, tokens)` 로 사용자별 생성·lease |
+| 토큰 | 공유 AuthManager | 사용자 고정 provider 주입 (쿼리·배치·첨부 핸들러 전부). 서비스·핸들러 `close()` 는 provider 를 닫지 않음 |
+| 첨부 저장 | `<프로젝트>/downloads` | `files/downloads/outlook/`. 호출자 `save_directory` 는 `resolve_safe_path` 관문 + 사용자 `files/` 경계 |
+| 응답 경로 | 절대경로 | `files/` 기준 상대경로 |
+| 처리 메일 메타데이터 | `downloads/mail_metadata.json` | 사용자 `db/outlook.db` (owner_key 조건) |
+| `mail_query_url` | https Graph 호스트만 | + GET, `/me/<messages·mailFolders>` 또는 본인 `/users/{oid·email}/...` 만. 위반은 `path_not_allowed` (토큰 획득 전) |
+| 발송 첨부(로컬 파일) | 제한 없음 | 사용자 `files/` 안의 파일만 |
+
+공통: 토큰은 Graph 요청 1건 직전마다 공급자에서 새로 얻고(폐기·계정 변경이 다음 요청에서 바로
+끊김), Authorization 을 단 요청은 redirect 를 따라가지 않으며(`allow_redirects=False`), 업로드 세션 같은
+사전 서명 URL 은 공용 `check_presigned_url`(공개 호스트·DNS 검사)을 거쳐 Graph bearer 없이, 3xx 는
+오류로 처리합니다. 자원 한도: `top` ≤ 1000, ID 목록 ≤ 500, 수신 첨부 decode 1건 ≤ 25 MiB·요청당
+≤ 200 MiB, 변환 1건 ≤ 60초(실제 worker thread, 사용자별 동시 4개 슬롯 — 초과는 `overloaded`,
+서비스 close 시 30초까지 join), 발송 첨부 1건 ≤ 3 MiB(제한 읽기), mode 1 사용자 `files/` 전체
+누적 ≤ 2 GiB(`quota_exceeded`, 호출자 지정 저장 폴더 포함). `$batch`·첨부 GET 응답은 `Content-Length`
+가 있을 때만 본문을 읽기 전에 거부한다(chunked 응답은 읽은 뒤 decode 예산 적용). message_id 등 경로 성분은 인코딩하고, 원격
+첨부 이름은 단일 파일명으로 정화해 배타 생성합니다(덮어쓰기 경합 없음). 로그에는 이메일·제목·
+파일 경로·토큰·Graph 오류 본문을 남기지 않습니다.
 
 ## 쿼리 방식 (QueryMethod)
 

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
 OAuth Callback Server
-Azure AD 인증 콜백을 처리하는 웹서버입니다.
+Azure AD 인증 콜백을 처리하는 웹서버입니다 — **단일 운영자(mode 0) 전용**.
 클래스 기반으로 리팩토링하여 AuthManager에서 사용할 수 있습니다.
+
+인증 대기는 **state 별**이다(`expect(state)` → `wait_for_auth(timeout, state=...)`). 공용 Event·
+공용 인증 이메일·공용 오류 필드가 없으므로 잘못된 state·다른 인증의 오류 콜백이 진행 중인 다른
+인증을 깨우거나 중단시키지 못한다(spec/spec_멀티유저.md ②-2.3). 오류 콜백도 성공 경로와 같은
+TTL·1회 소비 규칙(`AuthService.consume_state`)을 따른다.
+
+멀티유저 모드(`MS365_MULTI_USER=1`)에서는 생성 자체를 거부한다 — 중앙 `session.auth_gateway` 를 쓴다.
+로그에는 query string·state·토큰·이메일을 남기지 않는다.
 """
 
 import asyncio
@@ -15,7 +23,7 @@ from urllib.parse import parse_qs
 import os
 import platform
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Dict, List, Optional
 
 # Load environment variables (프로젝트 루트 기준)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -40,14 +48,18 @@ class CallbackServer:
             auth_manager: AuthManager 인스턴스 (옵션)
             port: 서버 포트 (기본 5000)
         """
+        from session.mode_guard import refuse_in_multi_user
+
+        refuse_in_multi_user("CallbackServer")
         self.auth_manager = auth_manager
         self.port = port
         self.app = None
         self.runner = None
         self.site = None
-        self.auth_completed = asyncio.Event()
-        self.authenticated_email = None
-        self.auth_error: Optional[str] = None
+        # state → 그 인증 하나의 결과 Future (이메일 또는 오류 문자열)
+        self._waiters: Dict[str, asyncio.Future] = {}
+        # state 를 지정하지 않은 legacy 대기자 — **검증된 state** 의 결과만 전달된다
+        self._any_waiters: List[asyncio.Future] = []
 
         # AuthManager가 없으면 독립 실행 모드
         if not auth_manager:
@@ -78,6 +90,25 @@ class CallbackServer:
             return True
         except OSError:
             return False
+
+    # ------------------------------------------------------------------
+    # state 별 대기
+    # ------------------------------------------------------------------
+    def expect(self, state: str) -> None:
+        """이 state 의 결과를 기다릴 대기자를 등록한다(브라우저를 열기 전에 부른다)."""
+        loop = asyncio.get_running_loop()
+        old = self._waiters.get(state)
+        if old is None or old.done():
+            self._waiters[state] = loop.create_future()
+
+    def _resolve(self, state: str, *, email: Optional[str] = None, error: Optional[str] = None) -> None:
+        """검증된 state 의 결과를 그 state 의 대기자(와 legacy 대기자)에게만 전달한다."""
+        targets = [f for f in [self._waiters.get(state)] if f is not None]
+        targets += self._any_waiters
+        self._any_waiters = []
+        for fut in targets:
+            if not fut.done():
+                fut.set_result((email, error))
 
     async def handle_callback(self, request):
         """OAuth 콜백 처리"""
@@ -119,13 +150,12 @@ class CallbackServer:
             </body>
             </html>
             """
-            # 진행 중인 인증(state 일치)의 오류만 대기자를 깨운다 — state 없는 요청이
-            # 남의 인증을 중단시키지 못하게 한다
-            if state and state in self.auth_service.auth_states:
-                self.auth_error = f"{error}: {error_description or 'No additional information'}"
-                self.auth_completed.set()
+            # 진행 중인 인증(state 일치·TTL 이내)의 오류만 **그 인증의** 대기자를 깨운다.
+            # state 는 성공 경로와 같이 1회 소비한다 — 다른 인증은 영향받지 않는다.
+            if self.auth_service.consume_state(state):
+                self._resolve(state, error=f"OAuth error: {error}")
             else:
-                logger.warning(f"Callback error without a pending state ignored: {error}")
+                logger.warning("Callback error without a pending state ignored")
             return web.Response(text=html_content, content_type='text/html', status=400)
 
         if not code or not state:
@@ -139,21 +169,22 @@ class CallbackServer:
             logger.error(f"Callback rejected - {error_msg}")
             return web.Response(text=error_msg, status=400)
 
-        logger.info(f"Processing callback with state: {state[:10]}...")
+        logger.info("Processing callback")
+
+        from session.auth_service import InvalidOAuthStateError
 
         try:
             # Exchange code for tokens
-            token_response = await self.auth_service.complete_auth_flow(code, state)
+            auth_result = await self.auth_service.complete_auth_flow(code, state)
 
-            # complete_auth_flow는 성공 시 user_email을 직접 반환
-            user_email = token_response.get('user_email')
+            # complete_auth_flow는 성공 시 user_email을 직접 반환 (토큰은 반환하지 않는다)
+            user_email = auth_result.get('user_email')
 
             if user_email:
-                logger.info(f"[OK] Authentication successful for user: {user_email}")
+                logger.info("[OK] Authentication successful")
 
-                # 인증 완료 이벤트 설정
-                self.authenticated_email = user_email
-                self.auth_completed.set()
+                # 이 state 의 대기자에게만 완료 전달
+                self._resolve(state, email=user_email)
 
                 # Success page with auto-close script
                 html_content = f"""
@@ -188,9 +219,9 @@ class CallbackServer:
                 return web.Response(text=html_content, content_type='text/html')
 
             else:
-                # Authentication failed - user_email이 없는 경우
+                # Authentication failed - user_email이 없는 경우 (응답 내용은 로그에 남기지 않는다)
                 error_msg = "Failed to authenticate - no user email returned"
-                logger.error(f"Authentication failed: {token_response}")
+                logger.error("Authentication failed: no user email returned")
                 html_content = f"""
                 <html>
                 <head>
@@ -207,15 +238,18 @@ class CallbackServer:
                 </body>
                 </html>
                 """
-                self.auth_error = error_msg
-                self.auth_completed.set()
+                self._resolve(state, error=error_msg)
                 return web.Response(text=html_content, content_type='text/html', status=401)
 
+        except InvalidOAuthStateError:
+            # 진행 중이 아닌 state — 어떤 대기자도 건드리지 않는다
+            logger.error("Callback rejected - invalid or expired state")
+            return web.Response(text="Invalid or expired authentication request. Please start again.", status=400)
         except Exception as e:
-            logger.error(f"Error during callback processing: {e}")
-            self.auth_error = f"Server error: {str(e)}"
-            self.auth_completed.set()
-            return web.Response(text=f"Server error: {str(e)}", status=500)
+            # state 는 이미 검증·소비됐다 → 그 인증만 실패로 끝낸다. 예외 원문은 응답·로그에 싣지 않는다.
+            logger.error("Error during callback processing: %s", type(e).__name__)
+            self._resolve(state, error="Authentication failed during token exchange")
+            return web.Response(text="Authentication failed. Please try again.", status=500)
 
     async def handle_root(self, request):
         """Root endpoint - shows server status"""
@@ -316,33 +350,46 @@ class CallbackServer:
             self.runner = None
             logger.info("Server runner cleaned up")
 
-    async def wait_for_auth(self, timeout: int = 300):
+    async def wait_for_auth(self, timeout: int = 300, state: Optional[str] = None):
         """
         인증 완료 대기
 
         Args:
             timeout: 대기 시간 (초)
+            state: 기다릴 인증의 state (`expect(state)` 로 먼저 등록). None 이면 다음으로 **검증된**
+                콜백 결과를 기다린다(legacy 호환).
 
         Returns:
-            인증된 이메일 또는 None
+            인증된 이메일 또는 None(시간 초과)
 
         Raises:
-            Exception: 콜백에서 에러가 발생한 경우 즉시 raise
+            Exception: 그 인증의 콜백에서 에러가 발생한 경우 즉시 raise
         """
+        if state is not None:
+            fut = self._waiters.get(state)
+            if fut is None:
+                self.expect(state)
+                fut = self._waiters[state]
+        else:
+            fut = asyncio.get_running_loop().create_future()
+            self._any_waiters.append(fut)
         try:
-            await asyncio.wait_for(self.auth_completed.wait(), timeout=timeout)
-            if self.auth_error:
-                raise Exception(self.auth_error)
-            return self.authenticated_email
+            email, error = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Authentication timeout")
             return None
+        finally:
+            if state is not None and self._waiters.get(state) is fut:
+                del self._waiters[state]
+            elif fut in self._any_waiters:
+                self._any_waiters.remove(fut)
+        if error:
+            raise Exception(error)
+        return email
 
     def reset_auth_event(self):
-        """인증 이벤트 초기화"""
-        self.auth_completed.clear()
-        self.authenticated_email = None
-        self.auth_error = None
+        """호환용 no-op. 대기는 state 별(`expect`)이라 초기화할 공용 상태가 없다."""
+        return None
 
 
 # 독립 실행을 위한 메인 함수

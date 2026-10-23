@@ -4,6 +4,7 @@ Microsoft Graph API를 사용한 OneNote 작업 처리
 session 모듈을 통한 인증 관리
 """
 
+import json
 import re
 import logging
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
@@ -13,6 +14,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mcp_common.graph_paths import graph_error_summary, graph_segment
+from mcp_common.graph_url_policy import check_next_link
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
 from mcp_common.user_resolver import resolve_user_email
 
 if TYPE_CHECKING:
@@ -29,9 +34,39 @@ from .onenote_types import (
 logger = logging.getLogger(__name__)
 
 
+def _parse_json(text: Optional[str]) -> Any:
+    try:
+        return json.loads(text or "")
+    except (ValueError, TypeError):
+        return None
+
+
+def graph_error_code(error_text: Optional[str]) -> Optional[str]:
+    """Graph 오류 본문에서 형식 검사를 통과한 `error.code` 만 꺼낸다 (로그·응답 공용)."""
+    return graph_error_summary(None, _parse_json(error_text)).get("graph_error_code")
+
+
+def graph_failure(message: str, status: Optional[int], error_text: Optional[str] = None) -> Dict[str, Any]:
+    """실패 페이로드 — 고정 메시지 + `status_code`·`graph_error_code` 만.
+
+    Graph 오류 본문 원문은 싣지 않는다(spec/spec_멀티유저.md ②-9). 두 모드 공통.
+    """
+    return {"success": False, "error": message, **graph_error_summary(status, _parse_json(error_text))}
+
+
+#: nextLink 가 머물러야 하는 리소스 계열 (`/v1.0/me/onenote/...` 또는 본인 `/users/{id}/onenote/...`)
+_NEXT_LINK_RESOURCES = frozenset({"onenote"})
+
+
+def redirect_failure(method: str, status: int) -> Dict[str, Any]:
+    """bearer 요청의 3xx — 따라가지 않고(Location 미기록) 정리된 실패로 돌려준다 (R08)."""
+    logger.error("Graph redirect 거부: %s %s", method, status)
+    return graph_failure(f"Graph redirect 거부: {status}", status)
+
+
 def get_default_user_email() -> Optional[str]:
     """
-    기본 사용자 이메일을 반환한다 (mcp_common.user_resolver 정책 위임).
+    기본 사용자 이메일을 반환한다 (mcp_common.user_resolver 정책 위임). **mode 0 전용.**
 
     기존의 `list_users()[0]` 방식은 auth.db 정렬(updated_at DESC)에 따라
     대상이 암묵적으로 바뀌었다. 이제 SSOT 정책(명시값 > 환경변수 >
@@ -53,13 +88,18 @@ class GraphOneNoteClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
+            token_provider: 토큰 제공자. mode 1 에서는 사용자에 고정된 `BoundTokenProvider`
+                가 필수다(없으면 공용 AuthManager 로 되돌아가지 않고 실패).
+                mode 0 에서 없으면 프로세스 공유 AuthManager 를 쓴다.
 
         Note:
             per-email refresh lock 이 인스턴스마다 분리되지 않도록 반드시
             mcp_common.auth.get_shared_auth_manager() 의 단일 인스턴스를 쓴다.
+            close() 는 자기 HTTP 세션만 닫는다 — 토큰 공급자는 소유자(서비스 풀)가 닫는다.
         """
         if token_provider is None:
+            if multi_user_enabled():
+                raise SecurityError(ErrorCode.MISSING_PRINCIPAL)
             from mcp_common.auth import get_shared_auth_manager
             token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
@@ -104,34 +144,46 @@ class GraphOneNoteClient:
         # GUID 형식인지 확인 (8-4-4-4-12 형식)
         guid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
         if re.match(guid_pattern, entity_id):
-            logger.info(f"OneNote ID 정규화: {entity_id} → 1-{entity_id}")
+            logger.debug("OneNote ID 정규화: 1- 접두사 추가")
             return f"1-{entity_id}"
 
         return entity_id
+
+    def _seg(self, entity_id: str) -> str:
+        """호출자·Graph 가 준 ID → 정규화 후 URL 경로 **성분 하나**로 인코딩 (G01).
+
+        `/`·`..`·`%2F` 등으로 경로 구조를 바꾸려 하면 `SecurityError(not_found)` — 그대로 올린다.
+        """
+        return graph_segment(self._normalize_onenote_id(entity_id))
 
     async def _get_access_token(self, user_email: Optional[str] = None) -> Optional[str]:
         """
         사용자 이메일로 유효한 액세스 토큰 조회 (자동 갱신 포함)
 
         Args:
-            user_email: 사용자 이메일 (None이면 mcp_common 사용자 선택 정책 적용)
+            user_email: 사용자 이메일. mode 0 에서 None 이면 mcp_common 사용자 선택 정책,
+                mode 1 에서는 고정 공급자가 일치 확인만 한다(기본 사용자 탐색 없음).
 
         Returns:
             유효한 액세스 토큰 또는 None
+
+        Raises:
+            SecurityError: 계정 불일치·미연결·재인증 필요 — 연결 안내가 붙도록 그대로 올린다
         """
         try:
-            # user_email이 없으면 기본 사용자 조회
-            if not user_email:
+            if not user_email and not multi_user_enabled():
+                # mode 0 전용: 기본 사용자 조회
                 user_email = get_default_user_email()
                 if not user_email:
                     logger.error("기본 사용자를 찾을 수 없습니다. 로그인이 필요합니다.")
                     return None
-                logger.info(f"기본 사용자 사용: {user_email}")
 
             token = await self.token_provider.validate_and_refresh_token(user_email)
             return token
+        except SecurityError:
+            raise
         except Exception as e:
-            logger.error(f"토큰 조회 실패: {str(e)}")
+            logger.error("토큰 조회 실패: %s", type(e).__name__)
             return None
 
     async def _make_request(
@@ -181,24 +233,27 @@ class GraphOneNoteClient:
                 json=json_data if json_data else None,
                 data=data if data else None,
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,  # bearer 요청은 자동 redirect 를 따라가지 않는다 (R08)
             ) as response:
                 if response.status in (200, 201, 204):
                     if response.status == 204:
                         return {"success": True}
                     result = await response.json()
                     return {"success": True, "data": result}
+                elif 300 <= response.status < 400:
+                    return redirect_failure(method, response.status)
                 else:
                     error_text = await response.text()
-                    logger.error(f"API 요청 실패: {response.status} - {error_text}")
-                    return {
-                        "success": False,
-                        "error": f"API 요청 실패: {response.status}",
-                        "status_code": response.status,
-                        "details": error_text,
-                    }
+                    logger.error(
+                        "API 요청 실패: %s %s (code=%s)",
+                        method, response.status, graph_error_code(error_text),
+                    )
+                    return graph_failure(
+                        f"API 요청 실패: {response.status}", response.status, error_text
+                    )
         except Exception as e:
-            logger.error(f"API 요청 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("API 요청 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"API 요청 오류: {type(e).__name__}"}
 
     # ========================================================================
     # 노트북 관련 메서드
@@ -249,10 +304,9 @@ class GraphOneNoteClient:
             섹션 목록
         """
         if notebook_id:
-            notebook_id = self._normalize_onenote_id(notebook_id)
-            endpoint = f"/me/onenote/notebooks/{notebook_id}/sections?$top={top}"
+            endpoint = f"/me/onenote/notebooks/{self._seg(notebook_id)}/sections?$top={int(top)}"
         else:
-            endpoint = f"/me/onenote/sections?$top={top}"
+            endpoint = f"/me/onenote/sections?$top={int(top)}"
 
         result = await self._make_request("GET", endpoint, user_email)
 
@@ -284,8 +338,7 @@ class GraphOneNoteClient:
         Returns:
             생성된 섹션 정보
         """
-        notebook_id = self._normalize_onenote_id(notebook_id)
-        endpoint = f"/me/onenote/notebooks/{notebook_id}/sections"
+        endpoint = f"/me/onenote/notebooks/{self._seg(notebook_id)}/sections"
 
         result = await self._make_request(
             "POST",
@@ -324,6 +377,11 @@ class GraphOneNoteClient:
         if not self._initialized:
             await self.initialize()
 
+        # 공용 정책(②-7.5, N05): https·Graph 호스트·기본 포트·userinfo 없음·dot-segment 없음,
+        # `/v1.0/me/onenote/...` 또는 본인 `/users/{email|oid}/onenote/...` 만. 위반은
+        # SecurityError(path_not_allowed) — 토큰 획득·요청보다 먼저 올라간다. 이 함수는 GET 전용이다.
+        url = check_next_link(url, user_email, resources=_NEXT_LINK_RESOURCES)
+
         access_token = await self._get_access_token(user_email)
         if not access_token:
             return {"success": False, "error": "액세스 토큰이 없습니다."}
@@ -337,23 +395,32 @@ class GraphOneNoteClient:
             async with self._session.request(
                 "GET", url, headers=headers,
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
             ) as response:
                 if response.status == 200:
                     result = await response.json()
                     return {"success": True, "data": result}
+                elif 300 <= response.status < 400:
+                    return redirect_failure("GET", response.status)
                 else:
                     error_text = await response.text()
-                    logger.error(f"API 요청 실패: {response.status} - {error_text}")
-                    return {"success": False, "error": f"API 요청 실패: {response.status}"}
+                    logger.error(
+                        "API 요청 실패: GET %s (code=%s)",
+                        response.status, graph_error_code(error_text),
+                    )
+                    return graph_failure(
+                        f"API 요청 실패: {response.status}", response.status, error_text
+                    )
         except Exception as e:
-            logger.error(f"API 요청 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("API 요청 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"API 요청 오류: {type(e).__name__}"}
 
     async def list_pages(
         self,
         user_email: Optional[str] = None,
         section_id: Optional[str] = None,
         top: int = 100,
+        max_pages: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         페이지 목록 조회 (@odata.nextLink 페이징 지원)
@@ -362,15 +429,17 @@ class GraphOneNoteClient:
             user_email: 사용자 이메일 (None이면 기본 사용자 사용)
             section_id: 섹션 ID (없으면 전체 페이지 조회)
             top: 페이지당 조회 개수 (최대 100)
+            max_pages: 가져올 페이지 수의 상한 (R02). 넘으면 더 페이징하지 않고 잘라 내며
+                응답에 `capped: True` 를 표시한다. None 이면 전체(동기화용).
 
         Returns:
             페이지 목록
         """
+        page_size = int(top) if max_pages is None else max(1, min(int(top), int(max_pages)))
         if section_id:
-            section_id = self._normalize_onenote_id(section_id)
-            endpoint = f"/me/onenote/sections/{section_id}/pages?$top={top}&$select=id,title,createdDateTime,lastModifiedDateTime,level,order,contentUrl,links&$expand=parentSection($expand=parentNotebook($select=id,displayName);$select=id,displayName)"
+            endpoint = f"/me/onenote/sections/{self._seg(section_id)}/pages?$top={page_size}&$select=id,title,createdDateTime,lastModifiedDateTime,level,order,contentUrl,links&$expand=parentSection($expand=parentNotebook($select=id,displayName);$select=id,displayName)"
         else:
-            endpoint = f"/me/onenote/pages?$top={top}&$select=id,title,createdDateTime,lastModifiedDateTime,level,order,contentUrl,links&$expand=parentSection($expand=parentNotebook($select=id,displayName);$select=id,displayName)"
+            endpoint = f"/me/onenote/pages?$top={page_size}&$select=id,title,createdDateTime,lastModifiedDateTime,level,order,contentUrl,links&$expand=parentSection($expand=parentNotebook($select=id,displayName);$select=id,displayName)"
 
         result = await self._make_request("GET", endpoint, user_email)
 
@@ -383,20 +452,25 @@ class GraphOneNoteClient:
         truncated = False
         page_error: Optional[str] = None
         next_link = result.get("data", {}).get("@odata.nextLink")
-        while next_link:
-            logger.info(f"페이징 진행 중... 현재 {len(all_pages_data)}개")
+        while next_link and (max_pages is None or len(all_pages_data) < max_pages):
+            logger.info("페이징 진행 중... 현재 %d개", len(all_pages_data))
             next_result = await self._make_request_full_url(next_link, user_email)
             if not next_result.get("success"):
                 # 다음 페이지 조회 실패 → 목록이 잘렸음을 숨기지 않고 표시한다.
                 truncated = True
                 page_error = next_result.get("error", "nextLink 조회 실패")
-                logger.warning(f"페이징 중단(잘린 목록 반환): {page_error}")
+                logger.warning("페이징 중단(잘린 목록 반환)")
                 break
             page_data = next_result.get("data", {}).get("value", [])
             if not page_data:
                 break
             all_pages_data.extend(page_data)
             next_link = next_result.get("data", {}).get("@odata.nextLink")
+
+        capped = False
+        if max_pages is not None and (len(all_pages_data) > max_pages or bool(next_link)):
+            capped = True  # 상한 너머의 페이지는 가져오지 않았다
+            all_pages_data = all_pages_data[:max_pages]
 
         pages = [PageInfo.from_dict(p) for p in all_pages_data]
         response: Dict[str, Any] = {
@@ -407,6 +481,8 @@ class GraphOneNoteClient:
         if truncated:
             response["truncated"] = True
             response["truncated_reason"] = page_error
+        if capped:
+            response["capped"] = True
         return response
 
     async def get_page_content(
@@ -429,6 +505,7 @@ class GraphOneNoteClient:
             페이지 내용 (HTML)
         """
         page_id = self._normalize_onenote_id(page_id)
+        page_seg = graph_segment(page_id)  # 토큰을 꺼내기 전에 검사한다
         access_token = await self._get_access_token(user_email)
 
         if not access_token:
@@ -439,7 +516,7 @@ class GraphOneNoteClient:
             "Accept": "text/html",
         }
 
-        url = f"{self.GRAPH_BASE_URL}/me/onenote/pages/{page_id}/content"
+        url = f"{self.GRAPH_BASE_URL}/me/onenote/pages/{page_seg}/content"
         if include_ids:
             url += "?includeIDs=true"
 
@@ -448,6 +525,7 @@ class GraphOneNoteClient:
                 url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30),
+                allow_redirects=False,
             ) as response:
                 if response.status == 200:
                     content = await response.text()
@@ -456,16 +534,20 @@ class GraphOneNoteClient:
                         "page_id": page_id,
                         "content": content,
                     }
+                elif 300 <= response.status < 400:
+                    return redirect_failure("GET", response.status)
                 else:
                     error_text = await response.text()
-                    return {
-                        "success": False,
-                        "error": f"페이지 내용 조회 실패: {response.status}",
-                        "details": error_text,
-                    }
+                    logger.error(
+                        "페이지 내용 조회 실패: %s (code=%s)",
+                        response.status, graph_error_code(error_text),
+                    )
+                    return graph_failure(
+                        f"페이지 내용 조회 실패: {response.status}", response.status, error_text
+                    )
         except Exception as e:
-            logger.error(f"페이지 내용 조회 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("페이지 내용 조회 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"페이지 내용 조회 오류: {type(e).__name__}"}
 
     async def create_page(
         self,
@@ -486,7 +568,7 @@ class GraphOneNoteClient:
         Returns:
             생성된 페이지 정보
         """
-        section_id = self._normalize_onenote_id(section_id)
+        section_seg = self._seg(section_id)  # 토큰을 꺼내기 전에 검사한다
 
         # OneNote 페이지 HTML 형식
         html_content = f"""<!DOCTYPE html>
@@ -508,7 +590,7 @@ class GraphOneNoteClient:
             "Content-Type": "application/xhtml+xml",
         }
 
-        url = f"{self.GRAPH_BASE_URL}/me/onenote/sections/{section_id}/pages"
+        url = f"{self.GRAPH_BASE_URL}/me/onenote/sections/{section_seg}/pages"
 
         try:
             async with self._session.post(
@@ -516,21 +598,26 @@ class GraphOneNoteClient:
                 headers=headers,
                 data=html_content.encode("utf-8"),
                 timeout=aiohttp.ClientTimeout(total=30),
+                allow_redirects=False,
             ) as response:
                 if response.status == 201:
                     result = await response.json()
                     page = PageInfo.from_dict(result)
                     return {"success": True, "page": page.__dict__}
+                elif 300 <= response.status < 400:
+                    return redirect_failure("POST", response.status)
                 else:
                     error_text = await response.text()
-                    return {
-                        "success": False,
-                        "error": f"페이지 생성 실패: {response.status}",
-                        "details": error_text,
-                    }
+                    logger.error(
+                        "페이지 생성 실패: %s (code=%s)",
+                        response.status, graph_error_code(error_text),
+                    )
+                    return graph_failure(
+                        f"페이지 생성 실패: {response.status}", response.status, error_text
+                    )
         except Exception as e:
-            logger.error(f"페이지 생성 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("페이지 생성 오류: %s", type(e).__name__)
+            return {"success": False, "error": f"페이지 생성 오류: {type(e).__name__}"}
 
     async def update_page(
         self,
@@ -555,7 +642,7 @@ class GraphOneNoteClient:
         Returns:
             업데이트 결과
         """
-        page_id = self._normalize_onenote_id(page_id)
+        page_seg = self._seg(page_id)
 
         # PATCH 요청용 JSON 배열 생성
         patch_content = []
@@ -596,7 +683,7 @@ class GraphOneNoteClient:
         if not patch_content:
             return {"success": False, "error": f"지원하지 않는 action: {action}"}
 
-        endpoint = f"/me/onenote/pages/{page_id}/content"
+        endpoint = f"/me/onenote/pages/{page_seg}/content"
 
         result = await self._make_request(
             "PATCH",
@@ -622,8 +709,7 @@ class GraphOneNoteClient:
         Returns:
             삭제 결과
         """
-        page_id = self._normalize_onenote_id(page_id)
-        endpoint = f"/me/onenote/pages/{page_id}"
+        endpoint = f"/me/onenote/pages/{self._seg(page_id)}"
 
         result = await self._make_request("DELETE", endpoint, user_email)
         return result

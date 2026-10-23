@@ -1,9 +1,15 @@
 """
 Graph Calendar Client - 통합 캘린더 처리 클라이언트
 GraphCalendarQuery를 통해 캘린더 이벤트 관리를 통합하는 상위 클래스
+
+보안 오류(`SecurityError` — 연결 없음·재인증 필요·계정 불일치)는 오류 dict 로 삼키지 않고
+그대로 올린다. 런타임이 고정 코드와 연결 안내로 바꾼다(spec/spec_멀티유저.md ②-12 항목 4).
 """
 
+import logging
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+from mcp_common.security_contracts import SecurityError
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -16,6 +22,11 @@ from .calendar_types import (
     EventUpdateParams,
     ScheduleRequest,
 )
+
+logger = logging.getLogger(__name__)
+
+#: 예상하지 못한 처리 오류의 공개 메시지 — 예외 원문은 응답에 싣지 않는다 (②-9)
+_CLIENT_ERROR_MESSAGE = "캘린더 요청을 처리하지 못했습니다."
 
 
 class GraphCalendarClient:
@@ -30,7 +41,8 @@ class GraphCalendarClient:
         초기화
 
         Args:
-            token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
+            token_provider: 토큰 제공자 (None이면 mode 0 의 공용 AuthManager 사용 —
+                멀티유저에서는 사용자 고정 공급자가 필수). 소유하지 않으므로 닫지 않는다.
         """
         self.token_provider = token_provider
         self.calendar_query: Optional[GraphCalendarQuery] = None
@@ -51,14 +63,14 @@ class GraphCalendarClient:
             self.calendar_query = GraphCalendarQuery(token_provider=self.token_provider)
 
             if not await self.calendar_query.initialize():
-                print("Failed to initialize GraphCalendarQuery")
+                logger.error("GraphCalendarQuery 초기화 실패")
                 return False
 
             self._initialized = True
             return True
 
         except Exception as e:
-            print(f"Initialization error: {str(e)}")
+            logger.error("GraphCalendarClient 초기화 오류: %s", type(e).__name__)
             return False
 
     def _ensure_initialized(self):
@@ -99,10 +111,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
                 "value": [],
             }
 
@@ -142,10 +157,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
                 "value": [],
             }
 
@@ -176,10 +194,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
             }
 
     async def create_event(
@@ -206,10 +227,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
             }
 
     async def update_event(
@@ -239,10 +263,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
             }
 
     async def delete_event(
@@ -269,10 +296,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
             }
 
     async def get_schedule(
@@ -299,10 +329,13 @@ class GraphCalendarClient:
             )
             return result
 
+        except SecurityError:
+            raise
         except Exception as e:
+            logger.warning("GraphCalendarClient 처리 오류: %s", type(e).__name__)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": _CLIENT_ERROR_MESSAGE,
             }
 
     def format_events(self, results: Dict[str, Any], verbose: bool = False) -> str:
@@ -357,7 +390,7 @@ class GraphCalendarClient:
         return "\n".join(output)
 
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 쿼리 객체만 닫는다(토큰 공급자는 쿼리도 닫지 않는다)."""
         if self.calendar_query:
             await self.calendar_query.close()
         self._initialized = False

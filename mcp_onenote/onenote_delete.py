@@ -46,14 +46,16 @@ class OneNoteDeleter:
 
         if result.get("success"):
             self._db_service.delete_item(user_id=user_email, item_id=page_id)
-            self._db_service.delete_summary(page_id=page_id)
+            self._db_service.delete_summary(page_id=page_id, user_id=user_email)
             result["deleted_page_id"] = page_id
             return result
 
         if result.get("status_code") == 404:
+            # 호출자 소유의 행만 걷어낸다 — Graph 404 는 "내 토큰으로 안 보인다"일 뿐,
+            # 같은 page_id 를 쓰는 다른 사용자의 요약·이력은 건드리지 않는다.
             purged = self._db_service.delete_item(user_id=user_email, item_id=page_id)
-            self._db_service.delete_summary(page_id=page_id)
-            logger.info(f"이미 삭제된 페이지의 DB 잔재 정리: {page_id} (행 삭제={purged})")
+            self._db_service.delete_summary(page_id=page_id, user_id=user_email)
+            logger.info("이미 삭제된 페이지의 DB 잔재 정리 (행 삭제=%s)", purged)
             return {
                 "success": True,
                 "already_deleted": True,

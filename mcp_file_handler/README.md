@@ -44,10 +44,77 @@ venv/Scripts/python.exe mcp_file_handler/mcp_server/server_stream.py
   해소한 뒤 비교하므로 traversal 로 우회할 수 없습니다.
   - 적용 지점: `convert_file_to_text`, `process_directory`(패턴 매칭 결과 포함),
     `save/get/delete_file_metadata` 의 로컬 `file_url`, OneDrive `output_dir`
-  - 예외: OneDrive 다운로드용 **임시 폴더는 서버가 직접 만든 것**이라 신뢰 루트로 통과
+  - OneDrive 다운로드는 **요청마다 새로 만든 전용 디렉터리**에만 쓰고, 끝나면 그 디렉터리만
+    지웁니다. 다운로드한 파일은 그 디렉터리 안인지 다시 확인합니다 — 허용 루트를 넓히던
+    `trusted_roots` 예외는 없어졌습니다. 원격 파일명은 `secure_files.safe_join` 으로
+    단일 이름으로 정화하고, 파일은 배타 생성(같은 이름이면 ` (n)` 접미사)합니다.
   - 원격 URL(`http://`, `https://`, `onedrive:`)은 로컬 경로 검증 대상이 아님
 
-- 거부 시 오류 메시지에 허용 루트 목록이 함께 반환됩니다.
+- mode 0 에서는 거부 시 오류 메시지에 허용 루트 목록이 함께 반환됩니다. `/health` 의 보안
+  고지에는 허용 루트 **개수만** 싣고 절대경로는 싣지 않습니다.
+
+### 멀티유저 모드 (`MS365_MULTI_USER=1`)
+
+근거: [spec/spec_멀티유저.md](../spec/spec_멀티유저.md) ②-2.2·②-2.5·②-5.2·②-7.3·②-7.4.
+
+| 항목 | 동작 |
+|------|------|
+| 서비스 | `handlers.create_service(principal, paths, tokens)` 가 사용자별 `FileHandlerService` 를 만들고 서비스 풀이 수명을 관리. 전역 인스턴스·`AuthManager` 를 만들지 않음 |
+| 인증 | OneDrive 토큰은 주입된 사용자 고정 `BoundTokenProvider` 에서만. 동기 작업은 작업 스레드에서 돌고 토큰 코루틴은 요청 이벤트 루프에서 실행(`token_bridge.py`) — `executor.submit(asyncio.run, …)` 브리지 제거(mode 0 도 동일) |
+| 파일 범위 | 호출자 자신의 `files/` 만. 상대경로는 `files/` 기준. 자기 `auth/`·`db/`·다른 사용자 영역·UNC·ADS·장치 경로·드라이브 상대경로는 `path_not_allowed` |
+| 응답 | 절대경로 대신 `files/` 기준 상대경로(`uploads/a.pdf`). 오류 문구에 예외 원문(경로·URL·외부 응답 본문)을 싣지 않음 |
+| 메타데이터 | 사용자별 `db/metadata.db` 의 `file_metadata` (PK `(owner_key, file_url)`, 모든 SQL 에 owner 조건). JSON 저장소는 서비스 생성 시 `config_error` |
+| 임시파일 | 요청별 `files/tmp/<request_id>/` (OneDrive 다운로드·OCR 입력/전처리·PDF 페이지 이미지 포함). 끝나면 그 디렉터리만 정리. OCR 은 tesseract 를 직접 실행해 TEMP/TMP 도 요청 디렉터리로 고정 |
+| 경로 설정 | output → `files/output/`, 다운로드(`output_dir` 상대경로 기준) → `files/downloads/file_handler/`. `MCP_ATTACHMENT_{TEMP_DIR,OUTPUT_DIR,METADATA_PATH,LOG_FILE}`·`MCP_ATTACHMENT_METADATA_STORAGE≠sqlite`·홈/CWD config 의 경로 키는 **기동 실패**(`StartupConfigError`) |
+| 컨텍스트 | 작업 스레드는 `contextvars.copy_context()` 로 principal·요청 scope 를 받음. 없거나 다른 사용자면 `missing_principal` |
+| 기타 | stdio 기동 거부, health 에 경로 없음, 로그에 파일명·경로·공유 URL·예외 원문 없음 |
+
+사용자 저장소 초기화는 `mcp_file_handler.storage_schema.ensure_storage(principal, paths)`
+(마이그레이션 도구와 서비스 `initialize()` 공용).
+
+### 자원 상한과 보안 리뷰 반영 (astra 2026-10-23: R05·R08·R09·R12·R14)
+
+| 설정 키 (`MCP_ATTACHMENT_*` 환경변수·config) | 기본값 | 적용 |
+|------|-------:|------|
+| `max_file_size` (MB) | 100 | 파일 하나 — OneDrive 스트림 누적·로컬 입력 복사. 초과 순간 스트림 중단·부분 파일 삭제 |
+| `max_total_size` (MB) | 500 | 요청 전체 바이트 예산 (다운로드 + 입력 복사) |
+| `max_download_files` | 200 | 요청 하나가 받는 OneDrive 파일 수 |
+| `max_folder_depth` | 10 | 폴더 재귀 깊이 |
+| `max_output_chars` | 2,000,000 | 변환 결과 텍스트(파일별·요청 합계, 초과분 절단 + `metadata.truncated`) |
+| `conversion_timeout` (초) | 300 | 요청 하나의 변환 시간. 넘기면 결과 폐기(`limit_exceeded/conversion_timeout`) |
+| `max_workers` | 4 | 서비스(사용자)당 동시 변환 스레드. 시간 초과로 버려진 스레드도 끝날 때까지 슬롯을 쥔다 → 넘치면 `overloaded` |
+
+- mode 0 은 위 키로 조정, **mode 1 은 기본값이 천장**(낮추기만 가능). 구현은 `limits.py`.
+- 초과는 고정 페이로드 `{"error":"limit_exceeded","limit":<코드>}` 또는 결과 `errors` 문구로 나간다.
+- 변환 스레드는 강제 종료할 수 없다 — 시간 초과 시 결과만 버리고 슬롯 상한으로 누적을 막는다
+  (프로세스 격리 worker 는 변환기 직렬화가 필요해 후속 과제).
+- **N03 (2차 리뷰)** 수명 기준은 **실제 converter 스레드**다(`conversion_workers.py`). 요청이 끝날 때
+  살아 있는 스레드가 있으면 `HARD_JOIN_CAP_SECONDS`(30초)까지 기다린 뒤에야 응답·lease 해제가 일어나고,
+  그래도 남으면 요청 디렉터리 정리를 마지막 스레드에 위임한다(그때까지 디렉터리 유지). `close()` 도
+  같은 상한으로 스레드를 기다린다. 슬롯은 **프로세스 전역 user_key 별**(`slots_for`)이라 서비스가
+  퇴거·재생성돼도 사용자당 `max_workers` 를 넘지 못한다(mode 0 은 `legacy` 키 하나).
+- **N03 (3차)** hard cap 뒤에도 살아 있는 converter 가 있으면 `close()` 는 **`RuntimeError` 를 올린다**
+  (성공으로 보고하지 않음 → 풀의 drain 실패). 위임된 temp 정리는 유지되고, 다시 `close()` 하면 재검사한다.
+- **N05 (3차)** 사전 서명 URL 정책은 공용 `mcp_common.graph_url_policy.check_presigned_url` 하나다
+  (DNS 해석 실패·단일 라벨 호스트도 거부). **N01 (3차)** 사전 서명 GET 직전에 토큰 공급자에서
+  토큰을 다시 얻어 호출자 활성 상태를 재확인한다(폐기됐으면 GET 이 나가지 않음).
+- **N06** mode 0 의 legacy `SQLiteStorage`/`JSONStorage` 는 생성 시점과 **쓰기마다**
+  `mcp_common.security_policy.assert_legacy_store_not_frozen()` 으로 `.migration_lock` 을 확인한다
+  (읽기는 허용, 메모리 상태도 검사 전에는 바꾸지 않음). mode 1 에서는 no-op.
+- **N08** `max_download_files`·`max_total_size` 는 로컬 디렉터리 순회에도 적용된다
+  (초과는 `limit_exceeded/too_many_files`·파일별 `request_too_large`).
+- **N10** `search_metadata` 응답의 `criteria.file_url` 은 공개 참조로 바꿔 반사하거나(자기 files/
+  안 절대경로 → 상대 참조, 검색에도 그 값을 씀) 바꿀 수 없으면 생략한다.
+- **R02** `save_file_metadata.keywords` 는 스키마 `maxItems: 100`·항목 `maxLength: 200` 이고,
+  서비스 경계에서도 같은 값으로 잘라 저장한다(`limits.KEYWORDS_MAX_ITEMS`/`KEYWORD_MAX_LENGTH`).
+- **R05** 요청 temp 는 작업 스레드가 열고 닫는다. 호출이 취소돼도(반복 취소·종료 포함) worker 가
+  끝날 때까지 `conversion_timeout + 30초` 안에서 기다린 뒤 취소를 올리고, `close()` 도 진행 중
+  worker 를 기다린다.
+- **R08** 사전 서명 다운로드 URL: https·표준 포트·자격증명 없음·사설/루프백/링크로컬/예약 주소
+  아님(리터럴 IP 와 DNS 해석 결과 모두)·추가 redirect 금지 (`onedrive/client.py:validate_download_url`).
+- **R12** mode 1 로컬 입력은 `open_for_read` handle 에서 요청 디렉터리 `input/` 로 배타 복사한
+  복사본만 변환기에 준다.
+- **R14** 메타데이터 응답의 `file_url` 은 서비스가 정규화한 참조(mode 1: `files/` 기준 상대경로)다.
 
 ## 도구 정의 로딩 구조 (param_spec)
 
@@ -88,7 +155,12 @@ OneDrive 연동(`onedrive/client.py`, `onedrive/downloader.py`) 동작 메모:
 
 ```
 mcp_file_handler/
-├── file_manager.py             # 메인 진입점 (FileManager)
+├── file_manager.py             # 메인 진입점 (FileManager, 동기)
+├── service.py                  # FileHandlerService — FileManager 의 async 어댑터 (요청 temp·작업 스레드)
+├── request_scope.py            # 요청 범위 상태(ContextVar): 작업 디렉터리·이벤트 루프·소유자
+├── token_bridge.py             # 동기 코드 → 비동기 토큰 공급자 다리 (요청 루프에 위임)
+├── path_policy.py              # mode 1 경로 정책 (files/ 루트·공개 경로·공개 오류 문구)
+├── storage_schema.py           # ensure_storage() — 사용자 db/metadata.db 초기화
 ├── base_converter.py           # 변환기 베이스 클래스
 ├── attachment_converter.py     # 첨부파일 변환
 ├── converters/
@@ -120,10 +192,10 @@ mcp_file_handler/
 두 transport(stream/stdio)는 모두 `handlers.py` 의 동일한 핸들러와
 `mcp_common.runtime.ToolRuntime` 을 공유합니다.
 
-- **동기/비동기 모두 안전**: `FileManager` 의 도구 메서드는 전부 동기 함수입니다.
-  이전 transport 들은 반환값을 무조건 `await` 해서 정상 호출조차
-  `object dict can't be used in 'await' expression` 으로 실패했습니다.
-  `ToolRuntime` 이 내부 `maybe_await` 로 처리하므로 이 버그는 구조적으로 재발하지 않습니다.
+- **핸들러는 async**: 핸들러는 `FileHandlerService` 의 async 메서드를 부르고, 서비스가
+  동기 `FileManager` 작업을 작업 스레드로 넘깁니다(이벤트 루프를 막지 않음).
+  param_spec 의 `service:` 는 전부 `FileHandlerService.<메서드>` 입니다.
+  `ToolRuntime` 은 내부 `maybe_await` 로 동기/비동기 핸들러를 모두 처리합니다.
 - **오류 계약**: 실패는 `ToolExecutionError` 로 올라가 MCP `isError=True` 로 감싸집니다.
   실패가 성공처럼 보이는 TextContent 로 나가지 않습니다.
 - **lifecycle**: `ServiceLifecycle` 이 `initialize()`/`close()` 를 처리하고,

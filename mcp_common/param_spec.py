@@ -92,6 +92,14 @@ Pydantic 모델을 만든다 — `SelectParams(**SPEC.call_args(...)["select_par
 
 `baseModel` 과 `targetParam` 은 적으면 파생 스키마에 그대로 실린다(기존 동작 보존).
 
+## 상한 — `minimum`/`maximum`/`minItems`/`maxItems`/`minLength`/`maxLength`
+
+`integer`/`number` 에는 `minimum`·`maximum`, `array` 에는 `minItems`·`maxItems`, `string` 에는
+`minLength`·`maxLength` 를 적을 수 있다. 스키마에 그대로 실리고 `mcp_common.validation` 이
+검증 단계에서 강제한다. **결과 수·페이지 수·ID 목록 길이처럼 작업량을 정하는 파라미터는
+반드시 상한을 둔다** — 무제한 `top` 하나가 공유 프로세스의 메모리를 고갈시킨 사례가 있다
+(spec/reviews/멀티유저_astra_2026-10-23.md R02). 다른 타입에 적으면 기동 오류.
+
 ## service — 래핑하는 서비스 함수 (필수)
 
 도구 하나는 서비스 함수 하나를 래핑하며, 그 바인딩은 **spec 의 `service:` 필드가
@@ -159,6 +167,8 @@ class Field:
     target_param: Optional[str] = None
     #: `type: array` 일 때 원소 스키마. JSON Schema 조각을 그대로 싣는다.
     items: Optional[Dict[str, Any]] = None
+    #: 수치·길이 상한 (`minimum`/`maximum`/`minItems`/`maxItems`/`minLength`/`maxLength`).
+    bounds: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +190,9 @@ class Param:
     base_model: Optional[str] = None
     #: `type: array` 일 때 원소 스키마. JSON Schema 조각을 그대로 싣는다.
     items: Optional[Dict[str, Any]] = None
+    #: 수치·길이 상한 (`minimum`/`maximum`/`minItems`/`maxItems`/`minLength`/`maxLength`).
+    #: 스키마에 그대로 실리고 `mcp_common.validation` 이 강제한다 (astra 재검토 R02).
+    bounds: Optional[Dict[str, Any]] = None
 
     @property
     def service_arg(self) -> str:
@@ -242,6 +255,7 @@ def _parse_field(raw: Dict[str, Any], where: str) -> Field:
         enum=enum,
         target_param=raw.get("targetParam"),
         items=_parse_items(raw, f"{where}.{name}", ftype),
+        bounds=_parse_bounds(raw, f"{where}.{name}", ftype),
     )
 
 
@@ -256,6 +270,40 @@ def _parse_items(raw: Dict[str, Any], where: str, ptype: str) -> Optional[Dict[s
     )
     _require(isinstance(items, dict), f"[{where}] items 는 매핑이어야 한다: {items!r}")
     return items
+
+
+#: 타입별로 허용되는 상한 키. 다른 타입에 적으면 기동 오류다 (조용히 무시하면 상한이 없는 줄 모른다).
+_BOUND_KEYS = {
+    "integer": ("minimum", "maximum"),
+    "number": ("minimum", "maximum"),
+    "array": ("minItems", "maxItems"),
+    "string": ("minLength", "maxLength"),
+}
+_ALL_BOUND_KEYS = frozenset(k for keys in _BOUND_KEYS.values() for k in keys)
+
+
+def _parse_bounds(raw: Dict[str, Any], where: str, ptype: str) -> Optional[Dict[str, Any]]:
+    """`minimum`/`maximum`/`minItems`/`maxItems`/`minLength`/`maxLength` — 그대로 스키마에 싣는다."""
+    present = {k: raw[k] for k in _ALL_BOUND_KEYS if k in raw}
+    if not present:
+        return None
+    allowed = _BOUND_KEYS.get(ptype, ())
+    for key, value in present.items():
+        _require(key in allowed, f"[{where}] {key} 는 type: {ptype!r} 에 쓸 수 없다")
+        if ptype in ("integer", "number"):
+            _require(
+                isinstance(value, (int, float)) and not isinstance(value, bool),
+                f"[{where}] {key} 는 숫자여야 한다: {value!r}",
+            )
+        else:
+            _require(
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+                f"[{where}] {key} 는 0 이상의 정수여야 한다: {value!r}",
+            )
+    low, high = present.get(allowed[0]), present.get(allowed[1])
+    if low is not None and high is not None:
+        _require(low <= high, f"[{where}] {allowed[0]}({low}) 가 {allowed[1]}({high}) 보다 크다")
+    return present
 
 
 def _parse_param(raw: Dict[str, Any], tool_name: str) -> Param:
@@ -335,6 +383,7 @@ def _parse_param(raw: Dict[str, Any], tool_name: str) -> Param:
         fields=fields,
         base_model=raw.get("baseModel"),
         items=_parse_items(raw, where, ptype),
+        bounds=_parse_bounds(raw, where, ptype),
     )
 
 
@@ -426,6 +475,8 @@ class ParamSpec:
             prop["enum"] = list(f.enum)
         if f.items is not None:
             prop["items"] = f.items
+        if f.bounds:
+            prop.update(f.bounds)
         if f.has_default:
             prop["default"] = f.default
         if f.target_param:
@@ -448,6 +499,8 @@ class ParamSpec:
                 prop["enum"] = list(p.enum)
             if p.items is not None:
                 prop["items"] = p.items
+            if p.bounds:
+                prop.update(p.bounds)
 
             # type: object + fields → 중첩 스키마
             if p.fields:

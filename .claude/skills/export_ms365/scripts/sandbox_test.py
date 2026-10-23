@@ -73,7 +73,10 @@ def _preflight() -> None:
         ["tasklist", "/NH"], capture_output=True, text=True, errors="replace", timeout=30,
     )
     stdout = running.stdout or ""
-    if any(name in stdout for name in ("vmmemWindowsSandbox", "WindowsSandboxClient.exe")):
+    # 2026-10-20 관측: 같은 26200 빌드인데 vmmemWindowsSandbox 가 안 보이고 RemoteSession 만 보였다.
+    # tasklist 는 이름을 25자로 자르므로("WindowsSandboxRemoteSessi") 접두어로 본다.
+    if any(name in stdout for name in ("vmmemWindowsSandbox", "WindowsSandboxClient.exe",
+                                       "WindowsSandboxRemoteSess")):
         raise SystemExit("Windows Sandbox 가 이미 실행 중이다 — 닫고 다시 시도할 것 (동시에 하나만 뜬다)")
 
 

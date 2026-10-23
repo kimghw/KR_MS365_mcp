@@ -1,6 +1,12 @@
 """
 Authentication Manager
-다중 사용자 인증 및 토큰 관리 + 콜백 서버 생애주기 관리
+다중 사용자 인증 및 토큰 관리 + 콜백 서버 생애주기 관리 — **단일 운영자(mode 0) 전용**.
+
+멀티유저 모드(`MS365_MULTI_USER=1`)에서는 `AuthManager()`·`get_default_auth_manager()`·
+`_auto_reauth()`·기본 사용자 선택을 모두 거부한다(spec/spec_멀티유저.md ②-5.5). 멀티유저 경로는
+`mcp_common.auth.get_bound_token_provider(principal)` 와 `session.auth_gateway` 다.
+
+로그에는 이메일·state·토큰을 남기지 않는다(②-2.7).
 """
 
 import os
@@ -19,6 +25,7 @@ load_dotenv(_env_path, encoding="utf-8-sig")
 from .auth_service import AuthService
 from .auth_database import AuthDatabase
 from .azure_config import AzureConfig
+from .mode_guard import refuse_in_multi_user
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,7 @@ def get_default_user_email() -> Optional[str]:
     Returns:
         기본 사용자의 이메일 또는 None
     """
+    refuse_in_multi_user("session.auth_manager.get_default_user_email()")
     try:
         from mcp_common.user_resolver import resolve_user_email
 
@@ -74,6 +82,7 @@ class AuthManager:
             db_path: 데이터베이스 경로 (None이면 환경변수 또는 기본값 사용)
             app_id: 사용할 Azure AD 앱 ID (선택적)
         """
+        refuse_in_multi_user("AuthManager()")
         # DB 경로 결정 (환경변수 > 파라미터 > 기본값)
         import os
         if db_path is None:
@@ -137,7 +146,7 @@ class AuthManager:
         token_info = self.auth_db.get_token(email)
 
         if not token_info:
-            logger.warning(f"No token found for {email}")
+            logger.warning("No token found for requested user")
             return None
 
         return {
@@ -200,7 +209,7 @@ class AuthManager:
             success = self.auth_db.update_token(email, new_tokens)
 
             if success:
-                logger.info(f"Token refreshed for {email}")
+                logger.info("Token refreshed")
                 return {
                     'status': 'success',
                     'email': email,
@@ -212,7 +221,7 @@ class AuthManager:
                 raise Exception("Failed to update token in database")
 
         except Exception as e:
-            logger.error(f"Token refresh failed for {email}: {str(e)}")
+            logger.error("Token refresh failed: %s", type(e).__name__)
 
             # refresh token이 revoke된 경우
             if 'invalid_grant' in str(e).lower() or 'expired' in str(e).lower():
@@ -255,7 +264,7 @@ class AuthManager:
             token_info = self.auth_db.get_token(email)
 
             if not token_info:
-                logger.error(f"No token found for {email}")
+                logger.error("No token found for requested user")
                 if auto_reauth:
                     return await self._auto_reauth(email)
                 return None
@@ -265,18 +274,18 @@ class AuthManager:
                 return token_info['access_token']
 
             # 토큰 갱신 시도
-            logger.info(f"Token expired for {email}, attempting refresh")
+            logger.info("Token expired, attempting refresh")
             refresh_result = await self.refresh_token(email)
 
             if refresh_result['status'] == 'success':
                 return refresh_result['access_token']
 
             # refresh 실패 → 재인증 필요
-            logger.warning(f"Refresh failed for {email}: {refresh_result.get('error', 'unknown')}")
+            logger.warning("Refresh failed (status=%s)", refresh_result.get('status', 'unknown'))
             if auto_reauth:
                 return await self._auto_reauth(email)
 
-            logger.error(f"Failed to get valid token for {email}")
+            logger.error("Failed to get valid token")
             return None
 
     async def get_auth_url_for_login(self, email: Optional[str] = None, port: Optional[int] = None) -> Dict[str, Any]:
@@ -311,7 +320,7 @@ class AuthManager:
                 'message': f'인증이 필요합니다. 아래 URL을 브라우저에서 열어 로그인해주세요.\n{auth_info["auth_url"]}'
             }
         except Exception as e:
-            logger.error(f"Failed to generate auth URL for {email}: {e}")
+            logger.error("Failed to generate auth URL: %s", type(e).__name__)
             return {
                 'status': 'error',
                 'error': str(e),
@@ -320,24 +329,31 @@ class AuthManager:
 
     async def _auto_reauth(self, email: str) -> Optional[str]:
         """
-        브라우저 재인증 자동 시작
+        브라우저 재인증 자동 시작 (mode 0 전용 — 멀티유저에서는 서버가 브라우저를 열지 않는다)
+
+        요청한 계정(`email`)과 실제로 로그인한 계정이 다르면 그 토큰을 돌려주지 않는다 —
+        다른 계정의 토큰이 요청 계정 대신 쓰이는 것을 막는다(spec ②-2.2).
 
         Args:
-            email: 사용자 이메일 (로그용)
+            email: 재인증을 요청한 사용자 이메일
 
         Returns:
             새 액세스 토큰 또는 None
         """
-        logger.info(f"Starting automatic re-authentication for {email}")
+        refuse_in_multi_user("AuthManager._auto_reauth()")
+        logger.info("Starting automatic re-authentication")
         result = await self.authenticate_with_browser()
 
         if result['status'] == 'success':
-            logger.info(f"Re-authentication successful for {result['email']}")
+            if (result.get('email') or '').strip().lower() != (email or '').strip().lower():
+                logger.error("Re-authentication completed with a different account; token not returned")
+                return None
+            logger.info("Re-authentication successful")
             new_token_info = self.auth_db.get_token(result['email'])
             if new_token_info:
                 return new_token_info['access_token']
 
-        logger.error(f"Re-authentication failed: {result.get('error', 'unknown')}")
+        logger.error("Re-authentication failed (status=%s)", result.get('status', 'unknown'))
         return None
 
     def list_users(self) -> List[Dict[str, Any]]:
@@ -381,9 +397,9 @@ class AuthManager:
         success = self.auth_db.delete_token(email)
 
         if success:
-            logger.info(f"User {email} removed")
+            logger.info("User token removed")
         else:
-            logger.error(f"Failed to remove user {email}")
+            logger.error("Failed to remove user token")
 
         return success
 
@@ -531,12 +547,14 @@ class AuthManager:
 
             # 2. 인증 URL 생성
             auth_info = self.start_authentication()
-            logger.info(f"Authentication URL generated with state: {auth_info['state'][:10]}...")
+            state = auth_info['state']
+            logger.info("Authentication URL generated")
 
-            # 브라우저를 열기 전에 인증 이벤트를 먼저 초기화
-            # (SSO 세션이 살아있으면 브라우저 열자마자 콜백이 올 수 있음)
+            # 브라우저를 열기 전에 **이 state 전용** 대기자를 먼저 등록한다
+            # (SSO 세션이 살아있으면 브라우저 열자마자 콜백이 올 수 있음). 다른 state 의 콜백·오류는
+            # 이 대기자를 깨우지 않는다.
             if self.callback_server:
-                self.callback_server.reset_auth_event()
+                self.callback_server.expect(state)
 
             # 3. 브라우저 열기
             logger.info("Opening browser for authentication")
@@ -544,58 +562,31 @@ class AuthManager:
                 webbrowser.open(auth_info['auth_url'])
                 logger.info("Browser opened successfully")
             except Exception as e:
-                logger.warning(f"Could not open browser: {e}")
+                logger.warning("Could not open browser: %s", type(e).__name__)
                 print(f"\n[WARN] Please manually visit: {auth_info['auth_url']}")
 
             # 4. 인증 완료 대기
             logger.info(f"Waiting for authentication (timeout: {timeout}s)")
 
-            # CallbackServer의 인증 대기 기능 사용
-            if self.callback_server:
-                # 인증 완료 대기
-                authenticated_email = await self.callback_server.wait_for_auth(timeout)
+            # CallbackServer 의 state 별 대기 (DB 에 새로 생긴 이메일로 성공을 추정하지 않는다)
+            if not self.callback_server:
+                raise Exception("Callback server unavailable")
+            authenticated_email = await self.callback_server.wait_for_auth(timeout, state=state)
 
-                if authenticated_email:
-                    # 인증된 사용자 정보 조회
-                    users = self.list_users()
-                    user = next((u for u in users if u['email'] == authenticated_email), None)
+            if authenticated_email:
+                # 인증된 사용자 정보 조회
+                users = self.list_users()
+                user = next((u for u in users if u['email'] == authenticated_email), None)
 
-                    if user:
-                        logger.info(f"Authentication successful for {authenticated_email}")
-                        return {
-                            'status': 'success',
-                            'email': authenticated_email,
-                            'user': user
-                        }
-                    else:
-                        raise Exception(f"User {authenticated_email} authenticated but not found in DB")
-                else:
-                    raise asyncio.TimeoutError("Authentication timeout")
-
-            else:
-                # 외부 서버 사용 중 - DB 폴링 방식
-                start_time = asyncio.get_event_loop().time()
-                initial_users = self.list_users()
-                initial_emails = {u['email'] for u in initial_users}
-
-                while (asyncio.get_event_loop().time() - start_time) < timeout:
-                    await asyncio.sleep(2)  # 2초마다 확인
-                    current_users = self.list_users()
-                    current_emails = {u['email'] for u in current_users}
-
-                    # 새로운 사용자가 추가되었는지 확인
-                    new_emails = current_emails - initial_emails
-                    if new_emails:
-                        latest_email = list(new_emails)[0]
-                        logger.info(f"Authentication successful for {latest_email}")
-                        user = next(u for u in current_users if u['email'] == latest_email)
-                        return {
-                            'status': 'success',
-                            'email': latest_email,
-                            'user': user
-                        }
-
-                raise asyncio.TimeoutError("Authentication timeout")
+                if user:
+                    logger.info("Authentication successful")
+                    return {
+                        'status': 'success',
+                        'email': authenticated_email,
+                        'user': user
+                    }
+                raise Exception("Authenticated user not found in DB")
+            raise asyncio.TimeoutError("Authentication timeout")
 
         except asyncio.TimeoutError:
             logger.error("Authentication timeout")
@@ -604,7 +595,7 @@ class AuthManager:
                 'error': 'Authentication timeout'
             }
         except Exception as e:
-            logger.error(f"Authentication error: {e}")
+            logger.error("Authentication error: %s", type(e).__name__)
             return {
                 'status': 'error',
                 'error': str(e)
@@ -635,8 +626,9 @@ def get_default_auth_manager() -> AuthManager:
 
     Session 등에서 매 호출마다 AuthManager()를 새로 만들면 per-email refresh lock dict이
     각 인스턴스마다 독립적이라 lock이 의미가 없다. 동일 프로세스 내에서는 같은 인스턴스를
-    공유해 lock dict, callback_server, aiohttp 세션을 재사용한다.
+    공유해 lock dict, callback_server, aiohttp 세션을 재사용한다. (mode 0 전용)
     """
+    refuse_in_multi_user("get_default_auth_manager()")
     global _default_auth_manager
     if _default_auth_manager is None:
         _default_auth_manager = AuthManager()
@@ -673,7 +665,7 @@ async def main():
                 print(f"\nRefreshing token for {email}...")
                 token = await manager.validate_and_refresh_token(email, auto_reauth=True)
                 if token:
-                    print(f"Access token: {token[:30]}...")
+                    print("Access token acquired.")  # 토큰 값·앞부분은 출력하지 않는다
                 else:
                     print("Failed to get token.")
                 return
@@ -709,7 +701,7 @@ async def main():
     except KeyboardInterrupt:
         print("\nCancelled.")
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error("Error: %s", type(e).__name__)
         print(f"\nError: {str(e)}")
     finally:
         await manager.close()

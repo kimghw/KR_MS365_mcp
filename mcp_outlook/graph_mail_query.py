@@ -9,20 +9,33 @@ Graph Mail Query - 메일 조회 엔트리포인트
     - 클라이언트 사이드 필터링
 
 URL 빌드는 graph_mail_url.py에서 담당
+
+멀티유저(spec/spec_멀티유저.md ②-2.4·②-7.5, WP4):
+    - 토큰 공급자는 주입받아 빌려 쓴다(`close()` 가 닫지 않는다). URL 빌더는 요청마다 새로
+      만든다(이메일에 따라 바뀌는 공유 캐시 없음).
+    - `query_url`(= `mail_query_url`)과 페이지 URL 은 mode 1 에서 `outlook_security.check_mail_query_url`
+      정책을 토큰 획득 **전에** 통과해야 한다. Authorization 을 단 요청은 redirect 를 따라가지 않는다.
+    - 발송 첨부(로컬 파일)는 mode 1 에서 사용자 `files/` 안만 읽는다.
+    - 로그에 이메일·URL·Graph 오류 본문을 싣지 않는다.
 """
 
 import asyncio
+import logging
 import aiohttp
 import sys
 import os
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime
-from urllib.parse import urlparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mcp_common.errors import ToolExecutionError
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
+
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
+    from mcp_common.user_paths import UserPaths
 from .outlook_types import (
     FilterParams,
     ExcludeParams,
@@ -32,6 +45,24 @@ from .outlook_types import (
     build_select_query,
 )
 from .graph_mail_url import GraphMailUrlBuilder
+from . import outlook_security as limits
+from .outlook_security import (
+    BEARER_KW,
+    GRAPH_BASE,
+    acquire_token,
+    bearer_headers,
+    check_top,
+    enforce_mail_query_url,
+    read_limited,
+    request_headers,
+    graph_error_detail,
+    is_graph_https,
+    legacy_token_provider,
+    public_error,
+    user_seg,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GraphMailQuery:
@@ -48,19 +79,23 @@ class GraphMailQuery:
     # 토큰을 붙여도 되는 호스트. query_url 은 호출자가 준 URL 을 그대로 받으므로 반드시 검사한다.
     ALLOWED_GRAPH_HOSTS = frozenset({"graph.microsoft.com"})
 
-    def __init__(self, token_provider: Optional["TokenProviderProtocol"] = None):
+    def __init__(
+        self,
+        token_provider: Optional["TokenProviderProtocol"] = None,
+        paths: Optional["UserPaths"] = None,
+    ):
         """
         Initialize Graph Mail Query
 
         Args:
-            token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
+            token_provider: 토큰 제공자 (None이면 mode 0 공유 AuthManager — mode 1 은 주입 필수)
+            paths: mode 1 사용자 경로 (발송 첨부 읽기·첨부 저장 경계)
         """
         if token_provider is None:
-            # 하위 호환성: 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
-            from mcp_common.auth import get_shared_auth_manager
-            token_provider = get_shared_auth_manager()
+            # 하위 호환성(mode 0): 공유 AuthManager 싱글톤 사용 (per-email refresh lock 공유)
+            token_provider = legacy_token_provider()
         self.token_provider = token_provider
-        self._url_builder: Optional[GraphMailUrlBuilder] = None
+        self.paths = paths
 
     async def initialize(self) -> bool:
         """
@@ -80,18 +115,13 @@ class GraphMailQuery:
         Returns:
             Access token or None if failed
         """
-        try:
-            # TokenProvider handles all token caching and refresh logic
-            access_token = await self.token_provider.validate_and_refresh_token(user_email)
+        # TokenProvider handles all token caching and refresh logic.
+        # mode 1: 연결 없음·불일치는 SecurityError 로 올라간다(런타임이 연결 안내를 붙인다).
+        return await acquire_token(self.token_provider, user_email)
 
-            if not access_token:
-                print(f"Failed to get access token for {user_email}")
-
-            return access_token
-
-        except Exception as e:
-            print(f"Token retrieval error for {user_email}: {str(e)}")
-            return None
+    async def _request_headers(self, user_email: str) -> Dict[str, str]:
+        """요청 1건 직전에 토큰을 새로 얻는다 (N01) — 문자열을 들고 await 를 넘기지 않는다."""
+        return await request_headers(self.token_provider, user_email)
 
     async def _get_auth_url(self, user_email: str) -> Optional[Dict[str, Any]]:
         """
@@ -109,7 +139,7 @@ class GraphMailQuery:
 
     def _get_url_builder(self, user_email: str) -> GraphMailUrlBuilder:
         """
-        URL 빌더 인스턴스 반환 (캐싱)
+        URL 빌더 인스턴스 반환 — 요청마다 새로 만든다 (공유 상태 없음, ②-7.6)
 
         Args:
             user_email: 사용자 이메일
@@ -117,9 +147,7 @@ class GraphMailQuery:
         Returns:
             GraphMailUrlBuilder 인스턴스
         """
-        if self._url_builder is None or self._url_builder.user_email != user_email:
-            self._url_builder = GraphMailUrlBuilder(user_email)
-        return self._url_builder
+        return GraphMailUrlBuilder(user_email)
 
     def _build_query_url(
         self,
@@ -157,6 +185,7 @@ class GraphMailQuery:
         top: int = 450,
         orderby: Optional[str] = None,
     ) -> Dict[str, Any]:
+        top = check_top(top)
 
         # Get access token for the user
         access_token = await self._get_access_token(user_email)
@@ -164,7 +193,7 @@ class GraphMailQuery:
             auth_response = await self._get_auth_url(user_email)
             if auth_response:
                 return auth_response
-            raise Exception(f"Failed to get access token for {user_email}")
+            raise Exception("Failed to get access token")
 
         # Build filter parts using graph_types helper functions
         query_parts = []
@@ -203,7 +232,7 @@ class GraphMailQuery:
         )
 
         # Fetch data with immediate filtering if client_filter is provided
-        return await self._fetch_parallel_with_url(user_email, access_token, base_url, top, client_filter)
+        return await self._fetch_parallel_with_url(user_email, base_url, top, client_filter)
 
     def _apply_client_side_filter(self, emails: List[Dict], exclude: ExcludeParams) -> List[Dict]:
         """
@@ -383,16 +412,20 @@ class GraphMailQuery:
             url = "https://graph.microsoft.com/v1.0/users/me/messages?$filter=isRead eq false&$top=10"
             result = await query_url("user@example.com", url, top=100)
         """
+        top = check_top(top)
+        # mode 1: 호출자가 준 URL 은 토큰을 얻기 전에 경로 정책부터 통과해야 한다 (②-7.5)
+        enforce_mail_query_url(url)
+
         # Get access token for the user
         access_token = await self._get_access_token(user_email)
         if not access_token:
             auth_response = await self._get_auth_url(user_email)
             if auth_response:
                 return auth_response
-            raise Exception(f"Failed to get access token for {user_email}")
+            raise Exception("Failed to get access token")
 
         # Fetch data with the provided URL and apply filtering immediately
-        return await self._fetch_parallel_with_url(user_email, access_token, url, top, client_filter)
+        return await self._fetch_parallel_with_url(user_email, url, top, client_filter)
 
     async def query_search(
         self,
@@ -441,13 +474,15 @@ class GraphMailQuery:
             - $search cannot be combined with $filter
             - Search syntax follows KQL (Keyword Query Language)
         """
+        top = check_top(top)
+
         # Get access token for the user
         access_token = await self._get_access_token(user_email)
         if not access_token:
             auth_response = await self._get_auth_url(user_email)
             if auth_response:
                 return auth_response
-            raise Exception(f"Failed to get access token for {user_email}")
+            raise Exception("Failed to get access token")
 
         # Get select fields (새 SelectParams 구조에 맞게 처리)
         select_fields = None
@@ -479,8 +514,8 @@ class GraphMailQuery:
             import aiohttp
 
             async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                async with session.get(base_url, headers=headers) as response:
+                headers = await self._request_headers(user_email)
+                async with session.get(base_url, headers=headers, **BEARER_KW) as response:
                     if response.status == 200:
                         data = await response.json()
                         emails = data.get("value", [])
@@ -501,11 +536,13 @@ class GraphMailQuery:
                         error_text = await response.text()
                         return {
                             "value": [],
-                            "error": f"Search failed with status {response.status}: {error_text[:200]}",
+                            "error": f"Search failed with status {response.status}: {graph_error_detail(error_text, 200)}",
                             "status": "error",
                         }
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"value": [], "error": str(e), "status": "error"}
+            return {"value": [], "error": public_error(e), "status": "error"}
 
     def _build_message_payload(
         self,
@@ -547,15 +584,34 @@ class GraphMailQuery:
 
             file_attachments = []
             for path_str in attachments:
-                path = Path(path_str)
-                if not path.is_file():
-                    raise ValueError(f"첨부파일을 찾을 수 없음: {path_str}")
-                data = path.read_bytes()
-                # 직접 첨부는 파일당 3MB 까지 (초과는 업로드 세션이 필요)
-                if len(data) > 3 * 1024 * 1024:
-                    raise ValueError(
-                        f"첨부파일이 3MB 초과 (직접 첨부 한도): {path_str} ({len(data)} bytes)"
-                    )
+                if self.paths is not None:
+                    # mode 1: 사용자 files/ 안의 파일만 (resolve_safe_path + 경계). 경로 비노출.
+                    # 읽기는 검증한 handle 로 한다 — 검사 뒤 교체·hardlink 우회 차단 (R12).
+                    from mcp_common.secure_files import UnsafePathError, open_for_read
+
+                    from .outlook_file_policy import resolve_read_file
+
+                    path = resolve_read_file(self.paths, path_str)
+                    shown = path.name
+                    try:
+                        with open_for_read(path, self.paths.files) as fh:
+                            # 한도+1 바이트만 읽고 거부한다 — 전체를 메모리에 올리지 않는다 (N08)
+                            data = read_limited(fh, limits.MAX_SEND_ATTACHMENT_BYTES, what="첨부파일")
+                    except (FileNotFoundError, IsADirectoryError):
+                        raise ValueError("첨부파일을 찾을 수 없음") from None
+                    except UnsafePathError:
+                        raise SecurityError(ErrorCode.PATH_NOT_ALLOWED) from None
+                else:
+                    path = Path(path_str)
+                    shown = path_str
+                    if not path.is_file():
+                        raise ValueError(f"첨부파일을 찾을 수 없음: {path_str}")
+                    with open(path, "rb") as fh:
+                        try:
+                            data = read_limited(fh, limits.MAX_SEND_ATTACHMENT_BYTES, what="첨부파일")
+                        except ValueError:
+                            # 직접 첨부는 파일당 3MB 까지 (초과는 업로드 세션이 필요) — mode 0 은 경로 표시 유지
+                            raise ValueError(f"첨부파일이 3MB 초과 (직접 첨부 한도): {shown}") from None
                 content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
                 file_attachments.append(
                     {
@@ -603,7 +659,7 @@ class GraphMailQuery:
             auth_response = await self._get_auth_url(user_email)
             if auth_response:
                 return auth_response
-            raise Exception(f"Failed to get access token for {user_email}")
+            raise Exception("Failed to get access token")
 
         if not to_recipients:
             return {"status": "error", "error": "to_recipients 가 비어 있음"}
@@ -621,13 +677,13 @@ class GraphMailQuery:
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/sendMail"
+        url = f"{GRAPH_BASE}/users/{user_seg(user_email)}/sendMail"
         payload = {"message": message, "saveToSentItems": bool(save_to_sent_items)}
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as response:
+                headers = await self._request_headers(user_email)
+                async with session.post(url, headers=headers, json=payload, **BEARER_KW) as response:
                     # sendMail 은 성공 시 202 Accepted + 빈 본문을 돌려준다
                     if response.status == 202:
                         return {
@@ -643,10 +699,12 @@ class GraphMailQuery:
                     error_text = await response.text()
                     return {
                         "status": "error",
-                        "error": f"sendMail failed with status {response.status}: {error_text[:300]}",
+                        "error": f"sendMail failed with status {response.status}: {graph_error_detail(error_text, 300)}",
                     }
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": public_error(e)}
 
     async def save_draft(
         self,
@@ -682,7 +740,7 @@ class GraphMailQuery:
             auth_response = await self._get_auth_url(user_email)
             if auth_response:
                 return auth_response
-            raise Exception(f"Failed to get access token for {user_email}")
+            raise Exception("Failed to get access token")
 
         try:
             message = self._build_message_payload(
@@ -697,12 +755,12 @@ class GraphMailQuery:
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        url = f"{GRAPH_BASE}/users/{user_seg(user_email)}/messages"
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=message) as response:
+                headers = await self._request_headers(user_email)
+                async with session.post(url, headers=headers, json=message, **BEARER_KW) as response:
                     # 임시저장은 성공 시 201 Created + 생성된 message 리소스를 돌려준다
                     if response.status == 201:
                         data = await response.json()
@@ -720,15 +778,16 @@ class GraphMailQuery:
                     error_text = await response.text()
                     return {
                         "status": "error",
-                        "error": f"draft save failed with status {response.status}: {error_text[:300]}",
+                        "error": f"draft save failed with status {response.status}: {graph_error_detail(error_text, 300)}",
                     }
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": public_error(e)}
 
     async def _fetch_parallel_with_url(
         self,
         user_email: str,
-        access_token: str,
         base_url: str,
         total_items: int,
         client_filter: Optional[ExcludeParams] = None,
@@ -738,9 +797,10 @@ class GraphMailQuery:
         Always fetches in pages of 150 items
         Applies client-side filtering immediately as data is received
 
+        토큰은 페이지 요청마다 공급자에서 새로 얻는다 (N01) — 인자로 받지 않는다.
+
         Args:
             user_email: User email for context
-            access_token: Access token for API calls
             base_url: Base URL without pagination
             total_items: Total items to fetch
             client_filter: Optional client-side filter to apply immediately on fetch
@@ -748,8 +808,11 @@ class GraphMailQuery:
         Returns:
             All fetched and filtered emails
         """
-        parsed = urlparse(base_url)
-        if parsed.scheme != "https" or parsed.hostname not in self.ALLOWED_GRAPH_HOSTS:
+        # 한도 밖 top 은 코루틴을 하나도 만들기 전에 거부한다 (R02)
+        total_items = check_top(total_items)
+        # mode 1: 경로 정책 위반은 SecurityError (토큰을 실은 요청을 만들기 전에)
+        enforce_mail_query_url(base_url)
+        if not is_graph_https(base_url):
             return {
                 "status": "error",
                 "error": f"허용되지 않은 URL — https://graph.microsoft.com 만 가능: {base_url}",
@@ -764,58 +827,65 @@ class GraphMailQuery:
         num_pages = (total_items + page_size - 1) // page_size
 
         # For single page requests, still use parallel structure for consistency
-        if num_pages == 1:
-            print(f"\n[MAIL] Fetching {total_items} emails (single page)")
-        else:
-            print(f"\n[MAIL] Fetching {total_items} emails in {num_pages} pages ({page_size} per page)")
-
-        tasks = []
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        # Create headers with the provided access token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        logger.info("[MAIL] fetching %d emails in %d page(s) (%d per page)", total_items, num_pages, page_size)
 
         async def fetch_page(session, url, page_num):
-            async with semaphore:
-                try:
-                    async with session.get(url, headers=headers) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            emails = data.get("value", [])
+            try:
+                # 페이지마다 토큰을 새로 얻는다 — 폐기·epoch 변경이 다음 페이지에서 바로 끊긴다 (N01)
+                headers = await self._request_headers(user_email)
+                async with session.get(url, headers=headers, **BEARER_KW) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        emails = data.get("value", [])
 
-                            # Apply client-side filtering immediately if provided
-                            if client_filter and emails:
-                                filtered_emails = self._apply_client_side_filter(emails, client_filter)
-                                data["value"] = filtered_emails
-                                print(
-                                    f"  [OK] Page {page_num}: Retrieved {len(emails)} emails, kept {len(filtered_emails)} after filtering"
-                                )
-                            else:
-                                print(f"  [OK] Page {page_num}: Retrieved {len(emails)} emails")
-
-                            return data
+                        # Apply client-side filtering immediately if provided
+                        if client_filter and emails:
+                            filtered_emails = self._apply_client_side_filter(emails, client_filter)
+                            data["value"] = filtered_emails
+                            logger.debug(
+                                "[MAIL] page %d: %d emails, kept %d", page_num, len(emails), len(filtered_emails)
+                            )
                         else:
-                            print(f"  [FAIL] Page {page_num}: Error {response.status}")
-                            return {"value": [], "error": f"HTTP {response.status}", "page": page_num}
-                except Exception as e:
-                    print(f"  [FAIL] Page {page_num}: {str(e)}")
-                    return {"value": [], "error": str(e), "page": page_num}
+                            logger.debug("[MAIL] page %d: %d emails", page_num, len(emails))
+
+                        return data
+                    else:
+                        logger.warning("[MAIL] page %d: HTTP %s", page_num, response.status)
+                        return {"value": [], "error": f"HTTP {response.status}", "page": page_num}
+            except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+                raise  # 폐기·연결 없음은 부분 결과로 감추지 않는다
+            except Exception as e:
+                logger.warning("[MAIL] page %d: %s", page_num, type(e).__name__)
+                return {"value": [], "error": public_error(e), "page": page_num}
+
+        def page_url_for(page: int) -> str:
+            skip = page * page_size
+            # Always use page_size of 150, except for the last page
+            top = min(page_size, total_items - skip)
+            separator = "&" if "?" in base_url else "?"
+            url = f"{base_url}{separator}$top={top}&$skip={skip}"
+            # 다음 페이지 URL 도 같은 정책 (②-7.5)
+            enforce_mail_query_url(url)
+            return url
+
+        # 페이지 코루틴을 전부 미리 만들지 않는다 (R02): 동시 실행 수만큼의 worker 가
+        # 하나를 끝낸 뒤에야 다음 페이지를 만든다. 동시에 존재하는 페이지 작업 ≤ max_concurrent.
+        page_results: Dict[int, Dict[str, Any]] = {}
+        next_page = 0
+
+        async def worker(session):
+            nonlocal next_page
+            while next_page < num_pages:
+                page = next_page
+                next_page += 1
+                page_results[page] = await fetch_page(session, page_url_for(page), page + 1)
 
         async with aiohttp.ClientSession() as session:
             start_time = datetime.now()
-
-            for page in range(num_pages):
-                skip = page * page_size
-                # Always use page_size of 150, except for the last page
-                top = min(page_size, total_items - skip)
-
-                separator = "&" if "?" in base_url else "?"
-                page_url = f"{base_url}{separator}$top={top}&$skip={skip}"
-
-                tasks.append(fetch_page(session, page_url, page + 1))
-
-            results = await asyncio.gather(*tasks)
+            await asyncio.gather(*(worker(session) for _ in range(min(max_concurrent, num_pages))))
             elapsed = (datetime.now() - start_time).total_seconds()
+
+        results = [page_results[i] for i in range(num_pages)]
 
         # Collect all emails and errors
         all_emails = []
@@ -837,9 +907,7 @@ class GraphMailQuery:
             deduped.append(email)
         all_emails = deduped
 
-        print(f"[DONE] Fetched {len(all_emails)} emails in {elapsed:.2f}s")
-        if errors:
-            print(f"[WARN] {len(errors)} page(s) had errors")
+        logger.info("[MAIL] fetched %d emails in %.2fs (%d page error(s))", len(all_emails), elapsed, len(errors))
 
         return_data = {
             "value": all_emails,
@@ -956,7 +1024,11 @@ class GraphMailQuery:
         if attachment_handling in ["download", "convert", "convert_delete"]:
             message_ids = [email.get("id") for email in emails if email.get("id")]
             if message_ids:
-                handler = BatchAttachmentHandler(base_directory=save_directory or "downloads")
+                handler = BatchAttachmentHandler(
+                    base_directory=save_directory or "downloads",
+                    token_provider=self.token_provider,
+                    paths=self.paths,
+                )
                 attachment_result = await handler.fetch_and_save(
                     user_email=user_email,
                     message_ids=message_ids,
@@ -977,9 +1049,11 @@ class GraphMailQuery:
         }
 
     async def close(self):
-        """Clean up resources"""
-        if self.token_provider and hasattr(self.token_provider, 'close'):
-            await self.token_provider.close()
+        """Clean up resources — 토큰 공급자는 빌린 것이므로 닫지 않는다 (②-2.4 종료 경로 소유권).
+
+        세션은 요청마다 열고 닫으므로 이 객체가 소유한 열린 자원은 없다.
+        """
+        return None
 
 
 # Convenience function for quick queries

@@ -548,10 +548,14 @@ class TestOneNoteService:
             },
         ])
 
-        result = initialized_service.reader.get_page_history("p1")
+        result = initialized_service.reader.get_page_history("test@example.com", "p1")
 
         assert result["success"] is True
         assert result["count"] == 2
+        # 변경 이력은 page_id 만이 아니라 소유자 범위로 조회한다 (spec_멀티유저 ②-2.5)
+        mock_db_service.get_page_changes.assert_called_once_with(
+            "p1", 20, user_id="test@example.com"
+        )
         assert result["changes"][0]["action"] == "append"
         assert result["changes"][1]["change_summary"] == "제목 수정"
 
@@ -729,7 +733,10 @@ class TestOneNoteService:
         mock_db_service.delete_item.assert_called_once_with(
             user_id="test@example.com", item_id="p1"
         )
-        mock_db_service.delete_summary.assert_called_once_with(page_id="p1")
+        # 요약 삭제도 호출자 소유 범위 (요약 삭제 IDOR 수정, spec_멀티유저 ②-2.5)
+        mock_db_service.delete_summary.assert_called_once_with(
+            page_id="p1", user_id="test@example.com"
+        )
 
     # ========================================================================
     # 접근자 테스트

@@ -49,7 +49,9 @@ class TestServiceSendChatFile:
         )
 
     @pytest.mark.asyncio
-    async def test_file_path_is_read_and_named_after_the_file(self, service, tmp_path):
+    async def test_file_path_is_read_and_named_after_the_file(self, service, tmp_path, monkeypatch):
+        # mode 0 도 허용 루트(프로젝트 루트·MCP_ALLOWED_PATHS) 안만 읽는다 — 검증한 handle 로 (R12)
+        monkeypatch.setenv("MCP_ALLOWED_PATHS", str(tmp_path))
         path = tmp_path / "증빙.pdf"
         path.write_bytes(PDF)
         await service.send_chat_file(content="x", file_path=str(path), user_email=ME)
@@ -102,7 +104,7 @@ class TestClientSendChatFile:
         assert [(m, e) for m, e, _ in calls] == [
             ("POST", "/chats"),
             ("POST", "/me/drive/items/item-1/invite"),
-            ("POST", "/me/chats/19:abc@unq.gbl.spaces/messages"),
+            ("POST", "/me/chats/19%3Aabc%40unq.gbl.spaces/messages"),
         ]
         assert calls[0][2]["chatType"] == "oneOnOne"
         assert [m["user@odata.bind"] for m in calls[0][2]["members"]] == [
@@ -126,33 +128,33 @@ class TestClientSendChatFile:
         client, calls = _client({})
         result = await client.send_chat_file(ME, "줄1\n<줄2>", "a.pdf", PDF, recipient_email=recipient,
                                              prefix="[claude]", content_type="text")
-        assert [(m, e) for m, e, _ in calls] == [("POST", "/me/chats/48:notes/messages")]
+        assert [(m, e) for m, e, _ in calls] == [("POST", "/me/chats/48%3Anotes/messages")]
         assert calls[0][2]["body"]["content"].startswith("[claude] 줄1<br>&lt;줄2&gt;<attachment id=")
         assert result["chat_id"] == "48:notes"
 
     @pytest.mark.asyncio
     async def test_group_chat_shares_with_every_other_member(self):
-        client, calls = _client({"/chats/19:group/members": {"success": True, "data": {"value": [
+        client, calls = _client({"/chats/19%3Agroup/members": {"success": True, "data": {"value": [
             {"email": ME}, {"email": "a@example.com"}, {"email": "b@example.com"}, {"email": None}]}}})
         await client.send_chat_file(ME, "x", "a.pdf", PDF, chat_id="19:group")
         assert calls[1][2]["recipients"] == [{"email": "a@example.com"}, {"email": "b@example.com"}]
-        assert calls[2][1] == "/me/chats/19:group/messages"
+        assert calls[2][1] == "/me/chats/19%3Agroup/messages"
 
     @pytest.mark.asyncio
     async def test_chat_id_wins_over_recipient_and_shares_with_the_whole_chat(self):
-        client, calls = _client({"/chats/19:group/members": {"success": True, "data": {"value": [
+        client, calls = _client({"/chats/19%3Agroup/members": {"success": True, "data": {"value": [
             {"email": ME}, {"email": "a@example.com"}, {"email": "b@example.com"}]}}})
         await client.send_chat_file(ME, "x", "a.pdf", PDF, chat_id="19:group", recipient_email="a@example.com")
         assert [(m, e) for m, e, _ in calls] == [
-            ("GET", "/chats/19:group/members"),
+            ("GET", "/chats/19%3Agroup/members"),
             ("POST", "/me/drive/items/item-1/invite"),
-            ("POST", "/me/chats/19:group/messages"),
+            ("POST", "/me/chats/19%3Agroup/messages"),
         ]
         assert calls[1][2]["recipients"] == [{"email": "a@example.com"}, {"email": "b@example.com"}]
 
     @pytest.mark.asyncio
     async def test_nothing_is_uploaded_or_sent_when_chat_members_cannot_be_read(self):
-        client, calls = _client({"/chats/19:group/members": {"success": False, "error": "API 요청 실패: 403"}})
+        client, calls = _client({"/chats/19%3Agroup/members": {"success": False, "error": "API 요청 실패: 403"}})
         result = await client.send_chat_file(ME, "x", "a.pdf", PDF, chat_id="19:group")
         assert result["success"] is False and "구성원을 읽지 못해" in result["error"]
         client._upload_chat_file.assert_not_awaited()
@@ -160,9 +162,9 @@ class TestClientSendChatFile:
 
     @pytest.mark.asyncio
     async def test_chat_with_only_me_is_sent_without_sharing(self):
-        client, calls = _client({"/chats/19:solo/members": {"success": True, "data": {"value": [{"email": ME}]}}})
+        client, calls = _client({"/chats/19%3Asolo/members": {"success": True, "data": {"value": [{"email": ME}]}}})
         result = await client.send_chat_file(ME, "x", "a.pdf", PDF, chat_id="19:solo")
-        assert [e for _, e, _ in calls] == ["/chats/19:solo/members", "/me/chats/19:solo/messages"]
+        assert [e for _, e, _ in calls] == ["/chats/19%3Asolo/members", "/me/chats/19%3Asolo/messages"]
         assert result["success"] is True
 
     @pytest.mark.asyncio

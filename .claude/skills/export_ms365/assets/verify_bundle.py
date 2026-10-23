@@ -6,7 +6,7 @@
 
 검사 항목
     structure : bundle_manifest.json 의 서버·공용 구성이 실제로 있는가
-    secrets   : .env / *.db 가 섞여 나가지 않았는가
+    secrets   : .env / *.db / 키·wrapped DEK·감사 로그·bearer key 가 섞여 나가지 않았는가
     imports   : 각 서버의 handlers 모듈이 import 되고 도구 목록이 나오는가
     schema    : 도구마다 description·inputSchema 가 있는가 (에이전트가 읽는 계약)
     http      : (--http) server_stream 을 실제로 띄워 /health 가 200 인가
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -104,15 +105,33 @@ def _bundle_files() -> list[Path]:
     return found
 
 
+#: 번들에 있으면 안 되는 파일 — 자격증명·DB·키, 멀티유저 산출물(wrapped DEK·감사 로그·데이터 루트 표식)
+_SECRET_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".pem", ".pfx", ".p12", ".key", ".kek", ".jsonl")
+_SECRET_NAMES = (".env", "wrapped_dek.json", "mail_metadata.json")
+#: 멀티유저 bearer key 실값 (`m365v1.<kid 32 hex>.<secret 43 base64url>`)
+_BEARER_RE = re.compile(r"m365v1\.[0-9a-f]{32}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
+_TEXT_SUFFIXES = (".py", ".md", ".json", ".yaml", ".yml", ".toml", ".txt", ".example", ".ps1", ".sh")
+
+
 def check_secrets() -> list[dict[str, Any]]:
+    files = _bundle_files()
     leaked = [
         p.relative_to(ROOT).as_posix()
-        for p in _bundle_files()
-        if p.name == ".env" or p.suffix in (".db", ".sqlite", ".sqlite3", ".pem", ".pfx")
+        for p in files
+        if p.name in _SECRET_NAMES or p.suffix in _SECRET_SUFFIXES
+        or (p.name == "deployment.json" and p.parent.name == "system")
     ]
+    for p in files:
+        if p.suffix in _TEXT_SUFFIXES or p.name == ".env.example":
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if _BEARER_RE.search(text):
+                leaked.append(f"{p.relative_to(ROOT).as_posix()} (bearer key)")
     if leaked:
         return [_fail("secrets", f"번들에 비밀 파일이 있다: {', '.join(leaked[:5])}")]
-    return [_ok("secrets", ".env / *.db 없음")]
+    return [_ok("secrets", ".env / *.db / 키·감사 로그·bearer key 없음")]
 
 
 def check_imports(manifest: dict[str, Any]) -> list[dict[str, Any]]:

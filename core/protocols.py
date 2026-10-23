@@ -4,6 +4,12 @@ Core Protocols - 모듈 간 의존성 추상화를 위한 Protocol 정의
 현재 정의:
     - TokenProviderProtocol: mcp_outlook이 session.AuthManager를 직접 알지 않아도 되게 함
 
+멀티유저 모드(MS365_MULTI_USER=1)에서는 이 Protocol 의 "email=None 이면 기본 사용자"
+의미가 **적용되지 않는다.** 도메인 코드가 받는 공급자는
+`mcp_common.security_contracts.BoundTokenProvider` (한 사용자에 고정, email 은 일치
+확인만)이며, 같은 `validate_and_refresh_token` 시그니처를 과도기 어댑터로 제공한다
+(spec/spec_멀티유저.md ②-11.1).
+
 사용 예시:
     # 테스트용 Mock 주입
     mock_provider = MockTokenProvider()
@@ -30,7 +36,8 @@ class TokenProviderProtocol(Protocol):
         유효한 액세스 토큰 반환 (필요시 자동 갱신)
 
         Args:
-            email: 사용자 이메일. None이면 auth.db에서 첫 번째 사용자를 자동으로 가져옴
+            email: 사용자 이메일. None이면 auth.db에서 기본 사용자를 고른다 (mode 0 전용 —
+                멀티유저에서는 공급자에 고정된 사용자만 쓴다)
 
         Returns:
             유효한 액세스 토큰 또는 None

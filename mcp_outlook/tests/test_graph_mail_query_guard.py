@@ -7,6 +7,17 @@ from mcp_outlook.graph_mail_query import GraphMailQuery
 GRAPH = "https://graph.microsoft.com/v1.0/me/messages"
 
 
+class _Provider:
+    """요청마다 토큰을 새로 얻는 계약(N01) — 호출 수를 센다."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def validate_and_refresh_token(self, email=None, auto_reauth=False):
+        self.calls += 1
+        return "tok"
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -16,10 +27,12 @@ GRAPH = "https://graph.microsoft.com/v1.0/me/messages"
     ],
 )
 async def test_token_is_not_sent_to_non_graph_url(url):
-    q = GraphMailQuery(token_provider=object())
-    result = await q._fetch_parallel_with_url("u@x", "SECRET", url, 10)
+    provider = _Provider()
+    q = GraphMailQuery(token_provider=provider)
+    result = await q._fetch_parallel_with_url("u@x", url, 10)
     assert result["status"] == "error"
     assert result["value"] == []
+    assert provider.calls == 0  # 거부된 URL 에는 토큰을 얻지도 않는다
 
 
 class _Resp:
@@ -41,7 +54,9 @@ class _Session:
     def __init__(self, pages):
         self._pages = pages
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, **kwargs):
+        # Authorization 을 단 요청은 redirect 를 따라가지 않는다 (spec/spec_멀티유저.md ②-7.5)
+        assert kwargs.get("allow_redirects") is False
         skip = int(url.split("$skip=")[1])
         return _Resp({"value": self._pages.get(skip, [])})
 
@@ -59,7 +74,9 @@ async def test_duplicate_ids_across_pages_are_dropped(monkeypatch):
         150: [{"id": "m149"}] + [{"id": f"m{i}"} for i in range(150, 299)],
     }
     monkeypatch.setattr("mcp_outlook.graph_mail_query.aiohttp.ClientSession", lambda: _Session(pages))
-    q = GraphMailQuery(token_provider=object())
-    result = await q._fetch_parallel_with_url("u@x", "tok", GRAPH, 300)
+    provider = _Provider()
+    q = GraphMailQuery(token_provider=provider)
+    result = await q._fetch_parallel_with_url("u@x", GRAPH, 300)
     ids = [e["id"] for e in result["value"]]
     assert len(ids) == len(set(ids)) == 299
+    assert provider.calls == 2  # 페이지마다 토큰을 새로 얻는다 (N01)

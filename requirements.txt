@@ -31,7 +31,9 @@ charset-normalizer==3.5.1
 click==8.5.0
     # via uvicorn
 cryptography==50.0.1
-    # via pyjwt
+    # via
+    #   kr-ms365-mcp
+    #   pyjwt
 frozenlist==1.8.0
     # via
     #   aiohttp
@@ -78,7 +80,9 @@ pydantic-core==2.46.5
 pydantic-settings==2.15.0
     # via mcp
 pyjwt==2.14.0
-    # via mcp
+    # via
+    #   kr-ms365-mcp
+    #   mcp
 python-dotenv==1.2.3
     # via
     #   kr-ms365-mcp

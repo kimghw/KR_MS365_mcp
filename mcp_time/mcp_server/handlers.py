@@ -7,6 +7,11 @@ Time MCP — 도구 정의와 핸들러. **두 트랜스포트가 공유하는 �
 
 이 모듈은 트랜스포트를 import 하지 않는다(단방향 의존). 또한 프로세스 부트스트랩을
 수행하지 않는다 — 호출자가 `mcp_common.bootstrap` 을 먼저 돌린 뒤 import 해야 한다.
+
+멀티유저(spec/spec_멀티유저.md ②-2.4·②-7.3): Time 은 개인 토큰·DB·사용자 상태가 없어
+서비스 factory 를 **등록하지 않고** 무상태 전역 `time_service` 를 두 모드 공통으로 쓴다.
+HTTP bearer 인증·principal 확인은 공용 런타임/트랜스포트가 다른 도메인과 똑같이 적용한다
+(런타임은 factory 가 없는 도메인에서 서비스 lease 를 건너뛴다).
 """
 
 from typing import Any, Dict, List, Optional
@@ -26,6 +31,7 @@ DEFAULT_PORT = SPEC.port or 5007
 MCP_TOOLS: List[Dict[str, Any]] = SPEC.mcp_tools()
 
 
+# 사용자 데이터가 없는 무상태 서비스 — mode 1 에서도 전역 하나로 충분하다.
 time_service = TimeService()
 
 

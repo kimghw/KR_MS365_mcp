@@ -30,6 +30,14 @@
 `WindowsSandboxClient.exe` 는 **이 빌드에서는 보이지 않는다.** "이미 실행 중인가"를 판별할
 때 클라이언트 이름만 보면 놓친다 — `vmmemWindowsSandbox` 를 같이 봐야 한다.
 
+**2026-10-20 재관측(같은 26200, 누적 업데이트 뒤)**: 샌드박스가 떠 있는 동안 `vmmemWindowsSandbox` 와
+`WindowsSandboxServer` 가 **보이지 않고** `WindowsSandboxRemoteSession` 만 보였다. `hcsdiag list` 도
+실행 중인 컨테이너를 내놓지 않는다(`SavedAsTemplate` 한 줄뿐). `vmmemCmZygote` 는 샌드박스 기동과
+무관하게 상주하므로 판별 근거가 못 된다. 그래서 "실행 중인가"는 세 이름을 모두 본다 —
+`vmmemWindowsSandbox` / `WindowsSandboxClient` / `WindowsSandboxRemoteSession`. `tasklist` 는 이름을
+25자로 잘라 `WindowsSandboxRemoteSessi` 로 찍으니 접두어로 비교한다. 이 빌드에서는 `RemoteSession` 을
+`Stop-Process` 로 끝내면 VM 도 같이 내려간다(고아 없음, 곧바로 재기동 가능).
+
 ## 고아 VM 정리
 
 `WindowsSandboxServer`/`RemoteSession` 을 강제 종료해도 `vmmemWindowsSandbox` 가 메모리를

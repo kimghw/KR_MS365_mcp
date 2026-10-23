@@ -83,6 +83,14 @@ done
 주의: `.env` 는 정확한 이름으로만 막는다 — `.env.example` 은 **들어가야 하는** 파일이다.
 `*.env` 같은 와일드카드로 막으면 예시 파일까지 사라진다.
 
+멀티유저 모드(`MS365_MULTI_USER=1`) 산출물은 이름 규칙 + 구조 규칙 두 겹으로 막는다.
+
+- 이름: `wrapped_dek.json`, `*.jsonl`(감사 로그), `*.key`/`*.kek`, `migration_mapping*.json`,
+  `mail_metadata.json`, `metadata.json`
+- 구조(`DATA_ROOT_MARKER`): `system/deployment.json` 이 있는 디렉터리의 `system/` 과 형제 `users/`
+  를 통째로 뺀다. 데이터 루트를 실수로 패키지 안에 둔 경우까지 잡기 위해서다 — 사용자별 토큰 DB·
+  registry·이전 산출물(snapshot·staging·quarantine)이 전부 그 아래에 있다.
+
 ## 비밀 스캔
 
 두 겹이다.
@@ -91,8 +99,12 @@ done
    파일에 그 문자열이 있는지 본다. 가장 확실한 신호다. 위반 보고에는 **키 이름과 파일
    경로만** 남기고 값은 절대 찍지 않는다.
 2. **모양 대조** — `AZURE_CLIENT_SECRET=<8자 이상>`, 30자 이상 UUID 형태의 CLIENT_ID,
-   40자 이상 `refresh_token`/`access_token` 리터럴. `your_`, `_here`, `example`, `<`,
-   `${` 같은 자리표시자 힌트가 값에 있으면 통과시킨다(`.env.example` 이 여기 해당한다).
+   40자 이상 `refresh_token`/`access_token` 리터럴, 멀티유저 bearer key 실값
+   (`m365v1.<32 hex>.<43 base64url>`), `MS365_KEK_B64=<40자 이상>`. `your_`, `_here`, `example`, `<`,
+   `${` 같은 자리표시자 힌트가 값에 있거나, hex 자리 3/4 이상이 0 인 테스트용 GUID 면 통과시킨다
+   (`.env.example`·`mcp_common/testing.py` 가 여기 해당한다). bearer key 는 형식이 고정이라 예외가 없다.
+
+`verify_bundle.py` 의 secrets 검사도 같은 대상(파일 이름 + bearer key 리터럴)을 받는 쪽에서 다시 본다.
 
 걸리면 **번들을 지우고** 예외를 던진다. 반쯤 만들어진 번들이 남아 실수로 배포되는 것을
 막기 위해서다.

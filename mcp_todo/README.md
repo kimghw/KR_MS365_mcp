@@ -39,6 +39,20 @@ mcp_todo/
 ## Graph API 엔드포인트
 
 베이스: `https://graph.microsoft.com/v1.0/users/{user_email}/todo`
+(멀티유저 모드 `MS365_MULTI_USER=1` 에서는 `https://graph.microsoft.com/v1.0/me/todo` —
+토큰 주인에 고정. `user_email` 은 인증된 호출자의 연결 계정만 허용하고, 서비스는 사용자별로
+서비스 풀이 만든다: `handlers.create_service`)
+
+- bearer 를 단 요청은 redirect 를 따라가지 않는다(`allow_redirects=False`, 두 모드 공통). 3xx 는
+  상태 코드만 담은 오류로 돌려준다.
+- `@odata.nextLink` 이어 조회는 `GraphTodoQuery.fetch_next_link()` 로만 한다 — 본인
+  `/v1.0/me/todo/...` 또는 본인 `/users/{id}/todo/...`, dot-segment 없음. 그 밖은 `path_not_allowed`.
+  정책 구현 `graph_url_policy.py` 는 calendar·onedrive 와 같은 사본이다.
+- 기존 Python 연동용 `from mcp_todo.todo_service import todo_service` 는 유지된다 — mode 0 에서는
+  handlers 의 legacy 인스턴스(지연 속성, `import *` 에도 포함), 멀티유저 모드에서는
+  `LegacyAuthDisabledError`(`import *` 에는 포함되지 않아 아무것도 만들지 않는다).
+- 입력 상한(R02): `top` 1~1000, `categories` 최대 50개 — YAML `minimum`/`maximum`/`maxItems` 가 MCP
+  입력을 막고, 서비스 함수도 Graph 요청 전에 `input_bounds` 로 한 번 더 막는다(`invalid_argument`).
 
 - `GET /lists` — 리스트 조회
 - `POST /lists` — 리스트 생성

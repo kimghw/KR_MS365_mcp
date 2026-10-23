@@ -14,7 +14,10 @@
 
 무엇이 절대 안 들어가는가:
     .env  *.db  venv/  __pycache__/  *.log  output/  downloads/  .git/
-    그리고 원본 `.env` 의 실제 값이 어딘가에 박혀 있으면 **빌드가 실패한다**(비밀 스캔).
+    멀티유저 데이터 루트(system/deployment.json 이 있는 트리)·wrapped_dek.json·감사 로그(*.jsonl)·
+    이전 산출물(system/migration/)·키 파일(*.key/*.kek/*.pem/*.pfx/*.p12)·legacy 메타데이터 JSON
+    그리고 원본 `.env` 의 실제 값, bearer key(`m365v1.<kid>.<secret>`), `MS365_KEK_B64` 값이
+    어딘가에 박혀 있으면 **빌드가 실패한다**(비밀 스캔).
 """
 
 from __future__ import annotations
@@ -92,13 +95,28 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "*.pem",
     "*.pfx",
     "*.p12",
+    "*.key",
+    "*.kek",
+    # 멀티유저(mode 1) 산출물 — spec/spec_멀티유저.md ②-7.2. 사용자별 wrapped DEK, 감사 로그
+    "wrapped_dek.json",
+    "*.jsonl",
+    # legacy 메타데이터·이전 매핑 (이메일·파일 경로가 들어 있다)
+    "mail_metadata.json",
+    "migration_mapping*.json",
     "node_modules",
     ".DS_Store",
     "Thumbs.db",
 )
 
 #: 이름이 정확히 이것이면 제외 (`.env.example` 은 살린다).
-EXCLUDE_EXACT: tuple[str, ...] = (".env", ".env.local", "auth.db", "metadata.db")
+EXCLUDE_EXACT: tuple[str, ...] = (
+    ".env", ".env.local", "auth.db", "metadata.db", "metadata.json",
+    ".migration_lock",  # 멀티유저 이전 잠금 (tools/migrate_multi_user) — 번들에 실리면 수신자 mode 0 기동이 막힌다
+)
+
+#: 멀티유저 데이터 루트의 표식. 이 파일이 있는 `system/` 과 그 형제 `users/` 는 통째로 뺀다
+#: (MS365_DATA_ROOT 를 실수로 패키지 안에 둔 경우까지 — 이름 규칙만으로는 못 잡는다).
+DATA_ROOT_MARKER = ("system", "deployment.json")
 
 #: 텍스트 파일에서 찾아내면 빌드를 멈추는 패턴. 값 자리에 플레이스홀더가 오면 통과시킨다.
 #: 키 뒤의 `['\"]?` 는 JSON(`"refresh_token": "..."`)처럼 키가 따옴표로 닫히는 경우를 위한
@@ -108,6 +126,10 @@ SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("AZURE_CLIENT_ID", r"AZURE_CLIENT_ID['\"]?\s*[=:]\s*['\"]?([0-9a-fA-F-]{30,})"),
     ("refresh_token", r"refresh_token['\"]?\s*[=:]\s*['\"]([A-Za-z0-9._\-]{40,})['\"]"),
     ("access_token", r"access_token['\"]?\s*[=:]\s*['\"]([A-Za-z0-9._\-]{40,})['\"]"),
+    # 멀티유저 bearer key — 형식이 고정이라(kid 32 hex + secret 43 base64url) 자리표시자와 섞이지 않는다
+    ("bearer_key", r"(m365v1\.[0-9a-f]{32}\.[A-Za-z0-9_\-]{43})(?![A-Za-z0-9_\-])"),
+    # 개발용 KEK (32바이트 base64 = 44자). 값이 비어 있는 예시 줄은 걸리지 않는다
+    ("MS365_KEK_B64", r"MS365_KEK_B64['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9+/_\-]{40,}={0,2})"),
 )
 
 #: 위 패턴에 걸려도 "설명용 자리표시자"면 넘어간다.
@@ -117,7 +139,7 @@ PLACEHOLDER_HINTS: tuple[str, ...] = (
 )
 
 TEXT_SUFFIXES: tuple[str, ...] = (
-    ".py", ".md", ".yaml", ".yml", ".json", ".toml", ".txt", ".cfg", ".ini",
+    ".py", ".md", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini",
     ".example", ".ps1", ".sh", ".bat", ".in", ".gitignore",
 )
 
@@ -133,8 +155,17 @@ def _is_excluded(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_PATTERNS)
 
 
+def _is_data_root_part(directory: Path, name: str) -> bool:
+    """`directory/name` 이 멀티유저 데이터 루트의 `system/` 또는 `users/` 인가."""
+    marker_dir, marker_file = DATA_ROOT_MARKER
+    if name == marker_dir and (directory / name / marker_file).is_file():
+        return True
+    return name == "users" and (directory / marker_dir / marker_file).is_file()
+
+
 def _ignore(_dir: str, names: list[str]) -> list[str]:
-    return [n for n in names if _is_excluded(n)]
+    directory = Path(_dir)
+    return [n for n in names if _is_excluded(n) or _is_data_root_part(directory, n)]
 
 
 def _copy_tree(src: Path, dst: Path) -> int:
@@ -201,6 +232,16 @@ def _host_env_secrets(root: Path) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _synthetic_uuid(value: str) -> bool:
+    """테스트용 가짜 GUID(`00000000-0000-0000-0000-00000000c11e`) — hex 자리 3/4 이상이 0.
+
+    실제 Entra 앱 ID 는 난수라 이렇게 될 확률이 없다. mcp_common/testing.py 의 테스트 앱 ID 가
+    AZURE_CLIENT_ID 모양 검사에 걸려 번들이 폐기되던 오탐을 막는다(2026-10-22).
+    """
+    digits = re.sub(r"[^0-9a-f]", "", value.lower())
+    return len(digits) >= 30 and digits.count("0") * 4 >= len(digits) * 3
+
+
 def scan_secrets(bundle: Path, host_secrets: list[tuple[str, str]]) -> list[str]:
     """번들에 비밀이 섞였으면 사람이 읽을 수 있는 위반 목록을 돌려준다(값은 안 찍는다)."""
     violations: list[str] = []
@@ -212,6 +253,10 @@ def scan_secrets(bundle: Path, host_secrets: list[tuple[str, str]]) -> list[str]
 
         if path.name in EXCLUDE_EXACT or _is_excluded(path.name):
             violations.append(f"{rel}: 제외 대상 파일이 번들에 남아 있다")
+            continue
+        if any(_is_data_root_part(parent.parent, parent.name) for parent in path.parents if parent != bundle
+               and bundle in parent.parents):
+            violations.append(f"{rel}: 멀티유저 데이터 루트(system/·users/)가 번들에 남아 있다")
             continue
 
         if path.suffix.lower() not in TEXT_SUFFIXES and path.name not in (".gitignore", ".env.example"):
@@ -230,7 +275,10 @@ def scan_secrets(bundle: Path, host_secrets: list[tuple[str, str]]) -> list[str]
         for label, pattern in SECRET_PATTERNS:
             for match in re.finditer(pattern, text):
                 captured = match.group(1).lower()
-                if any(hint in captured for hint in PLACEHOLDER_HINTS):
+                # bearer key 는 형식이 고정이라 자리표시자 예외를 두지 않는다(난수에 "fake" 가 섞여도 잡는다)
+                if label != "bearer_key" and (
+                    any(hint in captured for hint in PLACEHOLDER_HINTS) or _synthetic_uuid(captured)
+                ):
                     continue
                 line_no = text.count("\n", 0, match.start()) + 1
                 violations.append(f"{rel}:{line_no}: {label} 실값으로 보이는 리터럴")
@@ -340,7 +388,7 @@ KR_MS365_mcp 에서 잘라낸 MS365 MCP 서버 번들. 이 디렉터리 하나�
 
 | 구성 | 경로 | 역할 |
 |---|---|---|
-| 인증 | `session/`, `callback_server.py` | Azure OAuth, refresh_token 갱신, `database/auth.db` 저장 |
+| 인증 | `session/`, `callback_server.py` | Azure OAuth, refresh_token 갱신, `database/auth.db` 저장 (멀티유저 모드는 `session/README.md`) |
 | 공용 런타임 | `mcp_common/` | 도구 스키마 파생·검증, stdio/HTTP 트랜스포트, 부트스트랩 |
 | 프로토콜 | `core/` | 서비스 프로토콜 정의 |
 | time 서버 | `mcp_time/` | 시간·타임존 도구 (다른 서버가 날짜 인자를 만들 때 쓴다) |
@@ -396,6 +444,10 @@ Claude Code 에서 이 디렉터리를 열었다면 `/setup_ms365` 한 줄로 �
 첫 도구 호출 때 MCP 서버가 브라우저 OAuth 를 열고 토큰을 `database/auth.db` 에 저장한다.
 콜백 포트는 5000 고정이며 `AZURE_REDIRECT_URI` 와 Azure 앱 등록의 리디렉션 URI 가
 같아야 한다. 모든 서버가 `.env` 와 `auth.db` 를 공유하므로 **인증은 1회면 된다**.
+
+위는 기본(단일 운영자) 모드다. 여러 사용자가 한 서버를 함께 쓰는 **멀티유저 모드**
+(`MS365_MULTI_USER=1` — 사용자별 bearer key·암호화 토큰 DB·중앙 OAuth gateway)는
+`session/README.md` 의 "멀티유저 모드" 절과 `.env.example` 의 해당 블록을 따른다.
 
 ## 주의
 

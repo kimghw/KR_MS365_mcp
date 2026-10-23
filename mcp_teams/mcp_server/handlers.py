@@ -10,12 +10,22 @@ Teams MCP — 핸들러와 `Server` 구성. **두 트랜스포트가 공유하�
 
 이 모듈은 트랜스포트를 import 하지 않는다(단방향 의존). 또한 프로세스 부트스트랩을
 수행하지 않는다 — 호출자가 `mcp_common.bootstrap` 을 먼저 돌린 뒤 import 해야 한다.
+
+멀티유저(spec/spec_멀티유저.md ②-7.6): 서비스는 `create_service()` factory 로 사용자마다
+만들어지고(DB 는 사용자별 `db/teams.db` — auth.db 아님) 런타임이 요청마다 lease 해 묶는다.
+핸들러는 `_service()` 로 꺼낸다 — mode 0 에서만 전역 `teams_service` 를 쓴다.
 """
 
 from typing import Any, Dict, List, Optional
 
 from mcp_common.param_spec import load_param_spec
+from mcp_common.principal import Principal
 from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.security_contracts import BoundTokenProvider
+from mcp_common.security_policy import multi_user_enabled
+from mcp_common.service_context import service_for
+from mcp_common.service_pool import register_service_factory
+from mcp_common.user_paths import UserPaths
 from mcp_common.user_resolver import resolve_user_email
 
 from mcp_teams.teams_service import TeamsService
@@ -30,7 +40,27 @@ DEFAULT_PORT = SPEC.port or 5003
 MCP_TOOLS: List[Dict[str, Any]] = SPEC.mcp_tools()
 
 
-teams_service = TeamsService()
+async def create_service(
+    principal: Principal, paths: UserPaths, tokens: BoundTokenProvider
+) -> TeamsService:
+    """사용자별 서비스 factory — 생성만 한다(initialize/close 는 서비스 풀이 부른다)."""
+    return TeamsService(
+        principal=principal,
+        token_provider=tokens,
+        db_path=paths.teams_db,
+        files_root=paths.files,
+    )
+
+
+register_service_factory(SERVER_NAME, create_service)
+
+# mode 0 전용 전역 인스턴스. mode 1 에서는 만들지 않는다(공용 AuthManager·auth.db 를 끌어오므로).
+teams_service: Optional[TeamsService] = None if multi_user_enabled() else TeamsService()
+
+
+def _service() -> TeamsService:
+    """mode 1 → 이 요청에 lease 된 사용자 서비스, mode 0 → 전역 인스턴스."""
+    return service_for(SERVER_NAME, legacy=teams_service)
 
 
 def _args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -50,81 +80,81 @@ def _args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_list_chats(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.list_chats(**_args("handler_teams_list_chats", args))
+    return await _service().list_chats(**_args("handler_teams_list_chats", args))
 
 
 async def handle_get_chat(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.get_chat(**_args("handler_teams_get_chat", args))
+    return await _service().get_chat(**_args("handler_teams_get_chat", args))
 
 
 async def handle_get_chat_messages(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.get_chat_messages(
+    return await _service().get_chat_messages(
         **_args("handler_teams_get_chat_messages", args)
     )
 
 
 async def handle_send_chat_message(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.send_chat_message(
+    return await _service().send_chat_message(
         **_args("handler_teams_send_chat_message", args)
     )
 
 
 async def handle_send_chat_file(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.send_chat_file(
+    return await _service().send_chat_file(
         **_args("handler_teams_send_chat_file", args)
     )
 
 
 async def handle_list_teams(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.list_teams(**_args("handler_teams_list_teams", args))
+    return await _service().list_teams(**_args("handler_teams_list_teams", args))
 
 
 async def handle_list_channels(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.list_channels(**_args("handler_teams_list_channels", args))
+    return await _service().list_channels(**_args("handler_teams_list_channels", args))
 
 
 async def handle_get_channel_messages(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.get_channel_messages(
+    return await _service().get_channel_messages(
         **_args("handler_teams_get_channel_messages", args)
     )
 
 
 async def handle_send_channel_message(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.send_channel_message(
+    return await _service().send_channel_message(
         **_args("handler_teams_send_channel_message", args)
     )
 
 
 async def handle_get_message_replies(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.get_message_replies(
+    return await _service().get_message_replies(
         **_args("handler_teams_get_message_replies", args)
     )
 
 
 async def handle_save_korean_name(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.save_korean_name(
+    return await _service().save_korean_name(
         **_args("handler_teams_save_korean_name", args)
     )
 
 
 async def handle_save_korean_names_batch(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.save_korean_names_batch(
+    return await _service().save_korean_names_batch(
         **_args("handler_teams_save_korean_names_batch", args)
     )
 
 
 async def handle_find_chat_by_name(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.find_chat_by_name(
+    return await _service().find_chat_by_name(
         **_args("handler_teams_find_chat_by_name", args)
     )
 
 
 async def handle_sync_chats(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.sync_chats(**_args("handler_teams_sync_chats", args))
+    return await _service().sync_chats(**_args("handler_teams_sync_chats", args))
 
 
 async def handle_get_chats_without_korean(args: Dict[str, Any]) -> Dict[str, Any]:
-    return await teams_service.get_chats_without_korean(
+    return await _service().get_chats_without_korean(
         **_args("handler_teams_get_chats_without_korean", args)
     )
 
@@ -179,6 +209,7 @@ def build_mcp_server():
 
 
 __all__ = [
+    "create_service",
     "SERVER_NAME",
     "SERVER_VERSION",
     "DEFAULT_PORT",

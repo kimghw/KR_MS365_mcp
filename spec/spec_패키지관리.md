@@ -13,6 +13,7 @@
 | 2026-09-16 | (확인 질문 답변) 가상환경 디렉터리는 **`.venv`** 로 전환. MCP 등록 6개가 전부 HTTP URL 이라 Python 경로에 묶여 있지 않아 비용이 없음을 확인한 뒤 결정. |
 | 2026-09-16 | (확인 질문 답변) `requirements.txt` 는 **`uv export` 산출물로 유지**. uv 없는 사람도 pip 으로 설치할 수 있게. |
 | 2026-09-16 | (확인 질문 답변) 번들(`/export_ms365`)과 샌드박스 검증도 **uv 로 바꾸고 재검증**. |
+| 2026-10-22 | (멀티유저 WP11) 인증 계층이 직접 쓰는 `cryptography`·`PyJWT[crypto]` 를 명시 의존성으로, Key Vault KEK 용 `keyvault` extra 추가, 관리 도구 `tools/` 패키지·`tools/tests`·`tests/multi_user` testpaths 등록. [spec_멀티유저.md](spec_멀티유저.md) ②-6.2·②-10·②-11.3 |
 
 배경: 직전 작업([spec_번들내보내기.md](spec_번들내보내기.md))의 샌드박스 검증에서 **버전이
 고정돼 있지 않아 새 PC 에서 서버가 전부 깨지는 것**이 드러났다. 그때는 `pip freeze` 로
@@ -76,6 +77,13 @@ mcp 2.x 는 `Server.list_tools` 를 없앴다. `handlers.py` 의 `build_mcp_serv
 | pytest, pytest-asyncio, ruff, black | `[dependency-groups] dev` | `uv sync --frozen` (기본) |
 | 첨부파일 변환기 | `[project.optional-dependencies] converters` | `uv sync --frozen --extra converters` |
 | OneNote 요약 | `[project.optional-dependencies] agent` | `uv sync --frozen --extra agent` |
+| 멀티유저 KEK `azure_keyvault` (azure-identity, azure-keyvault-keys) | `[project.optional-dependencies] keyvault` | `uv sync --frozen --extra keyvault` |
+
+**코드가 직접 import 하는 패키지는 전이 의존에 기대지 않고 명시한다.** `cryptography`(토큰
+AES-256-GCM)·`PyJWT[crypto]`(ID token JWKS 검증)는 `mcp` 가 끌고 와서 이미 깔려 있었지만, mcp 가
+의존을 바꾸면 조용히 사라진다 — 그래서 기본 의존성에 하한(`cryptography>=42`, `PyJWT[crypto]>=2.8`
+— `PyJWKClient(timeout=)` 가 2.6+)과 함께 적었다(2026-10-22). Key Vault SDK 는 provider 를
+고른 배포에서만 필요하므로 extra 다(`session/key_provider.py` 가 지연 import).
 
 ### 2-5. 환경 디렉터리는 `.venv`
 
@@ -108,9 +116,9 @@ flat 레이아웃에 top-level 패키지가 10개, `py-modules = ["callback_serv
 
 | 항목 | 상태 | 내용 |
 |---|---|---|
-| `pyproject.toml` | 완료 | `mcp>=1.29,<2` 제약, `dev` → `[dependency-groups]` |
+| `pyproject.toml` | 완료 | `mcp>=1.29,<2` 제약, `dev` → `[dependency-groups]`. 2026-10-22: `cryptography`·`PyJWT[crypto]` 명시, `keyvault` extra, `tools*` 패키지 포함(`tools.tests` 제외), testpaths 에 `mcp_todo/tests`·`tools/tests`·`tests/multi_user` |
 | `.python-version` | 완료 | `3.12` |
-| `uv.lock` | 완료 | 77 패키지 |
+| `uv.lock` | 완료 | 77 패키지 → 83 패키지(2026-10-22, `keyvault` extra 의 azure-core·azure-identity·azure-keyvault-keys·isodate·msal·msal-extensions 추가. 기존 잠금 버전은 그대로) |
 | `requirements.txt` | 완료 | `uv export` 산출물로 교체 (전이 의존성 포함, `# via` 주석 포함) |
 | `.gitignore` | 완료 | `.venv/` 추가, `uv.lock` 은 커밋 대상임을 명시 |
 | `setup_ms365` | 완료 | SKILL.md(uv 절 신설·3-A 단계 교체), `verify_setup.py`(uv 검사 추가·`.venv` 경로·레거시 경고), `register_claude_desktop.py`(`.venv` 우선) |
@@ -138,6 +146,7 @@ flat 레이아웃에 top-level 패키지가 10개, `py-modules = ["callback_serv
 | 2026-09-16 | `uv run ruff check` 로 신규 스크립트 4개 정리 (UP006/UP045 등 100건 자동 수정) | 린트 통과 |
 | 2026-09-16 | 린트 후 재검증 — 호스트 `uv sync --frozen` + `verify_bundle.py --http` | 14/14 통과 |
 | 2026-09-16 | 린트 후 재검증 — Windows Sandbox 최종 | **14/14 통과, 전체 63초** (복사 24s → uv 설치 27s → `uv sync` 33s → 검증 42~63s). Python 3.12.14 |
+| 2026-10-22 | `uv lock` (네트워크 — `--offline` 은 azure 패키지가 캐시에 없어 실패) + `uv lock --check` + `uv export` | 83 패키지. `requirements.txt` 는 `# via` 주석만 바뀜(cryptography·pyjwt 에 `kr-ms365-mcp` 추가) — 기본 설치 조합 불변 |
 
 ### 속도
 
@@ -157,9 +166,11 @@ flat 레이아웃에 top-level 패키지가 10개, `py-modules = ["callback_serv
   기동돼 있어서다. 서버를 재시작(`/setup_ms365 restart all`)한 뒤 지우면 된다.
 - **Claude Desktop(STDIO) 등록**은 현재 없다. 등록하면 `.venv` 절대 경로가 config 에 박히므로,
   그 뒤로 환경을 옮길 때는 재등록이 필요하다.
-- **`README.md` 의 모듈 구성 표에 있는 `mcp_editor/` 행**은 죽은 정보다 — 그 모듈은
-  2026-08-12 에 폐지됐고 디렉터리도 없다. 설치 절(`pip install -e ".[editor]"` 를 안내하던
-  곳)은 이번에 다시 쓰면서 사라졌지만, 표의 한 줄은 남아 있다. 지울지는 사용자 판단.
+- ~~**`README.md` 의 모듈 구성 표에 있는 `mcp_editor/` 행**~~ — **해소(2026-10-22).** 멀티유저
+  문서 갱신 때 README 의 틀린 내용을 고치면서 지웠다(모듈은 2026-08-12 폐지, 디렉터리 없음).
+- **`keyvault` extra 는 잠금에만 있고 기본 `.venv` 에는 깔리지 않는다.** `azure_keyvault` KEK 를
+  쓰는 배포만 `uv sync --frozen --extra keyvault` 를 한다. 실제 Key Vault 로 wrap/unwrap 한 검증은
+  아직 없다(테스트는 memory/env provider).
 
 ---
 

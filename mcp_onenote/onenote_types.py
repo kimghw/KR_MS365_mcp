@@ -247,3 +247,36 @@ def build_onenote_select_query(
         return None
 
     return ",".join(fields)
+
+
+# ----------------------------------------------------------------------
+# 입력 상한 (spec/spec_멀티유저.md R02 — 스키마 maximum 과 별개로 서비스 경계에서도 막는다)
+# ----------------------------------------------------------------------
+MAX_TOP = 500
+
+
+def check_top(value: Any, *, cap: int = MAX_TOP, name: str = "top") -> int:
+    """`top` 류 정수 인자: 1 이상 `cap` 이하의 정수만. 위반은 `invalid_argument` 오류.
+
+    `list_pages`·`search` 는 이 값으로 **조회·분석 작업량**(DB 행·Graph 페이지·LLM 호출)을
+    묶는다 — 결과 슬라이스만 자르는 것이 아니다.
+    """
+    from mcp_common.errors import ToolExecutionError
+
+    def _invalid(message: str, **details: Any) -> ToolExecutionError:
+        payload: Dict[str, Any] = {
+            "status": "error", "error": "invalid_argument", "message": message, "argument": name,
+        }
+        payload.update(details)
+        return ToolExecutionError(payload)
+
+    if isinstance(value, bool):
+        raise _invalid(f"{name} 은 정수여야 합니다.")
+    if not isinstance(value, int):
+        try:
+            value = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise _invalid(f"{name} 은 정수여야 합니다.") from None
+    if value < 1 or value > cap:
+        raise _invalid(f"{name} 은 1 이상 {cap} 이하여야 합니다.", minimum=1, maximum=cap)
+    return value

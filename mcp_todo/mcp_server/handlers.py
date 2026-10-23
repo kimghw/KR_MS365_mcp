@@ -10,12 +10,19 @@ Todo MCP — 도구 정의와 핸들러. **두 트랜스포트가 공유하는 �
 
 이 모듈은 트랜스포트를 import 하지 않는다(단방향 의존). 또한 프로세스 부트스트랩을
 수행하지 않는다 — 호출자가 `mcp_common.bootstrap` 을 먼저 돌린 뒤 import 해야 한다.
+
+서비스 배선(spec/spec_멀티유저.md ②-12 항목 2): 멀티유저(mode 1)에서는 서비스 풀이
+`create_service()` 로 사용자별 서비스를 만들고 요청마다 lease 해 묶는다. 핸들러는
+`_service()` 로 꺼내 쓴다. 전역 `todo_service` 는 mode 0 에서만 만든다.
 """
 
 from typing import Any, Dict, List, Optional
 
 from mcp_common.param_spec import load_param_spec
 from mcp_common.runtime import ServiceLifecycle, ToolRuntime
+from mcp_common.security_policy import multi_user_enabled
+from mcp_common.service_context import service_for
+from mcp_common.service_pool import register_service_factory
 from mcp_common.user_resolver import resolve_user_email
 
 from mcp_todo.todo_service import TodoService
@@ -30,15 +37,28 @@ DEFAULT_PORT = SPEC.port or 5006
 MCP_TOOLS: List[Dict[str, Any]] = SPEC.mcp_tools()
 
 
-todo_service = TodoService()
+async def create_service(principal, paths, tokens) -> TodoService:
+    """사용자별 서비스 factory — **생성만** 한다. initialize()/close() 는 풀이 부른다."""
+    return TodoService(token_provider=tokens, paths=paths)
+
+
+register_service_factory(SERVER_NAME, create_service)
+
+# mode 0 전용 전역 인스턴스. mode 1 에서는 만들지 않는다(공용 AuthManager 를 끌어오므로).
+todo_service: Optional[TodoService] = None if multi_user_enabled() else TodoService()
+
+
+def _service() -> TodoService:
+    """mode 1 → 현재 요청에 lease 된 사용자 서비스, mode 0 → 전역 인스턴스."""
+    return service_for(SERVER_NAME, legacy=todo_service)
 
 
 def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """spec 파생 호출 인자 + 사용자 선택 정책.
 
     `user_email` 은 스키마상 선택이지만 서비스에는 항상 확정된 값이 가야 한다.
-    선택 정책은 `mcp_common.user_resolver`(SSOT)에 위임하고, 없으면
-    `ToolExecutionError` 가 올라간다.
+    선택 정책은 `mcp_common.user_resolver`(SSOT)에 위임한다 — mode 0 은 없으면
+    `ToolExecutionError`, mode 1 은 인증된 호출자의 연결 계정만 허용한다.
     """
     kwargs = SPEC.call_args(tool_name, args)
     kwargs["user_email"] = resolve_user_email(kwargs.get("user_email"), required=True)
@@ -46,35 +66,35 @@ def _call_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_todo_lists_view(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_lists_view(**_call_args("todo_lists_view", args))
+    return await _service().todo_lists_view(**_call_args("todo_lists_view", args))
 
 
 async def handle_todo_list_create(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_list_create(**_call_args("todo_list_create", args))
+    return await _service().todo_list_create(**_call_args("todo_list_create", args))
 
 
 async def handle_todo_list_delete(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_list_delete(**_call_args("todo_list_delete", args))
+    return await _service().todo_list_delete(**_call_args("todo_list_delete", args))
 
 
 async def handle_todo_tasks_view(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_tasks_view(**_call_args("todo_tasks_view", args))
+    return await _service().todo_tasks_view(**_call_args("todo_tasks_view", args))
 
 
 async def handle_todo_task_get(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_task_get(**_call_args("todo_task_get", args))
+    return await _service().todo_task_get(**_call_args("todo_task_get", args))
 
 
 async def handle_todo_task_create(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_task_create(**_call_args("todo_task_create", args))
+    return await _service().todo_task_create(**_call_args("todo_task_create", args))
 
 
 async def handle_todo_task_update(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_task_update(**_call_args("todo_task_update", args))
+    return await _service().todo_task_update(**_call_args("todo_task_update", args))
 
 
 async def handle_todo_task_delete(args: Dict[str, Any]) -> Any:
-    return await todo_service.todo_task_delete(**_call_args("todo_task_delete", args))
+    return await _service().todo_task_delete(**_call_args("todo_task_delete", args))
 
 
 TOOL_HANDLERS = {
@@ -120,6 +140,7 @@ def build_mcp_server():
 
 
 __all__ = [
+    "create_service",
     "SERVER_NAME",
     "SERVER_VERSION",
     "DEFAULT_PORT",

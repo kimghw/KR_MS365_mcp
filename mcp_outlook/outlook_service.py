@@ -1,13 +1,35 @@
 """
 Mail Service - GraphMailClient Facade
 인자를 그대로 위임하고, 필요시 일부 값만 조정하는 서비스 레이어
+
+## 수명·소유권 (spec/spec_멀티유저.md ②-7.6, WP4)
+
+| 모드 | 생성 | 토큰 공급자 | 경로·메타데이터 | close() |
+|------|------|------|------|------|
+| mode 0 | `handlers.py` 전역 `MailService()` 1개 | `initialize()` 에서 공유 AuthManager (프로세스 소유) | 프로젝트 `downloads/` + `mail_metadata.json` | 하위 클라이언트 + 공유 AuthManager 1회 (서버 종료 정리 — 기존 동작) |
+| mode 1 | 서비스 풀이 `create_service(principal, paths, tokens)` 로 사용자별 생성 | 주입된 사용자 고정 provider (**빌림**) | `UserPaths` (`files/downloads/outlook/`, `db/outlook.db`) | 하위 클라이언트만 — provider 는 풀이 차용 해제 |
+
+공급자를 직접 주입한 경우(mode 0 테스트 포함)에도 서비스는 공급자를 닫지 않는다.
 """
 
+import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, TYPE_CHECKING
 from datetime import datetime, timedelta
 
+from mcp_common.security_policy import multi_user_enabled
+
+from . import conversion_workers
 from .graph_mail_client import GraphMailClient, QueryMethod, ProcessingMode
+from .outlook_security import (
+    MAX_MESSAGE_IDS,
+    MAX_RECIPIENTS,
+    MAX_SEND_ATTACHMENTS,
+    check_list_size,
+    check_top,
+    legacy_token_provider,
+)
+from .storage_schema import ensure_outlook_db
 from .outlook_types import (
     FilterParams, ExcludeParams, SelectParams,
     build_filter_query, build_select_query
@@ -19,6 +41,9 @@ logger = logging.getLogger(__name__)
 # 도구의 실제 계약은 spec/param_spec/outlook.yaml 이며 이 데코레이터의 인자가 아니다.
 from mcp_common.service_meta import mcp_service
 
+if TYPE_CHECKING:
+    from mcp_common.user_paths import UserPaths
+
 
 class MailService:
     """
@@ -28,16 +53,46 @@ class MailService:
     - 일부 값만 조정/하드코딩
     """
 
-    def __init__(self):
+    def __init__(self, token_provider: Any = None, paths: Optional["UserPaths"] = None):
+        """
+        Args:
+            token_provider: 사용자 고정 토큰 공급자 (mode 1 필수). None 이면 mode 0 공유 AuthManager.
+            paths: 사용자 경로 (mode 1 필수). 첨부 저장·메타데이터 DB·발송 첨부 경계.
+        """
+        if multi_user_enabled() and (token_provider is None or paths is None):
+            raise RuntimeError("멀티유저 모드의 MailService 는 token_provider 와 paths 를 주입받아야 합니다")
+        self._token_provider = token_provider
+        # mode 0 에서 스스로 얻은 공유 AuthManager 만 종료 시 정리한다(기존 서버 종료 동작).
+        self._owns_token_provider = token_provider is None
+        self._paths = paths
         self._client: Optional[GraphMailClient] = None
         self._initialized = False
+        # 이 서비스가 띄운 converter 스레드 집합 (P01) — close() 가 hard cap 까지 join 한다.
+        self._workers = conversion_workers.WorkerGroup()
+
+    @property
+    def workers(self) -> "conversion_workers.WorkerGroup":
+        return self._workers
+
+    @property
+    def token_provider(self) -> Any:
+        return self._token_provider
+
+    @property
+    def paths(self) -> Optional["UserPaths"]:
+        return self._paths
 
     async def initialize(self) -> bool:
-        """서비스 초기화"""
+        """서비스 초기화 (Graph 호출 없음). mode 1 은 사용자 outlook.db 스키마를 만든다."""
         if self._initialized:
             return True
 
-        self._client = GraphMailClient()
+        if self._token_provider is None:
+            self._token_provider = legacy_token_provider()
+        if self._paths is not None:
+            ensure_outlook_db(self._paths)
+
+        self._client = GraphMailClient(token_provider=self._token_provider, paths=self._paths, workers=self._workers)
 
         if await self._client.initialize():
             self._initialized = True
@@ -73,6 +128,7 @@ class MailService:
     ) -> Dict[str, Any]:
         """메일 조회 - GraphMailClient.build_and_fetch 위임"""
         self._ensure_initialized()
+        top = check_top(top)
 
         # 기본 정렬 순서
         if order_by is None:
@@ -135,6 +191,7 @@ class MailService:
     ) -> Dict[str, Any]:
         """메일 조회 및 처리 - GraphMailClient.fetch_and_process 위임"""
         self._ensure_initialized()
+        top = check_top(top)
 
         # 기본 정렬 순서
         if order_by is None:
@@ -179,6 +236,7 @@ class MailService:
     ) -> Dict[str, Any]:
         """필터 방식 메일 조회 - query_method 고정"""
         self._ensure_initialized()
+        top = check_top(top)
         return await self._client.build_and_fetch(
             user_email=user_email,
             query_method=QueryMethod.FILTER,
@@ -208,6 +266,7 @@ class MailService:
     ) -> Dict[str, Any]:
         """검색 방식 메일 조회 - query_method 고정"""
         self._ensure_initialized()
+        top = check_top(top)
         return await self._client.build_and_fetch(
             user_email=user_email,
             query_method=QueryMethod.SEARCH,
@@ -237,6 +296,7 @@ class MailService:
     ) -> Dict[str, Any]:
         """URL 방식 메일 조회 - query_method 고정"""
         self._ensure_initialized()
+        top = check_top(top)
 
         final_url = url
 
@@ -276,6 +336,7 @@ class MailService:
         save_directory: Optional[str] = None,
     ) -> Dict[str, Any]:
         """첨부파일 다운로드 포함 처리 - processing_mode, attachment_handling 고정"""
+        top = check_top(top)
         query_method = QueryMethod.SEARCH if search_term else QueryMethod.FILTER
 
         return await self.fetch_and_process(
@@ -307,6 +368,7 @@ class MailService:
         save_directory: Optional[str] = None,
     ) -> Dict[str, Any]:
         """첨부파일 변환 포함 처리 - processing_mode, attachment_handling 고정"""
+        top = check_top(top)
         query_method = QueryMethod.SEARCH if search_term else QueryMethod.FILTER
 
         return await self.fetch_and_process(
@@ -359,6 +421,7 @@ class MailService:
             처리된 결과
         """
         self._ensure_initialized()
+        check_list_size(message_ids, "message_ids", MAX_MESSAGE_IDS)
 
         return await self._client.batch_and_process(
             user_email=user_email,
@@ -396,6 +459,7 @@ class MailService:
             조회 결과
         """
         self._ensure_initialized()
+        check_list_size(message_ids, "message_ids", MAX_MESSAGE_IDS)
 
         return await self._client.batch_and_fetch(
             user_email=user_email, message_ids=message_ids, select_params=select_params
@@ -428,6 +492,7 @@ class MailService:
             메일 및 첨부파일 메타데이터
         """
         self._ensure_initialized()
+        check_list_size(message_ids, "message_ids", MAX_MESSAGE_IDS)
 
         return await self._client.fetch_attachments_metadata(
             user_email=user_email,
@@ -480,6 +545,7 @@ class MailService:
             다운로드 결과
         """
         self._ensure_initialized()
+        check_list_size(message_attachment_ids, "message_attachment_ids", MAX_MESSAGE_IDS)
 
         return await self._client.download_attachments(
             user_email=user_email,
@@ -534,6 +600,8 @@ class MailService:
             발송 결과
         """
         self._ensure_initialized()
+        check_list_size((to_recipients or []) + (cc_recipients or []) + (bcc_recipients or []), "recipients", MAX_RECIPIENTS)
+        check_list_size(attachments, "attachments", MAX_SEND_ATTACHMENTS)
 
         return await self._client.send_mail(
             user_email=user_email,
@@ -586,6 +654,8 @@ class MailService:
             저장 결과 (draft_id/web_link 포함)
         """
         self._ensure_initialized()
+        check_list_size((to_recipients or []) + (cc_recipients or []) + (bcc_recipients or []), "recipients", MAX_RECIPIENTS)
+        check_list_size(attachments, "attachments", MAX_SEND_ATTACHMENTS)
 
         return await self._client.save_draft(
             user_email=user_email,
@@ -634,6 +704,7 @@ class MailService:
             액션 결과
         """
         self._ensure_initialized()
+        check_list_size(message_ids, "message_ids", MAX_MESSAGE_IDS)
 
         if action == "delete":
             return await self._client.delete_messages(
@@ -687,7 +758,31 @@ class MailService:
         return self._client.format_results(results, verbose)
 
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 이 서비스가 소유한 것만 닫는다 (②-7.6).
+
+        mode 1 의 주입 공급자는 닫지 않는다(서비스 풀이 차용 해제). mode 0 에서 스스로 얻은
+        공유 AuthManager 는 서버 종료 정리로 1회 닫는다(기존 동작).
+
+        converter 스레드(P01): 살아 있으면 `conversion_workers.HARD_JOIN_CAP_SECONDS` 까지 기다린다.
+        그래도 남으면 소유 자원은 닫은 뒤 `RuntimeError` 를 올려 풀이 drain 실패를 보고하게 한다
+        (스레드는 끝날 때까지 자기 슬롯을 쥔다 — 같은 사용자의 새 서비스도 그만큼 `overloaded`).
+        """
+        live = self._workers.live()
+        if live:
+            logger.warning("[outlook] waiting for %d converter thread(s) on close", len(live))
+            await asyncio.to_thread(self._workers.join, conversion_workers.HARD_JOIN_CAP_SECONDS)
         if self._client:
             await self._client.close()
+            self._client = None
         self._initialized = False
+        if self._owns_token_provider and self._token_provider is not None:
+            provider, self._token_provider = self._token_provider, None
+            close = getattr(provider, "close", None)
+            if close is not None:
+                await close()
+        still_alive = self._workers.live()
+        if still_alive:
+            raise RuntimeError(
+                f"{len(still_alive)} converter thread(s) still alive after "
+                f"{conversion_workers.HARD_JOIN_CAP_SECONDS:.0f}s drain cap"
+            )

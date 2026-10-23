@@ -1,4 +1,4 @@
-"""Streamable HTTP MCP Server for mcp_file_handler (port 5008). 인증 불필요(로컬 파일 처리).
+"""Streamable HTTP MCP Server for mcp_file_handler (port 5008).
 
 도구 정의·핸들러·`Server` 구성은 `handlers.py` 한 벌을 쓰고, ASGI 배선은
 `mcp_common.http_transport` 를 쓴다. 이 파일에는 **HTTP 고유의 것만** 남는다
@@ -7,12 +7,15 @@
 엔드포인트:
     /mcp     — 표준 Streamable HTTP 단일 엔드포인트 (SDK 가 프로토콜 버전을 협상)
     /health  — 상태 조회. 초기화 실패 시 degraded + HTTP 503. 이 도메인은 보안 고지
-               (인증 없음·바인드 정책·허용 루트)를 추가로 싣는다.
+               (인증 방식·바인드 정책·파일 접근 범위)를 추가로 싣는다. 허용 루트의
+               **절대경로는 싣지 않는다**(spec/spec_멀티유저.md ②-2.7).
 
 보안 주의:
-    - 이 서버에는 **호출자 인증이 없다**. 기본 바인드는 loopback(127.0.0.1) 전용이며,
+    - mode 0: 이 서버에는 **호출자 인증이 없다**. 기본 바인드는 loopback(127.0.0.1) 전용이며,
       외부 노출은 `MCP_BIND_HOST` + `MCP_ALLOW_PUBLIC_BIND=1` 옵트인이 필요하다.
-    - 도구가 여는 모든 파일/디렉터리는 `mcp_common.paths` 허용 루트로 제한된다.
+      도구가 여는 모든 파일/디렉터리는 `mcp_common.paths` 허용 루트로 제한된다.
+    - mode 1 (`MS365_MULTI_USER=1`): 호출자 인증은 공용 HTTP 관문이 하고, 파일 접근은
+      호출자 자신의 `files/` 루트로 제한된다(handlers.py docstring).
 """
 
 import os
@@ -52,7 +55,7 @@ app = build_starlette_app(
 def _install_security_health(starlette_app) -> None:
     """공통 `/health` 에 이 도메인만의 보안 고지를 덧붙인다.
 
-    인증 없는 파일 서버라 운영자가 허용 루트·바인드 정책을 확인할 창구가 필요하다.
+    운영자가 인증 방식·바인드 정책·파일 접근 범위를 확인할 창구가 필요하다(경로 값은 싣지 않는다).
     공통 빌더는 도메인 고유 필드를 모르므로 라우트만 교체한다(배선은 그대로 재사용).
     """
     from starlette.responses import JSONResponse

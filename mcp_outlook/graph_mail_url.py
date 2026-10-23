@@ -12,6 +12,8 @@ Classes:
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timedelta, timezone
 
+from .outlook_security import seg, user_seg
+
 
 class FilterBuilder:
     """
@@ -343,6 +345,9 @@ class GraphMailUrlBuilder:
     Graph API 메일 URL 통합 빌더
 
     filter, search, expand를 조합하여 완전한 URL 생성
+
+    사용자 고정 객체다 — 생성 후 `user_email` 을 바꾸지 않고, 호출 측은 요청마다 새로
+    만든다(공유 캐시 없음, spec/spec_멀티유저.md ②-7.6). 경로 성분은 인코딩한다.
     """
 
     BASE_URL = "https://graph.microsoft.com/v1.0"
@@ -369,7 +374,7 @@ class GraphMailUrlBuilder:
     @property
     def messages_url(self) -> str:
         """메시지 기본 URL"""
-        return f"{self.BASE_URL}/users/{self.user_email}/messages"
+        return f"{self.BASE_URL}/users/{user_seg(self.user_email)}/messages"
 
     def build_filter_url(
         self,
@@ -467,7 +472,7 @@ class GraphMailUrlBuilder:
         Returns:
             완전한 URL
         """
-        url = f"{self.messages_url}/{message_id}"
+        url = f"{self.messages_url}/{seg(message_id)}"
         params = []
 
         if select_fields:
@@ -491,7 +496,7 @@ class GraphMailUrlBuilder:
         Returns:
             첨부파일 목록 URL
         """
-        return f"{self.messages_url}/{message_id}/attachments"
+        return f"{self.messages_url}/{seg(message_id)}/attachments"
 
     def build_attachment_url(self, message_id: str, attachment_id: str) -> str:
         """
@@ -504,7 +509,7 @@ class GraphMailUrlBuilder:
         Returns:
             첨부파일 URL
         """
-        return f"{self.messages_url}/{message_id}/attachments/{attachment_id}"
+        return f"{self.messages_url}/{seg(message_id)}/attachments/{seg(attachment_id)}"
 
     def build_batch_request(
         self,
@@ -538,7 +543,7 @@ class GraphMailUrlBuilder:
             requests.append({
                 "id": str(i + 1),
                 "method": "GET",
-                "url": f"/users/{self.user_email}/messages/{message_id}{query_string}",
+                "url": f"/users/{user_seg(self.user_email)}/messages/{seg(message_id)}{query_string}",
             })
 
         return requests

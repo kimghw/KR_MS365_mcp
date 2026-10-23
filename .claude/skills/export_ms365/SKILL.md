@@ -37,11 +37,15 @@ description: KR_MS365_mcp의 MS365 MCP 서버(outlook/calendar/teams/onedrive/on
 ## 절대 나가지 않는 것
 
 `.env` · `database/*.db`(auth.db 포함) · `venv/` · `__pycache__/` · `*.log` · `.git/` ·
-`output/` · `downloads/` · 인증서(`*.pem`/`*.pfx`).
+`output/` · `downloads/` · 인증서·키(`*.pem`/`*.pfx`/`*.p12`/`*.key`/`*.kek`).
+멀티유저 모드 산출물도 막는다 — 데이터 루트(`system/deployment.json` 이 있는 트리의 `system/`·`users/`),
+`wrapped_dek.json`, 감사 로그(`*.jsonl`), 이전 매핑(`migration_mapping*.json`)·legacy 메타데이터
+(`mail_metadata.json`·`metadata.json`).
 
 빌드 마지막에 **비밀 스캔**이 돈다 — 로컬 `.env` 의 실제 값이 번들 안 어딘가에 문자열로
 들어 있으면 번들을 **지우고 실패**시킨다. 자격증명처럼 생긴 리터럴(`AZURE_CLIENT_SECRET=`,
-40자 이상 `refresh_token`)도 같이 잡되 `your_..._here` 류 자리표시자는 통과시킨다.
+40자 이상 `refresh_token`, bearer key `m365v1.<kid>.<secret>` 실값, `MS365_KEK_B64=<값>`)도 같이
+잡되 `your_..._here` 류 자리표시자와 테스트용 0 GUID 는 통과시킨다(bearer key 는 예외 없음).
 
 ## 인자
 

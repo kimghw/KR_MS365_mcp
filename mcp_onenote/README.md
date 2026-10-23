@@ -39,11 +39,21 @@ OneNoteService (Facade)
 
 ## 데이터베이스
 
-OneNote 데이터는 `database/onenote.db`에 저장됩니다.
+| 모드 | 위치 | 소유자(`owner_key`) |
+|------|------|---------------------|
+| 단일 운영자 (기본) | `database/onenote.db` | 행의 `user_id`(이메일) |
+| 멀티유저 (`MS365_MULTI_USER=1`) | `<MS365_DATA_ROOT>/users/<user_key>/db/onenote.db` | principal 의 `user_key` |
 
 - `onenote_items`: 섹션/페이지 정보 (item_type, item_id, item_name, notebook_id, section_id, web_url 등)
 - `onenote_page_summaries`: AI 요약 데이터 (summary, keywords, content_hash 등)
 - `onenote_page_changes`: 페이지 변경 이력 (action, content_snippet, change_summary, change_keywords 등)
+
+세 테이블 모두 `owner_key` 를 갖고, 유일성은 `(owner_key, item_id)` / `(owner_key, page_id)` 다.
+조회·갱신·삭제·upsert 는 전부 소유자 조건을 단다 — 같은 Graph 페이지라도 사용자마다 요약·이력이
+따로 있고, 다른 사용자의 page_id 로 요약을 읽거나 지울 수 없다. 스키마·구버전 이전은
+`storage_schema.py`(구 DB 는 기동 시 `owner_key = user_id` 로 자동 이전, 멀티유저 DB 는 추정 이전 없음).
+멀티유저에서는 `mcp_server/handlers.py` 의 `create_service()` 가 사용자별 서비스·DB·토큰 공급자를 만든다
+([spec/spec_멀티유저.md](../spec/spec_멀티유저.md) ②-7.3).
 
 ## 기능
 
@@ -85,7 +95,7 @@ OneNote 데이터는 `database/onenote.db`에 저장됩니다.
 - `save_page(user_email, section_id, page_id, page_title)` — 페이지 DB 저장
 - `find_section_by_name(user_email, section_name)` — 이름으로 섹션 검색
 - `find_page_by_name(user_email, page_title)` — 이름으로 페이지 검색
-- `get_page_history(page_id, limit)` — 페이지 변경 이력 조회 (git log 스타일)
+- `get_page_history(user_email, page_id, limit)` — 페이지 변경 이력 조회 (git log 스타일, 호출자 소유 이력만)
 - `get_user_history(user_email, limit)` — 사용자별 변경 이력 조회
 
 ## 사용법
@@ -130,7 +140,7 @@ async def main():
         )
 
         # 변경 이력 조회 (git log 스타일)
-        history = svc.db.get_page_history("page_id")
+        history = svc.db.get_page_history("user@example.com", "page_id")
         # → [{"action": "append", "change_summary": "...", "change_keywords": [...], "created_at": "..."}]
 
         # 전체 페이지 동기화

@@ -12,6 +12,7 @@
 | 2026-09-16 | "스킬 하나 만들자. 1개 이상의 캘린더·onedrive·onenote·outlook·teams·todo 를 별도 압축파일이나 GitHub 저장소 생성 후 저장하는 기능. 여기에는 인증, 설치 스킬 관련 내용이나 time 등 공용으로 사용되는 내용도 포함되어야 한다. 그리고 Windows Sandbox 에서 테스트해 달라." |
 | 2026-09-16 | (확인 질문 답변) 번들 단위는 **하나의 통합 번들** — 선택한 서버 전부 + 공용 코드를 한 묶음으로. 서버별 개별 번들은 만들지 않는다. |
 | 2026-09-16 | (확인 질문 답변) 샌드박스 테스트는 **전체 검증** — 백지 Windows 에 Python 을 설치하고 pip install 까지 한 뒤 서버 기동·도구 목록을 확인한다. 구조 검사만으로 끝내지 않는다. |
+| 2026-10-22 | (멀티유저 WP11) 저장소 안의 멀티유저 데이터 루트·키 파일·감사 로그·이전 산출물을 번들에서 빼고, 비밀 스캔이 bearer key(`m365v1.<kid>.<secret>`)와 `MS365_KEK_B64` 값도 잡게 한다. [spec_멀티유저.md](spec_멀티유저.md) ②-7.2·②-11.3 |
 
 ---
 
@@ -104,14 +105,21 @@ import 하기 시작하면 이 전제가 깨지므로 `build_bundle.py` 에 의�
 1. **실값 대조** — 로컬 `.env` 의 12자 이상 값들을 번들 텍스트 파일 전체에서 찾는다.
    위반 보고에는 **키 이름과 파일 경로만** 남기고 값은 출력하지 않는다.
 2. **모양 대조** — `AZURE_CLIENT_SECRET=<8자+>`, 30자 이상 UUID 형태 CLIENT_ID,
-   40자 이상 `refresh_token`/`access_token` 리터럴. `your_`·`_here`·`example`·`<`·`${`
-   같은 자리표시자 힌트가 있으면 통과(`.env.example` 이 여기 해당).
+   40자 이상 `refresh_token`/`access_token` 리터럴, 멀티유저 bearer key 실값
+   (`m365v1.<32 hex>.<43 base64url>`), `MS365_KEK_B64=<40자+>`. `your_`·`_here`·`example`·`<`·`${`
+   같은 자리표시자 힌트가 있거나 hex 자리 3/4 이상이 0 인 테스트용 GUID 면 통과(`.env.example`·
+   `mcp_common/testing.py` 가 여기 해당). bearer key 는 형식이 고정이라 자리표시자 예외가 없다.
 
 걸리면 **번들을 지우고 실패**시킨다. 반쯤 만들어진 번들이 남아 실수로 배포되는 것을 막는다.
 
 제외 대상: `.env` `database/*.db` `venv/` `__pycache__/` `*.log` `.git/` `output/`
-`downloads/` `*.pem` `*.pfx`. 단 `.env` 는 **정확한 이름으로만** 막는다 — `.env.example` 은
-들어가야 하는 파일이다.
+`downloads/` `*.pem` `*.pfx` `*.p12` `*.key` `*.kek`. 단 `.env` 는 **정확한 이름으로만** 막는다 —
+`.env.example` 은 들어가야 하는 파일이다.
+
+멀티유저 산출물(2026-10-22): 이름 규칙 `wrapped_dek.json` `*.jsonl`(감사 로그)
+`migration_mapping*.json` `mail_metadata.json` `metadata.json` + 구조 규칙 — `system/deployment.json`
+이 있는 디렉터리의 `system/` 과 형제 `users/` 를 통째로 뺀다(데이터 루트를 패키지 안에 둔 경우).
+`verify_bundle.py` 의 secrets 검사도 같은 파일 이름과 bearer key 리터럴을 받는 쪽에서 다시 본다.
 
 ### 2-5. 배포
 
@@ -207,6 +215,7 @@ cp949)로 읽는다.** 한글 주석 한 줄이면 파싱 오류가 나고 `Logo
 | 2026-09-16 | Windows Sandbox 2차 (BOM 교정 후, `installer` 모드) | **시간 초과** — 공식 Python 설치본이 15분 무응답. `embed` 를 기본으로 전환 + 대기 상한 도입 |
 | 2026-09-16 | Windows Sandbox 3차 (`embed` 모드) | **실패했고, 그게 성과다** — structure/secrets/imports 8개는 통과했으나 `http:*` 6개 전부 `AttributeError: 'Server' object has no attribute 'list_tools'`. 원인은 `mcp` 미고정(호스트 1.29.0 / 샌드박스 2.2.0). ②-3-1 로 확정 |
 | 2026-09-16 | Windows Sandbox 4차 (requirements 고정 후) | **14/14 통과** — 백지 Windows 11, Python 3.12.10(embed), `mcp==1.29.0`. 6개 서버 전부 기본 포트(5001~5006)에서 `/health` `healthy`, 도구 합계 54개 |
+| 2026-10-22 | 호스트: `--servers all,file_handler` 빌드(275파일) + `verify_bundle.py`(import·스키마) | 9/9 통과. 처음엔 `mcp_common/testing.py` 의 테스트 앱 ID(`00000000-…-c11e`)가 CLIENT_ID 모양 검사에 걸려 번들이 폐기됐다 — 0 GUID 예외로 해소. 비밀 스캐너 음성 테스트(bearer key 실값·`MS365_KEK_B64` 값·데이터 루트 트리) 모두 검출, `m365v1.<kid>.<secret>` 표기·빈 `MS365_KEK_B64=` 은 통과 |
 
 ---
 
@@ -216,8 +225,8 @@ cp949)로 읽는다.** 한글 주석 한 줄이면 파싱 오류가 나고 `Logo
   uv 전환으로 `pyproject.toml` 에 `mcp>=1.29,<2` 제약이 들어갔고 `uv.lock` 이 전이 의존성까지
   잠근다. [spec_패키지관리.md](spec_패키지관리.md) ②-3.
 - ~~**`requirements.txt` 헤더의 `pip install -e ".[editor]"` 안내**~~ — **해소됨(2026-09-16).**
-  `requirements.txt` 가 `uv export` 산출물로 바뀌면서 그 헤더 자체가 사라졌다. 다만 루트
-  `README.md` 의 `mcp_editor/` 행은 아직 남아 있다(설치 절은 이번에 다시 썼다).
+  `requirements.txt` 가 `uv export` 산출물로 바뀌면서 그 헤더 자체가 사라졌다. 루트
+  `README.md` 의 `mcp_editor/` 행도 2026-10-22 에 지웠다.
 - **선택 의존성(`converters`) 미검증** — python-docx·pdfplumber·pyhwpx 등은 기본 설치에
   들어가지 않고 함수 안에서 지연 import 된다. 기동·스키마 검증에는 영향이 없지만
   첨부 변환을 실제로 쓰려면 받는 쪽이 `uv sync --frozen --extra converters` 를 해야 한다.

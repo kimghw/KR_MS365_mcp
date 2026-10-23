@@ -4,6 +4,11 @@ setup_ms365 통합 검증 스크립트 (Windows)
 venv / 의존성 / .env / 토큰 DB / Claude Code 등록 / MCP 서버 포트 상태를
 한 번에 확인하고 사람 친화 표 또는 JSON으로 출력합니다.
 
+멀티유저 모드(`MS365_MULTI_USER=1` — 환경변수 또는 `.env`)를 감지하면 공용 `database/auth.db`
+를 **읽지 않는다**(그 모드에는 공용 토큰 DB 가 없다). 대신 데이터 루트·deployment marker·
+registry 의 상태별 사용자 수(이메일 미표시)·KEK provider·auth gateway 포트를 본다. 사용자별
+상세는 `python -m session.admin_cli user list` 가 담당한다.
+
 시스템 Python(venv 부재 시)에서도 동작하도록 표준 라이브러리만 사용합니다.
 
 사용법:
@@ -21,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -83,7 +89,11 @@ CORE_DEPS = [
 
 def check_uv() -> dict:
     """uv 설치 여부. 이 프로젝트의 환경 관리는 uv 가 한다."""
+    # 설치 직후의 같은 셸에는 PATH 가 반영되지 않는다 — 설치 스크립트의 기본 위치도 본다
+    # (새 PC 셋업 검증에서 "미설치" 오탐이 났다, 2026-10-20).
     uv = shutil.which("uv")
+    if not uv and (Path.home() / ".local" / "bin" / "uv.exe").is_file():
+        uv = str(Path.home() / ".local" / "bin" / "uv.exe")
     if not uv:
         return {"installed": False, "path": None, "version": None}
     try:
@@ -129,6 +139,108 @@ def check_deps() -> dict:
         if result.returncode != 0:
             missing.append(pkg_name)
     return {"all_ok": not missing, "missing": missing}
+
+
+_TRUE = {"1", "true", "yes", "on"}
+#: session/key_provider.py 의 PROVIDERS 중 운영에서 쓸 수 있는 것 (memory 는 테스트 전용)
+KEK_PROVIDERS = ("azure_keyvault", "dpapi", "env")
+#: mcp_common/security_policy.py 의 CONFLICTING_ENV — 멀티유저에서 설정돼 있으면 기동 거부
+MU_CONFLICTING_ENV = (
+    "MS365_DEFAULT_USER_EMAIL", "MCP_ALLOWED_PATHS", "MCP_DATA_DIR", "DB_PATH",
+    "MCP_ATTACHMENT_TEMP_DIR", "MCP_ATTACHMENT_OUTPUT_DIR", "MCP_ATTACHMENT_METADATA_PATH",
+    "MCP_ATTACHMENT_LOG_FILE",
+)
+
+
+def _dotenv_values() -> dict:
+    """`.env` 를 표준 라이브러리로만 읽는다 (주석·빈 줄 제외, 따옴표 제거)."""
+    if not ENV_FILE.exists():
+        return {}
+    try:
+        text = ENV_FILE.read_text(encoding="utf-8-sig")
+    except Exception:
+        text = ENV_FILE.read_text(errors="replace")
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def setting(key: str) -> str:
+    """서버와 같은 우선순위 — 프로세스 환경변수가 `.env` 보다 우선 (load_dotenv override=False)."""
+    if os.environ.get(key, "").strip():
+        return os.environ[key].strip()
+    return _dotenv_values().get(key, "").strip()
+
+
+def multi_user_mode() -> bool:
+    return setting("MS365_MULTI_USER").lower() in _TRUE
+
+
+def _gateway_port() -> int | None:
+    explicit = setting("MS365_AUTH_GATEWAY_PORT")
+    if explicit.isdigit():
+        return int(explicit)
+    try:
+        return urlsplit(setting("AZURE_REDIRECT_URI")).port
+    except ValueError:
+        return None
+
+
+def check_multi_user() -> dict:
+    """멀티유저 저장소·registry·KEK·gateway 점검. 토큰·이메일은 읽지 않는다."""
+    raw_root = setting("MS365_DATA_ROOT")
+    root = Path(raw_root) if raw_root else None
+    result: dict = {
+        "enabled": True,
+        "data_root": raw_root or None,
+        "data_root_absolute": bool(root and root.is_absolute()),
+        "data_root_exists": bool(root and root.is_dir()),
+        "deployment_marker": False,
+        "registry": False,
+        "users": {},
+        "kek_provider": setting("MS365_KEK_PROVIDER") or None,
+        "kek_provider_valid": setting("MS365_KEK_PROVIDER") in KEK_PROVIDERS,
+        "allowed_tenants": bool(setting("MS365_ALLOWED_TENANTS") or setting("AZURE_TENANT_ID")),
+        "redirect_uri": setting("AZURE_REDIRECT_URI") or None,
+        "gateway_port": _gateway_port(),
+        "conflicting_env": [k for k in MU_CONFLICTING_ENV if setting(k)],
+        "validate_input_off": setting("MCP_VALIDATE_INPUT").lower() in {"0", "false", "no", "off"},
+    }
+    if root and root.is_dir():
+        marker = root / "system" / "deployment.json"
+        try:
+            result["deployment_marker"] = (
+                json.loads(marker.read_text(encoding="utf-8")).get("storage_format") == "ms365-multi-user"
+            )
+        except Exception:
+            result["deployment_marker"] = False
+        registry = root / "system" / "registry.db"
+        if registry.is_file():
+            result["registry"] = True
+            try:
+                con = sqlite3.connect(registry.resolve().as_uri() + "?mode=ro", uri=True)
+                try:
+                    rows = con.execute("SELECT status, COUNT(*) FROM users GROUP BY status").fetchall()
+                finally:
+                    con.close()
+                result["users"] = {status: n for status, n in rows}
+            except sqlite3.Error as e:
+                result["registry_error"] = type(e).__name__
+    return result
+
+
+def multi_user_ok(mu: dict, env: dict) -> bool:
+    return bool(
+        env["exists"] and env["has_client_id"] and env["has_redirect_uri"]
+        and mu["data_root_absolute"] and mu["deployment_marker"] and mu["registry"]
+        and mu["kek_provider_valid"] and mu["allowed_tenants"]
+        and not mu["conflicting_env"] and not mu["validate_input_off"]
+    )
 
 
 def check_env_file() -> dict:
@@ -196,6 +308,12 @@ def check_tokens() -> dict:
         return {"db_exists": True, "users": 0, "tokens": 0, "first_user": None, "error": str(e)}
 
 
+def _has_auth_header(entry) -> bool:
+    """등록에 Authorization 헤더가 있는가 (멀티유저 bearer key). 값은 읽어 보지도 출력하지도 않는다."""
+    headers = entry.get("headers") if isinstance(entry, dict) else None
+    return isinstance(headers, dict) and any(str(k).lower() == "authorization" for k in headers)
+
+
 def _check_claude_json_fallback(server_name: str) -> dict:
     """~/.claude.json에서 server_name 등록 여부 + 스코프 확인 (글로벌/프로젝트)."""
     claude_json = Path.home() / ".claude.json"
@@ -210,7 +328,7 @@ def _check_claude_json_fallback(server_name: str) -> dict:
     entry = (data.get("mcpServers") or {}).get(server_name)
     if entry:
         url = entry.get("url") if isinstance(entry, dict) else None
-        return {"registered": True, "url": url, "scope": "user"}
+        return {"registered": True, "url": url, "scope": "user", "auth_header": _has_auth_header(entry)}
 
     # 2. project-scoped (-s local) — 어느 프로젝트인지도 알려줌
     for proj_path, proj_data in (data.get("projects") or {}).items():
@@ -218,7 +336,8 @@ def _check_claude_json_fallback(server_name: str) -> dict:
         if isinstance(proj_mcp, dict) and server_name in proj_mcp:
             entry = proj_mcp[server_name]
             url = entry.get("url") if isinstance(entry, dict) else None
-            return {"registered": True, "url": url, "scope": f"local:{proj_path}"}
+            return {"registered": True, "url": url, "scope": f"local:{proj_path}",
+                    "auth_header": _has_auth_header(entry)}
 
     return {"registered": False, "url": None, "scope": None}
 
@@ -254,7 +373,8 @@ def check_claude_code(server_name: str) -> dict:
     # CLI 출력으로 못 잡아도 .claude.json 직접 읽어 스코프 정보 확보
     fb = _check_claude_json_fallback(server_name)
     if fb["registered"]:
-        return {"cli_available": True, "registered": True, "url": fb["url"] or url, "scope": fb["scope"], "source": ".claude.json"}
+        return {"cli_available": True, "registered": True, "url": fb["url"] or url, "scope": fb["scope"],
+                "auth_header": fb.get("auth_header", False), "source": ".claude.json"}
 
     return {"cli_available": True, "registered": registered, "url": url, "scope": None, "source": "claude mcp list"}
 
@@ -320,7 +440,8 @@ def check_server_port(port: int) -> dict:
 
 
 def collect() -> dict:
-    """공통(venv/deps/.env/tokens) + 서버별(등록/포트) 정보."""
+    """공통(venv/deps/.env/tokens) + 서버별(등록/포트) 정보. 멀티유저면 auth.db 대신 저장소 점검."""
+    multi = multi_user_mode()
     servers = {}
     for name, meta in SERVERS.items():
         servers[name] = {
@@ -331,14 +452,23 @@ def collect() -> dict:
             "claude_desktop": check_claude_desktop(name),
             "server_port": check_server_port(meta["http_port"]),
         }
-    return {
+    data = {
+        "mode": "multi_user" if multi else "single_operator",
         "uv": check_uv(),
         "venv": check_venv(),
         "deps": check_deps(),
         "env_file": check_env_file(),
-        "tokens": check_tokens(),
         "servers": servers,
     }
+    if multi:
+        # 공용 토큰 DB 는 이 모드에 없다 — 읽지 않는다 (spec/spec_멀티유저.md ②-6.1)
+        data["tokens"] = {"skipped": True, "reason": "multi_user"}
+        data["multi_user"] = check_multi_user()
+        port = data["multi_user"]["gateway_port"]
+        data["multi_user"]["gateway"] = check_server_port(port) if port else None
+    else:
+        data["tokens"] = check_tokens()
+    return data
 
 
 def _display_width(s: str) -> int:
@@ -369,6 +499,7 @@ def render_table(data: dict) -> str:
     if not venv.get("lock_exists"):
         venv_detail += "  ⚠ uv.lock 없음"
 
+    multi = data.get("mode") == "multi_user"
     common_rows = [
         ("uv", mark(uv["installed"]),
          # `uv --version` 은 "uv 0.12.10 (해시 날짜 타깃)" 을 준다 — 버전만 쓴다.
@@ -379,9 +510,31 @@ def render_table(data: dict) -> str:
         (".env", mark(env["exists"] and env["has_client_id"] and env["has_client_secret"] and env["has_tenant_id"]),
          "client_id/secret/tenant_id 채워짐" if env["exists"] and env["has_client_id"] and env["has_client_secret"] and env["has_tenant_id"]
          else "missing or incomplete"),
-        ("토큰 (공통)", mark(tok["users"] > 0 and tok["tokens"] > 0),
-         f"users={tok['users']} tokens={tok['tokens']}" + (f" first={tok['first_user']}" if tok.get("first_user") else "")),
     ]
+    if multi:
+        mu = data["multi_user"]
+        users = ", ".join(f"{k}={v}" for k, v in sorted(mu["users"].items())) or "등록 사용자 없음"
+        gateway = mu.get("gateway") or {}
+        env_ok = env["exists"] and env["has_client_id"] and env["has_redirect_uri"]
+        common_rows[-1] = (".env", mark(env_ok),
+                           "client_id/redirect_uri 채워짐 (secret 은 파일·PKCE 가능)" if env_ok else "missing or incomplete")
+        common_rows += [
+            ("모드", mark(True), "멀티유저 (MS365_MULTI_USER=1) — 공용 auth.db 점검 생략"),
+            ("데이터 루트", mark(mu["data_root_absolute"] and mu["deployment_marker"]),
+             ("deployment marker OK" if mu["deployment_marker"] else
+              "절대경로가 아님" if not mu["data_root_absolute"] else "`python -m session.admin_cli init` 필요")),
+            ("registry 사용자", mark(mu["registry"]), users if mu["registry"] else "registry 없음 (admin_cli init)"),
+            ("KEK provider", mark(mu["kek_provider_valid"]), mu["kek_provider"] or "미설정 (기동 거부)"),
+            ("auth gateway", mark(True), f"port {mu['gateway_port']} " + ("in_use" if gateway.get("in_use") else "free")),
+        ]
+        if mu["conflicting_env"] or mu["validate_input_off"]:
+            bad = mu["conflicting_env"] + (["MCP_VALIDATE_INPUT=0"] if mu["validate_input_off"] else [])
+            common_rows.append(("충돌 설정", mark(False), "멀티유저와 함께 쓸 수 없음: " + ", ".join(bad)))
+    else:
+        common_rows.append(
+            ("토큰 (공통)", mark(tok["users"] > 0 and tok["tokens"] > 0),
+             f"users={tok['users']} tokens={tok['tokens']}" + (f" first={tok['first_user']}" if tok.get("first_user") else ""))
+        )
 
     lines = ["", "setup_ms365 status", "-" * 72]
     for name, ok, detail in common_rows:
@@ -407,6 +560,10 @@ def render_table(data: dict) -> str:
         )
         # 글로벌이 아니면 OK 마크 안 씀 (사용자 의도는 글로벌)
         cc_ok = cc["registered"] and (scope == "user" if scope else True)
+        if multi and cc["registered"] and not cc.get("auth_header"):
+            # .claude.json 에서 헤더를 확인하지 못했다 (.mcp.json 프로젝트 등록이면 거기서 확인)
+            cc_ok = False
+            cc_detail += "  ⚠ Authorization 헤더 없음 — bearer key 없이는 401"
         lines.append(f"  [{mark(cc_ok)}] {_pad('  Claude Code', 22)} {cc_detail}")
 
         # Claude Desktop
@@ -418,6 +575,8 @@ def render_table(data: dict) -> str:
             else (f"config 있음, {srv_name} 없음" if cd["config_exists"] else "claude_desktop_config.json 없음")
         )
         cd_ok = cd["registered"] and cd.get("path_valid", True) and cd.get("matches_project", True)
+        if multi and cd["registered"]:
+            cd_ok, cd_detail = False, "STDIO 등록 — 멀티유저 모드에서는 stdio 기동이 거부된다(HTTP 로 등록)"
         lines.append(f"  [{mark(cd_ok)}] {_pad('  Claude Desktop', 22)} {cd_detail}")
 
         # 포트
@@ -430,7 +589,15 @@ def render_table(data: dict) -> str:
 
 
 def all_ok(data: dict) -> bool:
-    """uv/환경/deps/.env/토큰 OK + 모든 서버가 Code 또는 Desktop 한 곳 이상 등록되면 OK."""
+    """uv/환경/deps/.env/토큰 OK + 모든 서버가 Code 또는 Desktop 한 곳 이상 등록되면 OK.
+
+    멀티유저 모드: 토큰 대신 `multi_user_ok()`, 등록은 Claude Code(HTTP)만 인정한다.
+    """
+    if data.get("mode") == "multi_user":
+        base = data["uv"]["installed"] and data["venv"]["exists"] and data["deps"]["all_ok"]
+        if not (base and multi_user_ok(data["multi_user"], data["env_file"])):
+            return False
+        return all(s["claude_code"]["registered"] for s in data["servers"].values())
     common = (
         data["uv"]["installed"]
         and data["venv"]["exists"]

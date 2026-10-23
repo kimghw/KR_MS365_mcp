@@ -7,25 +7,100 @@ Graph Mail Storage Backend - 첨부파일 저장 처리
 
 Classes:
     - StorageBackend (ABC): 저장소 추상 인터페이스
-    - LocalStorageBackend: 로컬 저장 구현
+    - LocalStorageBackend: 로컬 저장 구현 (mode 0 — 프로젝트 기준 경로)
     - OneDriveStorageBackend: OneDrive 저장 구현
+    - UserLocalStorageBackend: mode 1 사용자 `files/` 전용 구현 (mail_attachment_user_storage.py)
+
+멀티유저(spec/spec_멀티유저.md ②-7.4) — 같은 이름 파일은 존재 검사 후 덮어쓰기 대신
+O_EXCL 배타 생성으로 만든다(동시 저장 경합 제거, 기존 `_1` 접미사 규칙 유지). 로그에는
+파일명·경로·Graph 오류 본문을 싣지 않는다. 이 모듈은 테스트가 `mail_attachment_storage`
+최상위 이름으로도 import 하므로 패키지 내부 의존은 **절대 import** 로만 쓴다.
 """
 
 import os
 import re
 import base64
 import asyncio
+import logging
 import aiohttp
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import BinaryIO, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
+from urllib.parse import unquote
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mcp_common.graph_paths import graph_drive_path, graph_segment
+from mcp_common.errors import ToolExecutionError
+from mcp_common.security_contracts import SecurityError
+from mcp_outlook.outlook_security import (
+    BEARER_KW,
+    PRESIGNED_KW,
+    bearer_headers,
+    check_upload_url,
+    graph_error_code,
+    is_redirect,
+    user_seg,
+)
+
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
+    from mcp_common.user_paths import UserPaths
+
+logger = logging.getLogger(__name__)
+
+
+def build_mail_content_text(mail_data: Dict[str, Any]) -> str:
+    """mail_content.txt 본문 (로컬·OneDrive·mode 1 공용)."""
+    content_lines = [
+        "=" * 60,
+        f"Subject: {mail_data.get('subject', 'N/A')}",
+        f"From: {mail_data.get('from', {}).get('emailAddress', {}).get('address', 'N/A')}",
+        f"Received: {mail_data.get('receivedDateTime', 'N/A')}",
+        f"Message ID: {mail_data.get('id', 'N/A')}",
+        "=" * 60,
+        "",
+    ]
+    body = mail_data.get("body", {})
+    body_content = body.get("content", "")
+    if body.get("contentType", "text") == "html":
+        # HTML 태그 간단히 제거
+        body_content = re.sub(r"<[^>]+>", "", body_content)
+        body_content = re.sub(r"&nbsp;", " ", body_content)
+        body_content = re.sub(r"&lt;", "<", body_content)
+        body_content = re.sub(r"&gt;", ">", body_content)
+        body_content = re.sub(r"&amp;", "&", body_content)
+    content_lines.append(body_content)
+    return "\n".join(content_lines)
+
+
+def open_numbered_exclusive(folder: Path, safe_name: str) -> Tuple[Path, BinaryIO]:
+    """`name`, `name_1`, `name_2` ... 순으로 O_EXCL 배타 생성 (mode 0 이름 규칙 유지).
+
+    존재 검사 후 `open("wb")` 하던 기존 방식은 동시 저장 시 서로 덮어쓸 수 있었다.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    name_parts = safe_name.rsplit(".", 1)
+    for counter in range(0, 100000):
+        if counter == 0:
+            candidate = safe_name
+        elif len(name_parts) == 2:
+            candidate = f"{name_parts[0]}_{counter}.{name_parts[1]}"
+        else:
+            candidate = f"{safe_name}_{counter}"
+        path = Path(folder) / candidate
+        try:
+            fd = os.open(path, flags, 0o666)
+        except FileExistsError:
+            continue
+        except PermissionError:
+            if path.exists():  # Windows: 같은 이름의 디렉터리
+                continue
+            raise
+        return path, os.fdopen(fd, "wb")
+    raise FileExistsError("could not allocate a unique file name")
 
 
 class StorageBackend(ABC):
@@ -234,31 +309,17 @@ class LocalStorageBackend(StorageBackend):
             저장된 파일 경로 또는 None
         """
         try:
-            # 파일명 정제
+            # 파일명 정제 + 중복 파일명은 배타 생성(_1, _2 ...)으로 처리
             safe_name = self.sanitize_filename(filename, max_length=100)
-            folder = Path(folder_path)
+            file_path, fh = open_numbered_exclusive(Path(folder_path), safe_name)
+            with fh:
+                fh.write(content)
 
-            # 중복 파일명 처리
-            file_path = folder / safe_name
-            counter = 1
-            while file_path.exists():
-                name_parts = safe_name.rsplit(".", 1)
-                if len(name_parts) == 2:
-                    new_name = f"{name_parts[0]}_{counter}.{name_parts[1]}"
-                else:
-                    new_name = f"{safe_name}_{counter}"
-                file_path = folder / new_name
-                counter += 1
-
-            # 파일 저장
-            with open(file_path, "wb") as f:
-                f.write(content)
-
-            print(f"  [LOCAL] {file_path.name} ({len(content):,} bytes)")
+            logger.info("[LOCAL] saved attachment (%d bytes)", len(content))
             return str(file_path)
 
         except Exception as e:
-            print(f"  [ERROR] {filename} 저장 실패: {e}")
+            logger.warning("[LOCAL] attachment save failed: %s", type(e).__name__)
             return None
 
     async def save_mail_content(
@@ -279,41 +340,15 @@ class LocalStorageBackend(StorageBackend):
         try:
             file_path = Path(folder_path) / "mail_content.txt"
 
-            # 메일 정보 구성
-            content_lines = [
-                "=" * 60,
-                f"Subject: {mail_data.get('subject', 'N/A')}",
-                f"From: {mail_data.get('from', {}).get('emailAddress', {}).get('address', 'N/A')}",
-                f"Received: {mail_data.get('receivedDateTime', 'N/A')}",
-                f"Message ID: {mail_data.get('id', 'N/A')}",
-                "=" * 60,
-                "",
-            ]
-
-            # 본문 추출
-            body = mail_data.get("body", {})
-            body_content = body.get("content", "")
-            body_type = body.get("contentType", "text")
-
-            if body_type == "html":
-                # HTML 태그 간단히 제거
-                body_content = re.sub(r"<[^>]+>", "", body_content)
-                body_content = re.sub(r"&nbsp;", " ", body_content)
-                body_content = re.sub(r"&lt;", "<", body_content)
-                body_content = re.sub(r"&gt;", ">", body_content)
-                body_content = re.sub(r"&amp;", "&", body_content)
-
-            content_lines.append(body_content)
-
-            # 파일 저장
+            # 파일 저장 (mode 0: 같은 메일 재처리 시 덮어쓴다 — 기존 동작)
             with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(content_lines))
+                f.write(build_mail_content_text(mail_data))
 
-            print(f"  [LOCAL] mail_content.txt")
+            logger.info("[LOCAL] saved mail_content.txt")
             return str(file_path)
 
         except Exception as e:
-            print(f"  [ERROR] 메일 본문 저장 실패: {e}")
+            logger.warning("[LOCAL] mail body save failed: %s", type(e).__name__)
             return None
 
 
@@ -347,8 +382,15 @@ class OneDriveStorageBackend(StorageBackend):
         """
         self.auth_manager = auth_manager
         self.user_email = user_email
-        self.base_folder = base_folder.strip("/")
+        # R07: 도구 입력 폴더는 성분별 인코딩한 Graph 드라이브 경로로만 보관한다
+        # (`..`·역슬래시 거부, `?`·`#`·`%` 인코딩). 이후 모든 URL 은 이 값을 그대로 쓴다.
+        self.base_folder = graph_drive_path(base_folder)
         self.graph_url = "https://graph.microsoft.com/v1.0"
+
+    def child_path(self, name: str) -> str:
+        """`base_folder/<이름 하나>` — 이름을 경로 성분 하나로 인코딩해 붙인다."""
+        child = graph_segment(name)
+        return f"{self.base_folder}/{child}" if self.base_folder else child
 
     MAX_PATH_LENGTH = 400
 
@@ -365,61 +407,80 @@ class OneDriveStorageBackend(StorageBackend):
         for attempt in range(retry + 1):
             try:
                 return await self.auth_manager.validate_and_refresh_token(self.user_email)
+            except SecurityError:
+                # 멀티유저: 연결 없음·계정 불일치는 재시도하지 않고 그대로 올린다
+                raise
             except Exception as e:
                 if attempt < retry:
-                    print(f"토큰 획득 실패, 재시도 ({attempt + 1}/{retry}): {e}")
+                    logger.warning("[ONEDRIVE] token retry %d/%d: %s", attempt + 1, retry, type(e).__name__)
                     await asyncio.sleep(1)
                 else:
-                    print(f"토큰 획득 최종 실패: {e}")
+                    logger.warning("[ONEDRIVE] token acquisition failed: %s", type(e).__name__)
                     return None
+
+    async def _request_headers(self, content_type: Optional[str] = "application/json") -> Dict[str, str]:
+        """Graph 요청 1건 직전에 토큰을 새로 얻는다 (N01). 없으면 예외 — 조용히 진행하지 않는다."""
+        token = await self._get_access_token()
+        if not token:
+            raise Exception("Failed to get access token")
+        return bearer_headers(token, content_type)
+
+    async def _assert_active(self) -> None:
+        """사전 서명 URL 요청(bearer 없음) 직전의 identity·폐기 재검사 (N01). 토큰 값은 쓰지 않는다."""
+        if not await self._get_access_token():
+            raise Exception("Failed to get access token")
 
     async def _ensure_folder_exists(
         self,
         session: aiohttp.ClientSession,
-        headers: Dict[str, str],
         folder_path: str
     ) -> bool:
         """
-        폴더 존재 확인 및 생성
+        폴더 존재 확인 및 생성 — GET·POST 각각 직전에 토큰을 새로 얻는다 (N01)
 
         Args:
             session: aiohttp 세션
-            headers: 요청 헤더
             folder_path: 폴더 경로
 
         Returns:
             성공 여부
         """
-        # 경로를 부분으로 분할하여 순차적으로 생성
-        parts = folder_path.strip("/").split("/")
+        # 경로를 부분으로 분할하여 순차적으로 생성 (folder_path 는 이미 성분별 인코딩된 값)
+        parts = [p for p in folder_path.split("/") if p]
         current_path = ""
+        drive_root = f"{self.graph_url}/users/{user_seg(self.user_email)}/drive/root"
 
         for part in parts:
             parent_path = current_path if current_path else "root"
             current_path = f"{current_path}/{part}" if current_path else part
 
             # 폴더 존재 확인
-            check_url = f"{self.graph_url}/users/{self.user_email}/drive/root:/{current_path}"
-            async with session.get(check_url, headers=headers) as response:
+            check_url = f"{drive_root}:/{current_path}"
+            headers = await self._request_headers()
+            async with session.get(check_url, headers=headers, **BEARER_KW) as response:
                 if response.status == 200:
                     continue  # 이미 존재
 
             # 폴더 생성
             if parent_path == "root":
-                create_url = f"{self.graph_url}/users/{self.user_email}/drive/root/children"
+                create_url = f"{drive_root}/children"
             else:
-                create_url = f"{self.graph_url}/users/{self.user_email}/drive/root:/{parent_path}:/children"
+                create_url = f"{drive_root}:/{parent_path}:/children"
 
             create_data = {
-                "name": part,
+                "name": unquote(part),  # 본문의 이름은 디코딩한 원래 폴더명
                 "folder": {},
                 "@microsoft.graph.conflictBehavior": "rename"
             }
 
-            async with session.post(create_url, headers=headers, json=create_data) as response:
+            headers = await self._request_headers()  # 변경 요청 직전 재획득 (N01)
+            async with session.post(create_url, headers=headers, json=create_data, **BEARER_KW) as response:
                 if response.status not in [200, 201, 409]:  # 409 = 이미 존재
                     error_text = await response.text()
-                    print(f"  [ERROR] 폴더 생성 실패 ({current_path}): {error_text[:100]}")
+                    logger.warning(
+                        "[ONEDRIVE] folder create failed: HTTP %s %s",
+                        response.status, graph_error_code(error_text),
+                    )
                     return False
 
         return True
@@ -434,30 +495,22 @@ class OneDriveStorageBackend(StorageBackend):
         Returns:
             폴더 경로
         """
-        folder_name = self.create_folder_name(mail_data)
-        folder_path = f"{self.base_folder}/{folder_name}"
+        folder_path = self.child_path(self.create_folder_name(mail_data))
 
         if len(folder_path) > self.MAX_PATH_LENGTH:
             # 경로가 너무 길면 제목 축소
-            folder_name = self.create_folder_name({
+            folder_path = self.child_path(self.create_folder_name({
                 **mail_data,
                 "subject": mail_data.get("subject", "")[:20]
-            })
-            folder_path = f"{self.base_folder}/{folder_name}"
+            }))
 
-        access_token = await self._get_access_token()
-        if not access_token:
+        if not await self._get_access_token():  # 연결 확인만 — 토큰은 요청마다 다시 얻는다 (N01)
             raise Exception("Failed to get access token")
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
         async with aiohttp.ClientSession() as session:
-            success = await self._ensure_folder_exists(session, headers, folder_path)
+            success = await self._ensure_folder_exists(session, folder_path)
             if not success:
-                raise Exception(f"Failed to create folder: {folder_path}")
+                raise Exception("Failed to create OneDrive folder")
 
         return folder_path
 
@@ -471,38 +524,34 @@ class OneDriveStorageBackend(StorageBackend):
         Returns:
             폴더 경로
         """
-        folder_path = base_path if base_path else self.base_folder
+        # base_path 는 이미 인코딩된 드라이브 경로(child_path 결과)여야 한다. 원시 입력이 오면
+        # 같은 규칙으로 다시 정규화한다(인코딩 결과는 재인코딩해도 성분 구조가 바뀌지 않는다).
+        folder_path = graph_drive_path(unquote(base_path)) if base_path else self.base_folder
 
-        access_token = await self._get_access_token()
-        if not access_token:
+        if not await self._get_access_token():  # 연결 확인만 — 토큰은 요청마다 다시 얻는다 (N01)
             raise Exception("Failed to get access token")
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
         async with aiohttp.ClientSession() as session:
-            success = await self._ensure_folder_exists(session, headers, folder_path)
+            success = await self._ensure_folder_exists(session, folder_path)
             if not success:
-                raise Exception(f"Failed to create folder: {folder_path}")
+                raise Exception("Failed to create OneDrive folder")
 
         return folder_path
 
     async def _upload_simple(
         self,
         session: aiohttp.ClientSession,
-        headers: Dict[str, str],
+        content_type: Optional[str],
         file_path: str,
         content: bytes,
         filename: str
     ) -> Optional[str]:
         """
-        단순 PUT 업로드 (4MB 이하)
+        단순 PUT 업로드 (4MB 이하) — PUT 직전에 토큰을 새로 얻는다 (N01)
 
         Args:
             session: aiohttp 세션
-            headers: 요청 헤더
+            content_type: MIME 타입
             file_path: OneDrive 파일 경로
             content: 파일 내용
             filename: 원본 파일명
@@ -510,23 +559,25 @@ class OneDriveStorageBackend(StorageBackend):
         Returns:
             저장된 파일 URL 또는 None
         """
-        upload_url = f"{self.graph_url}/users/{self.user_email}/drive/root:/{file_path}:/content"
+        upload_url = f"{self.graph_url}/users/{user_seg(self.user_email)}/drive/root:/{file_path}:/content"
 
-        async with session.put(upload_url, headers=headers, data=content) as response:
+        headers = await self._request_headers(content_type or "application/octet-stream")
+        async with session.put(upload_url, headers=headers, data=content, **BEARER_KW) as response:
             if response.status in [200, 201]:
                 result = await response.json()
                 web_url = result.get("webUrl", file_path)
-                print(f"  [ONEDRIVE] {filename} ({len(content):,} bytes)")
+                logger.info("[ONEDRIVE] uploaded (%d bytes)", len(content))
                 return web_url
             else:
                 error_text = await response.text()
-                print(f"  [ERROR] {filename} 업로드 실패: {error_text[:100]}")
+                logger.warning(
+                    "[ONEDRIVE] upload failed: HTTP %s %s", response.status, graph_error_code(error_text)
+                )
                 return None
 
     async def _upload_large(
         self,
         session: aiohttp.ClientSession,
-        access_token: str,
         file_path: str,
         content: bytes,
         filename: str
@@ -534,9 +585,13 @@ class OneDriveStorageBackend(StorageBackend):
         """
         Upload Session을 사용한 대용량 파일 업로드 (4MB 초과)
 
+        - 세션 생성 POST 직전에 토큰을 새로 얻는다 (N01).
+        - uploadUrl 은 사전 서명 URL: 공용 `check_presigned_url` 통과, bearer 미부착,
+          redirect 미추종, 3xx 는 오류 — 청크 본문을 다른 곳으로 다시 보내지 않는다 (N05).
+        - 청크·상태 조회·재시도·취소 요청 직전마다 공급자로 identity·폐기를 재검사한다 (N01).
+
         Args:
             session: aiohttp 세션
-            access_token: 액세스 토큰
             file_path: OneDrive 파일 경로
             content: 파일 내용
             filename: 원본 파일명
@@ -545,15 +600,12 @@ class OneDriveStorageBackend(StorageBackend):
             저장된 파일 URL 또는 None
         """
         file_size = len(content)
-        print(f"  [ONEDRIVE] 대용량 업로드 시작: {filename} ({file_size:,} bytes)")
+        logger.info("[ONEDRIVE] large upload start (%d bytes)", file_size)
 
-        # Step 1: Upload Session 생성
-        create_session_url = f"{self.graph_url}/users/{self.user_email}/drive/root:/{file_path}:/createUploadSession"
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
+        # Step 1: Upload Session 생성 (Graph bearer 사용 — redirect 미추종)
+        create_session_url = (
+            f"{self.graph_url}/users/{user_seg(self.user_email)}/drive/root:/{file_path}:/createUploadSession"
+        )
 
         session_body = {
             "item": {
@@ -562,18 +614,32 @@ class OneDriveStorageBackend(StorageBackend):
             }
         }
 
-        async with session.post(create_session_url, headers=headers, json=session_body) as response:
+        headers = await self._request_headers()
+        async with session.post(create_session_url, headers=headers, json=session_body, **BEARER_KW) as response:
             if response.status not in [200, 201]:
                 error_text = await response.text()
-                print(f"  [ERROR] Upload Session 생성 실패: {error_text[:100]}")
+                logger.warning(
+                    "[ONEDRIVE] upload session create failed: HTTP %s %s",
+                    response.status, graph_error_code(error_text),
+                )
                 return None
 
             session_data = await response.json()
             upload_url = session_data.get("uploadUrl")
 
             if not upload_url:
-                print(f"  [ERROR] Upload URL을 받지 못함")
+                logger.warning("[ONEDRIVE] upload session returned no uploadUrl")
                 return None
+
+        # uploadUrl 은 사전 서명 URL 이다 (②-7.5, N05): 공용 정책을 통과해야 하고 Graph bearer 를 붙이지 않는다.
+        upload_url = check_upload_url(upload_url)
+
+        async def cancel_session() -> None:
+            try:
+                await self._assert_active()
+                await session.delete(upload_url, **PRESIGNED_KW)
+            except Exception as exc:  # 취소 실패는 업로드 실패 결과를 바꾸지 않는다
+                logger.warning("[ONEDRIVE] upload session cancel failed: %s", type(exc).__name__)
 
         # Step 2: 청크 단위로 업로드
         chunk_size = self.CHUNK_SIZE
@@ -587,7 +653,7 @@ class OneDriveStorageBackend(StorageBackend):
             chunk_len = len(chunk_data)
             is_last_chunk = (chunk_num == total_chunks - 1)
 
-            # Content-Range 헤더 설정
+            # Content-Range 헤더 설정 (Authorization 없음)
             content_range = f"bytes {start}-{end - 1}/{file_size}"
 
             chunk_headers = {
@@ -595,56 +661,66 @@ class OneDriveStorageBackend(StorageBackend):
                 "Content-Range": content_range,
             }
 
-            async with session.put(upload_url, headers=chunk_headers, data=chunk_data) as response:
+            await self._assert_active()  # 청크(변경 요청) 직전 identity 재검사 (N01)
+            async with session.put(upload_url, headers=chunk_headers, data=chunk_data, **PRESIGNED_KW) as response:
+                if is_redirect(response.status):
+                    # 사전 서명 URL 이 다른 곳으로 보내려 한다 — 청크 본문을 다시 보내지 않는다 (N05)
+                    logger.warning("[ONEDRIVE] chunk upload redirected (HTTP %s) — aborting", response.status)
+                    await cancel_session()
+                    return None
                 if response.status in [200, 201]:
                     # 업로드 완료 (마지막 청크에서만 200/201 반환)
                     result = await response.json()
                     web_url = result.get("webUrl", file_path)
-                    print(f"  [ONEDRIVE] 업로드 완료: {filename} ({file_size:,} bytes)")
+                    logger.info("[ONEDRIVE] large upload done (%d bytes)", file_size)
                     return web_url
                 elif response.status == 202:
                     # 계속 업로드 중
                     uploaded = end
                     progress = (uploaded / file_size) * 100
-                    print(f"    청크 {chunk_num + 1}/{total_chunks} 완료 ({progress:.1f}%)")
+                    logger.info("[ONEDRIVE] chunk %d/%d (%.1f%%)", chunk_num + 1, total_chunks, progress)
 
                     # 마지막 청크인데 202가 반환된 경우 (비정상)
                     if is_last_chunk:
-                        print(f"  [WARN] 마지막 청크인데 202 반환됨, 업로드 세션 상태 확인 필요")
+                        logger.warning("[ONEDRIVE] last chunk returned 202 — checking session status")
                         # 마지막 청크 202: 세션 상태 확인
-                        async with session.get(upload_url) as status_resp:
+                        await self._assert_active()
+                        async with session.get(upload_url, **PRESIGNED_KW) as status_resp:
                             if status_resp.status in [200, 201]:
                                 status_data = await status_resp.json()
                                 web_url = status_data.get("webUrl", file_path)
-                                print(f"  [ONEDRIVE] 업로드 완료 (지연): {filename}")
+                                logger.info("[ONEDRIVE] large upload done (delayed)")
                                 return web_url
                 else:
-                    error_text = await response.text()
-                    print(f"  [ERROR] 청크 업로드 실패: {error_text[:100]}")
+                    logger.warning("[ONEDRIVE] chunk upload failed: HTTP %s", response.status)
 
-                    # 1회 재시도
+                    # 1회 재시도 — 직전에 identity 를 다시 확인한다 (N01)
                     await asyncio.sleep(2)
-                    async with session.put(upload_url, headers=chunk_headers, data=chunk_data) as retry_resp:
-                        if retry_resp.status in [200, 201, 202]:
+                    await self._assert_active()
+                    async with session.put(
+                        upload_url, headers=chunk_headers, data=chunk_data, **PRESIGNED_KW
+                    ) as retry_resp:
+                        if is_redirect(retry_resp.status):
+                            logger.warning("[ONEDRIVE] chunk retry redirected (HTTP %s) — aborting", retry_resp.status)
+                        elif retry_resp.status in [200, 201, 202]:
                             if retry_resp.status in [200, 201]:
                                 result = await retry_resp.json()
                                 web_url = result.get("webUrl", file_path)
-                                print(f"  [ONEDRIVE] 업로드 완료 (재시도): {filename}")
+                                logger.info("[ONEDRIVE] large upload done (retry)")
                                 return web_url
                             # 202면 계속 진행
                             uploaded = end
-                            print(f"    청크 {chunk_num + 1}/{total_chunks} 재시도 성공")
+                            logger.info("[ONEDRIVE] chunk %d/%d retry ok", chunk_num + 1, total_chunks)
                             continue
                         else:
-                            retry_error = await retry_resp.text()
-                            print(f"  [ERROR] 청크 재시도도 실패: {retry_error[:100]}")
+                            logger.warning("[ONEDRIVE] chunk retry failed: HTTP %s", retry_resp.status)
 
                     # Upload Session 취소
-                    await session.delete(upload_url)
+                    await cancel_session()
                     return None
 
         # 모든 청크가 202로 끝난 경우 (비정상 - 마지막 청크는 200/201이어야 함)
-        print(f"  [ERROR] 업로드 완료 응답(200/201)을 받지 못함")
+        logger.warning("[ONEDRIVE] upload finished without 200/201")
         return None
 
     async def save_file(
@@ -673,31 +749,28 @@ class OneDriveStorageBackend(StorageBackend):
 
             # 최대 파일 크기 확인
             if file_size > self.MAX_FILE_SIZE:
-                print(f"  [SKIP] {filename} - 250GB 초과 (OneDrive 제한)")
+                logger.warning("[ONEDRIVE] skipped: larger than 250GB")
                 return None
 
-            access_token = await self._get_access_token()
-            if not access_token:
+            if not await self._get_access_token():  # 연결 확인만 — 토큰은 요청마다 다시 얻는다 (N01)
                 return None
 
-            # 파일명 정제
+            # 파일명 정제 + 경로 성분 인코딩 (R07)
             safe_name = self.sanitize_filename(filename, max_length=100)
-            file_path = f"{folder_path}/{safe_name}"
+            file_path = f"{folder_path}/{graph_segment(safe_name)}" if folder_path else graph_segment(safe_name)
 
             async with aiohttp.ClientSession() as session:
                 if file_size <= self.SIMPLE_UPLOAD_MAX_SIZE:
                     # 4MB 이하: 단순 PUT 업로드
-                    headers = {
-                        "Authorization": f"Bearer {access_token}",
-                        "Content-Type": content_type or "application/octet-stream",
-                    }
-                    return await self._upload_simple(session, headers, file_path, content, safe_name)
+                    return await self._upload_simple(session, content_type, file_path, content, safe_name)
                 else:
                     # 4MB 초과: Upload Session (청크 업로드)
-                    return await self._upload_large(session, access_token, file_path, content, safe_name)
+                    return await self._upload_large(session, file_path, content, safe_name)
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            print(f"  [ERROR] {filename} 업로드 예외: {e}")
+            logger.warning("[ONEDRIVE] upload error: %s", type(e).__name__)
             return None
 
     async def save_mail_content(
@@ -716,33 +789,7 @@ class OneDriveStorageBackend(StorageBackend):
             저장된 파일 URL 또는 None
         """
         try:
-            # 메일 정보 구성
-            content_lines = [
-                "=" * 60,
-                f"Subject: {mail_data.get('subject', 'N/A')}",
-                f"From: {mail_data.get('from', {}).get('emailAddress', {}).get('address', 'N/A')}",
-                f"Received: {mail_data.get('receivedDateTime', 'N/A')}",
-                f"Message ID: {mail_data.get('id', 'N/A')}",
-                "=" * 60,
-                "",
-            ]
-
-            # 본문 추출
-            body = mail_data.get("body", {})
-            body_content = body.get("content", "")
-            body_type = body.get("contentType", "text")
-
-            if body_type == "html":
-                body_content = re.sub(r"<[^>]+>", "", body_content)
-                body_content = re.sub(r"&nbsp;", " ", body_content)
-                body_content = re.sub(r"&lt;", "<", body_content)
-                body_content = re.sub(r"&gt;", ">", body_content)
-                body_content = re.sub(r"&amp;", "&", body_content)
-
-            content_lines.append(body_content)
-
-            # bytes로 변환
-            content_bytes = "\n".join(content_lines).encode("utf-8")
+            content_bytes = build_mail_content_text(mail_data).encode("utf-8")
 
             return await self.save_file(
                 folder_path,
@@ -751,8 +798,10 @@ class OneDriveStorageBackend(StorageBackend):
                 "text/plain; charset=utf-8"
             )
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            print(f"  [ERROR] 메일 본문 저장 실패: {e}")
+            logger.warning("[ONEDRIVE] mail body save failed: %s", type(e).__name__)
             return None
 
 
@@ -800,36 +849,24 @@ class MailFolderManager(LocalStorageBackend):
         content_bytes = attachment.get("contentBytes")
 
         if not content_bytes:
-            print(f"  [SKIP] {name} - contentBytes 없음 (대용량 파일)")
+            logger.info("[SKIP] attachment without contentBytes (large file)")
             return None
 
         # 파일명 정제
         safe_name = self.sanitize_filename(name, max_length=100)
 
-        # 중복 파일명 처리
-        folder = Path(folder_path)
-        file_path = folder / safe_name
-        counter = 1
-        while file_path.exists():
-            name_parts = safe_name.rsplit(".", 1)
-            if len(name_parts) == 2:
-                new_name = f"{name_parts[0]}_{counter}.{name_parts[1]}"
-            else:
-                new_name = f"{safe_name}_{counter}"
-            file_path = folder / new_name
-            counter += 1
-
         try:
-            # Base64 디코딩 및 저장
+            # Base64 디코딩 후 배타 생성 (중복 파일명은 _1, _2 ...)
             file_content = base64.b64decode(content_bytes)
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            file_path, fh = open_numbered_exclusive(Path(folder_path), safe_name)
+            with fh:
+                fh.write(file_content)
 
-            print(f"  [SAVED] {file_path.name} ({len(file_content):,} bytes)")
+            logger.info("[SAVED] attachment (%d bytes)", len(file_content))
             return str(file_path)
 
         except Exception as e:
-            print(f"  [ERROR] {name} 저장 실패: {e}")
+            logger.warning("[SAVED] attachment save failed: %s", type(e).__name__)
             return None
 
     def save_mail_content(  # type: ignore[override]
@@ -850,41 +887,15 @@ class MailFolderManager(LocalStorageBackend):
         try:
             file_path = Path(folder_path) / "mail_content.txt"
 
-            # 메일 정보 구성
-            content_lines = [
-                "=" * 60,
-                f"Subject: {mail_data.get('subject', 'N/A')}",
-                f"From: {mail_data.get('from', {}).get('emailAddress', {}).get('address', 'N/A')}",
-                f"Received: {mail_data.get('receivedDateTime', 'N/A')}",
-                f"Message ID: {mail_data.get('id', 'N/A')}",
-                "=" * 60,
-                "",
-            ]
-
-            # 본문 추출
-            body = mail_data.get("body", {})
-            body_content = body.get("content", "")
-            body_type = body.get("contentType", "text")
-
-            if body_type == "html":
-                # HTML 태그 간단히 제거
-                body_content = re.sub(r"<[^>]+>", "", body_content)
-                body_content = re.sub(r"&nbsp;", " ", body_content)
-                body_content = re.sub(r"&lt;", "<", body_content)
-                body_content = re.sub(r"&gt;", ">", body_content)
-                body_content = re.sub(r"&amp;", "&", body_content)
-
-            content_lines.append(body_content)
-
-            # 파일 저장
+            # 파일 저장 (mode 0 기존 동작: 덮어쓰기)
             with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(content_lines))
+                f.write(build_mail_content_text(mail_data))
 
-            print(f"  [SAVED] mail_content.txt")
+            logger.info("[SAVED] mail_content.txt")
             return str(file_path)
 
         except Exception as e:
-            print(f"  [ERROR] 메일 본문 저장 실패: {e}")
+            logger.warning("[SAVED] mail body save failed: %s", type(e).__name__)
             return None
 
 
@@ -892,6 +903,7 @@ def get_storage_backend(
     storage_type: str = "local",
     auth_manager: Optional["TokenProviderProtocol"] = None,
     user_email: Optional[str] = None,
+    paths: Optional["UserPaths"] = None,
     **kwargs
 ) -> StorageBackend:
     """
@@ -899,8 +911,9 @@ def get_storage_backend(
 
     Args:
         storage_type: "local" 또는 "onedrive"
-        auth_manager: AuthManager (OneDrive용)
+        auth_manager: AuthManager (OneDrive용) — mode 1 에서는 사용자 고정 provider
         user_email: 사용자 이메일 (OneDrive용)
+        paths: mode 1 사용자 경로. 주면 로컬 저장은 사용자 `files/` 안으로만 간다.
         **kwargs: 추가 옵션
             - base_directory: 로컬 저장 디렉토리 (기본: "downloads")
             - base_folder: OneDrive 기본 폴더 (기본: "/Attachments")
@@ -908,6 +921,11 @@ def get_storage_backend(
     Returns:
         StorageBackend 인스턴스
     """
+    if storage_type != "onedrive" and paths is not None:
+        from mcp_outlook.mail_attachment_user_storage import UserLocalStorageBackend
+        from mcp_outlook.outlook_file_policy import resolve_save_dir
+
+        return UserLocalStorageBackend(paths, resolve_save_dir(paths, kwargs.get("base_directory")))
     if storage_type == "onedrive":
         if not auth_manager or not user_email:
             raise ValueError("OneDrive storage requires auth_manager and user_email")

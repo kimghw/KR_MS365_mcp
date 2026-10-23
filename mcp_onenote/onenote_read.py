@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 
 from .graph_onenote_client import GraphOneNoteClient
 from .onenote_db_service import OneNoteDBService
-from .onenote_types import ReadAction
+from .onenote_types import ReadAction, check_top  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,13 @@ class OneNoteReader:
             date_to: 종료 날짜 (포함, last_accessed <= 이 값, ISO 8601 형식)
                      예: "2024-12-31T23:59:59Z"
         """
-        items = self._db_service.list_items(
-            user_id=user_email,
-            item_type="page",
-            section_id=section_id,
+        top = check_top(top)
+        # 필터·상한을 SQL 로 내려 읽는 행 수 자체를 top 으로 묶는다 (R02 — 슬라이스만 자르지 않는다)
+        query = dict(
+            user_id=user_email, item_type="page", section_id=section_id,
+            notebook_id=notebook_id, date_from=date_from, date_to=date_to, limit=top,
         )
+        items = self._db_service.list_items(**query)
 
         # DB가 비어있으면 sync 후 재조회
         if not items and self._writer:
@@ -86,13 +88,9 @@ class OneNoteReader:
                     "pages": [],
                     "count": 0,
                 }
-            items = self._db_service.list_items(
-                user_id=user_email,
-                item_type="page",
-                section_id=section_id,
-            )
+            items = self._db_service.list_items(**query)
 
-        # notebook_id 필터
+        # notebook_id 필터 (SQL 에서 이미 걸렀지만 외부 DB 구현을 대비해 한 번 더)
         if notebook_id:
             items = [i for i in items if i.get("notebook_id") == notebook_id]
 
@@ -155,11 +153,15 @@ class OneNoteReader:
         """
         if not self._agent:
             return {"success": False, "error": "Agent가 초기화되지 않았습니다."}
+        top = check_top(top)
 
+        # top 은 결과 수이자 **분석 작업량**의 상한 — Graph 에서 가져와 LLM 으로 판정하는
+        # 페이지 수를 top 으로 묶는다 (R02)
         result = await self._agent.search_pages(
             user_email=user_email,
             query=keyword,
             section_id=section_id,
+            max_pages=top,
         )
 
         # top 제한
@@ -235,11 +237,12 @@ class OneNoteReader:
 
     def get_page_history(
         self,
+        user_email: str,
         page_id: str,
         limit: int = 20,
     ) -> Dict[str, Any]:
-        """페이지 변경 이력 조회 (git log 스타일, 최신순)"""
-        changes = self._db_service.get_page_changes(page_id, limit)
+        """페이지 변경 이력 조회 (git log 스타일, 최신순) — 호출자 소유의 이력만"""
+        changes = self._db_service.get_page_changes(page_id, limit, user_id=user_email)
         return {
             "success": True,
             "page_id": page_id,

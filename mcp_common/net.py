@@ -9,6 +9,10 @@
     MCP_ALLOW_PUBLIC_BIND=1      # 0.0.0.0 / :: 를 쓰려면 함께 필요
 
 옵트인 없이 public 주소를 요청하면 loopback으로 강등하고 경고를 남긴다.
+
+멀티유저 모드(MS365_MULTI_USER=1)에서는 `/mcp` 에 bearer 인증이 걸리지만, 외부 바인드
+허용을 인증 완료의 근거로 쓰지 않는다 — 옵트인 규칙은 그대로이고, 외부 구간은 HTTPS
+(TLS 프록시)로만 노출해야 한다(spec/spec_멀티유저.md ②-4.5).
 """
 
 import ipaddress
@@ -44,6 +48,15 @@ def is_public_bind(host: str) -> bool:
     return not addr.is_loopback
 
 
+def _multi_user() -> bool:
+    try:
+        from mcp_common.security_policy import multi_user_enabled
+
+        return multi_user_enabled()
+    except Exception:  # 정책 오류는 기동 검사가 따로 잡는다 — 여기서는 경고 문구만 고른다
+        return False
+
+
 def resolve_bind_host(requested: Optional[str] = None, *, server_name: str = "mcp") -> str:
     """
     실제로 바인드할 호스트를 결정한다.
@@ -64,14 +77,24 @@ def resolve_bind_host(requested: Optional[str] = None, *, server_name: str = "mc
     if is_public_bind(host) and not _is_truthy(os.environ.get("MCP_ALLOW_PUBLIC_BIND")):
         logger.warning(
             "[%s] refusing to bind on %s without MCP_ALLOW_PUBLIC_BIND=1; "
-            "falling back to %s (MCP servers have no caller authentication)",
+            "falling back to %s (%s)",
             server_name,
             host,
             DEFAULT_BIND_HOST,
+            "public bind requires explicit opt-in even with bearer auth"
+            if _multi_user()
+            else "MCP servers have no caller authentication",
         )
         return DEFAULT_BIND_HOST
 
-    if is_public_bind(host):
+    if is_public_bind(host) and _multi_user():
+        logger.warning(
+            "[%s] binding on %s — bearer auth is enforced on /mcp; expose it only "
+            "behind HTTPS (TLS proxy) and restrict access at the firewall.",
+            server_name,
+            host,
+        )
+    elif is_public_bind(host):
         logger.warning(
             "[%s] binding on %s — externally reachable and there is NO caller "
             "authentication. Restrict access at the firewall.",

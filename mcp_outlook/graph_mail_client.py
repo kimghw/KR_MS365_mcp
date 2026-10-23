@@ -1,18 +1,30 @@
 """
 Graph Mail Client - 통합 메일 처리 클라이언트
 쿼리, 메일 처리, 첨부파일 관리를 통합하는 상위 클래스
+
+멀티유저(spec/spec_멀티유저.md ②-2.4·②-2.5, WP4): 생성 시 받은 토큰 공급자·`UserPaths` 를
+하위 쿼리·배치·첨부 핸들러 **전부에** 넘긴다(공유 AuthManager 를 다시 얻지 않는다).
+`SecurityError`(경로·URL 정책, 연결 없음)는 오류 dict 로 삼키지 않고 그대로 올린다.
 """
 
+import logging
 from typing import Dict, Any, List, Optional, Union, TYPE_CHECKING
 from datetime import datetime, timedelta
 from enum import Enum
 
+from mcp_common.errors import ToolExecutionError
+from mcp_common.security_contracts import SecurityError
+
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
+    from mcp_common.user_paths import UserPaths
 
 from .graph_mail_query import GraphMailQuery
 from .graph_mail_id_batch import GraphMailIdBatch
+from .outlook_security import errors_text, public_error
 from .outlook_types import FilterParams, ExcludeParams, SelectParams
+
+logger = logging.getLogger(__name__)
 
 
 class QueryMethod(Enum):
@@ -47,16 +59,22 @@ class GraphMailClient:
         token_provider: Optional["TokenProviderProtocol"] = None,
         mail_query: Optional[GraphMailQuery] = None,
         mail_batch: Optional[GraphMailIdBatch] = None,
+        paths: Optional["UserPaths"] = None,
+        workers: Any = None,
     ):
         """
         초기화
 
         Args:
-            token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
+            token_provider: 토큰 제공자 (None이면 mode 0 공유 AuthManager — mode 1 은 주입 필수)
             mail_query: 메일 조회 구현체 (None이면 기본값 생성)
             mail_batch: 배치 조회 구현체 (None이면 기본값 생성)
+            paths: mode 1 사용자 경로 (첨부 저장·메타데이터·발송 첨부 경계)
+            workers: 서비스 범위 converter `WorkerGroup` (P01) — 첨부 핸들러에 그대로 넘긴다
         """
         self._token_provider = token_provider
+        self._paths = paths
+        self._workers = workers
         self._provided_mail_query = mail_query
         self._provided_mail_batch = mail_batch
         self.mail_query: Optional[GraphMailQuery] = None
@@ -78,10 +96,10 @@ class GraphMailClient:
             if self._provided_mail_query is not None:
                 self.mail_query = self._provided_mail_query
             else:
-                self.mail_query = GraphMailQuery(token_provider=self._token_provider)
+                self.mail_query = GraphMailQuery(token_provider=self._token_provider, paths=self._paths)
 
             if not await self.mail_query.initialize():
-                print("Failed to initialize GraphMailQuery")
+                logger.error("Failed to initialize GraphMailQuery")
                 return False
 
             # GraphMailIdBatch 초기화 (제공된 것 사용 또는 새로 생성)
@@ -91,20 +109,32 @@ class GraphMailClient:
                 self.mail_batch = GraphMailIdBatch(token_provider=self._token_provider)
 
             if not await self.mail_batch.initialize():
-                print("Failed to initialize GraphMailIdBatch")
+                logger.error("Failed to initialize GraphMailIdBatch")
                 return False
 
             self._initialized = True
             return True
 
         except Exception as e:
-            print(f"Initialization error: {str(e)}")
+            logger.error("GraphMailClient initialization error: %s", type(e).__name__)
             return False
 
     def _ensure_initialized(self):
         """초기화 확인"""
         if not self._initialized:
             raise Exception("GraphMailClient not initialized. Call initialize() first.")
+
+    def _attachment_handler(self, base_directory: Optional[str] = "downloads"):
+        """요청 범위 첨부 핸들러. 이 클라이언트의 공급자·경로를 그대로 넘긴다(②-2.5 provider 누락 수정)."""
+        from .mail_attachment import BatchAttachmentHandler
+
+        provider = self._token_provider or getattr(self.mail_query, "token_provider", None)
+        return BatchAttachmentHandler(
+            base_directory=base_directory or "downloads",
+            token_provider=provider,
+            paths=self._paths,
+            workers=self._workers,
+        )
 
     async def build_and_fetch(
         self,
@@ -187,8 +217,10 @@ class GraphMailClient:
             result["query_method"] = query_method.value
             return result
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"error": str(e), "status": "error", "value": [], "query_method": query_method.value}
+            return {"error": public_error(e), "status": "error", "value": [], "query_method": query_method.value}
 
     async def fetch_and_process(
         self,
@@ -231,7 +263,7 @@ class GraphMailClient:
         self._ensure_initialized()
 
         # 1. 메일 가져오기
-        print(f"\n[MAIL] Fetching emails using {query_method.value} method...")
+        logger.info("[MAIL] fetching emails using %s method", query_method.value)
         result = await self.build_and_fetch(
             user_email=user_email,
             query_method=query_method,
@@ -248,7 +280,7 @@ class GraphMailClient:
         # 2. 에러 체크 — 전량 실패(status:error)만 실패로 반환하고, 부분 실패는 성공분을 보존한 채 진행
         query_errors = result.get("errors", []) if result.get("has_errors") else []
         if query_errors:
-            print(f"[WARN] Query completed with errors: {len(query_errors)} errors")
+            logger.warning("[MAIL] query completed with %d error(s)", len(query_errors))
             if return_on_error and result.get("status") == "error":
                 return {
                     "status": "error",
@@ -259,7 +291,7 @@ class GraphMailClient:
                 }
 
         if result.get("error"):
-            print(f"[ERROR] Query failed: {result['error']}")
+            logger.warning("[MAIL] query failed (status=%s)", result.get("status"))
             return result
 
         # 부분 실패가 있으면 이후 성공 응답에 partial 로 표시 (성공분 보존, 오류 목록 유지)
@@ -268,7 +300,7 @@ class GraphMailClient:
         # 3. 결과 확인
         emails = result.get("value", [])
         if not emails:
-            print("[INFO] No emails found")
+            logger.info("[MAIL] no emails found")
             payload = {
                 "status": base_status,
                 "message": "No emails found",
@@ -280,7 +312,7 @@ class GraphMailClient:
                 payload["errors"] = query_errors
             return payload
 
-        print(f"[DONE] Found {len(emails)} email(s)")
+        logger.info("[MAIL] found %d email(s)", len(emails))
 
         # 4. 처리 모드에 따라 처리
         if processing_mode == ProcessingMode.FETCH_ONLY:
@@ -297,7 +329,7 @@ class GraphMailClient:
             return payload
 
         # 5. 추가 처리가 필요한 경우 - BatchAttachmentHandler 사용
-        print(f"\n[PROCESS] Processing emails with mode: {processing_mode.value}")
+        logger.info("[PROCESS] processing emails with mode %s", processing_mode.value)
 
         # 첨부파일 처리가 필요한 경우 BatchAttachmentHandler 사용
         processing_modes_with_attachments = [
@@ -309,11 +341,9 @@ class GraphMailClient:
         ]
 
         if processing_mode in processing_modes_with_attachments:
-            from .mail_attachment import BatchAttachmentHandler
-
             message_ids = [email.get("id") for email in emails if email.get("id")]
             if message_ids:
-                handler = BatchAttachmentHandler(base_directory=save_directory or "downloads")
+                handler = self._attachment_handler(save_directory or "downloads")
                 try:
                     # 처리 모드에 따른 옵션 설정
                     save_file = processing_mode != ProcessingMode.FETCH_MEMORY_ONLY
@@ -329,7 +359,7 @@ class GraphMailClient:
                         convert_to_txt=convert_to_txt,
                         include_body=True,
                     )
-                    print(f"[ATTACH] Processed {attachment_result.get('processed', 0)} emails with attachments")
+                    logger.info("[ATTACH] processed %d emails with attachments", attachment_result.get("processed", 0))
                     # 첨부 처리 결과의 success 도 반영: 전량 실패면 partial 로 강등해 오류가 드러나게 한다
                     attach_failed = not attachment_result.get("success") and bool(attachment_result.get("errors"))
                     payload = {
@@ -343,15 +373,17 @@ class GraphMailClient:
                     if query_errors:
                         payload["errors"] = query_errors
                     return payload
+                except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+                    raise
                 except Exception as e:
-                    print(f"[WARN] Attachment processing failed: {e}")
+                    logger.warning("[ATTACH] attachment processing failed: %s", type(e).__name__)
                     return {
                         "status": "partial",
                         "value": emails,
                         "total": len(emails),
                         "processing_mode": processing_mode.value,
                         "query_method": query_method.value,
-                        "attachment_error": str(e),
+                        "attachment_error": public_error(e),
                     }
 
         # 그 외 모드는 쿼리 결과만 반환 (부분 실패 시 partial + 오류 목록 보존)
@@ -393,7 +425,7 @@ class GraphMailClient:
 
         try:
             # 배치 조회 실행
-            print(f"\n[MAIL] Fetching {len(message_ids)} emails using batch method...")
+            logger.info("[MAIL] fetching %d emails using batch method", len(message_ids))
             result = await self.mail_batch.batch_fetch_by_ids(
                 user_email=user_email, message_ids=message_ids, select_params=select_params
             )
@@ -401,7 +433,8 @@ class GraphMailClient:
             # 결과 변환 (기존 형식과 일관성 유지)
             if result.get("success"):
                 return {
-                    "status": "success",
+                    # 일부 ID 실패가 섞이면 partial — 성공분 보존, 오류 항목은 요약만 (R06)
+                    "status": "partial" if result.get("errors") else "success",
                     "value": result.get("value", []),
                     "total": result.get("total", 0),
                     "requested": result.get("requested", 0),
@@ -418,8 +451,10 @@ class GraphMailClient:
                     "query_method": QueryMethod.BATCH_ID.value,
                 }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e), "value": [], "query_method": QueryMethod.BATCH_ID.value}
+            return {"status": "error", "error": public_error(e), "value": [], "query_method": QueryMethod.BATCH_ID.value}
 
     async def fetch_attachments_metadata(
         self,
@@ -449,10 +484,8 @@ class GraphMailClient:
             }
 
         try:
-            from .mail_attachment import BatchAttachmentHandler
-
-            print(f"\n[META] Fetching metadata for {len(message_ids)} emails...")
-            handler = BatchAttachmentHandler()
+            logger.info("[META] fetching metadata for %d emails", len(message_ids))
+            handler = self._attachment_handler()
 
             result = await handler.fetch_metadata_only(
                 user_email=user_email,
@@ -466,7 +499,7 @@ class GraphMailClient:
                 # 전량 실패 (토큰 획득 실패, 전 배치 실패, 처리된 메일 0건 등)
                 return {
                     "status": "error",
-                    "error": "; ".join(str(e) for e in errors) if errors else "메타데이터 조회 실패 (처리된 메일 없음)",
+                    "error": errors_text(errors) if errors else "메타데이터 조회 실패 (처리된 메일 없음)",
                     "value": result.get("messages", []),
                     "total": result.get("total_processed", 0),
                     "attachments_count": result.get("attachments_count", 0),
@@ -482,8 +515,10 @@ class GraphMailClient:
                 "errors": result.get("errors"),
             }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e), "value": []}
+            return {"status": "error", "error": public_error(e), "value": []}
 
     async def download_attachments(
         self,
@@ -531,14 +566,12 @@ class GraphMailClient:
             }
 
         try:
-            from .mail_attachment import BatchAttachmentHandler
-
-            handler = BatchAttachmentHandler(base_directory=save_directory)
+            handler = self._attachment_handler(save_directory)
 
             # 입력 타입 판별
             if all(isinstance(item, str) for item in message_attachment_ids):
                 # 메일 ID 리스트 -> 모든 첨부파일 다운로드
-                print(f"\n[MAIL] Downloading all attachments from {len(message_attachment_ids)} emails...")
+                logger.info("[ATTACH] downloading all attachments from %d emails", len(message_attachment_ids))
 
                 result = await handler.fetch_and_save(
                     user_email=user_email,
@@ -576,7 +609,7 @@ class GraphMailClient:
                 if not result.get("success"):
                     # 전량 실패 (토큰 획득 실패, 전 배치 실패 등)
                     payload["status"] = "error"
-                    payload["error"] = "; ".join(str(e) for e in errors) if errors else "첨부파일 처리 실패 (처리된 메일 없음)"
+                    payload["error"] = errors_text(errors) if errors else "첨부파일 처리 실패 (처리된 메일 없음)"
                 else:
                     # 부분 실패는 partial 로 표시해 성공분 보존
                     payload["status"] = "partial" if errors else "success"
@@ -584,7 +617,7 @@ class GraphMailClient:
 
             elif all(isinstance(item, dict) and "message_id" in item and "attachment_id" in item for item in message_attachment_ids):
                 # 메일/첨부파일 ID 쌍 -> 특정 첨부파일만 다운로드
-                print(f"\n[ATTACH] Downloading {len(message_attachment_ids)} specific attachments...")
+                logger.info("[ATTACH] downloading %d specific attachments", len(message_attachment_ids))
 
                 result = await handler.fetch_specific_attachments(
                     user_email=user_email,
@@ -608,7 +641,7 @@ class GraphMailClient:
                 if not result.get("success"):
                     # 다운로드 0건 (토큰 획득 실패, 전 건 실패 등)
                     payload["status"] = "error"
-                    payload["error"] = "; ".join(str(e) for e in errors) if errors else "첨부파일 다운로드 실패 (다운로드 0건)"
+                    payload["error"] = errors_text(errors) if errors else "첨부파일 다운로드 실패 (다운로드 0건)"
                 elif result.get("failed", 0) > 0 or errors:
                     # 일부만 실패 — 성공분 보존
                     payload["status"] = "partial"
@@ -622,8 +655,10 @@ class GraphMailClient:
                     "error": "Invalid message_attachment_ids format. Use message IDs list or attachment info list",
                 }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": public_error(e)}
 
     async def batch_and_process(
         self,
@@ -658,19 +693,19 @@ class GraphMailClient:
         self._ensure_initialized()
 
         # 1. 배치로 메일 가져오기
-        print(f"\n[MAIL] Fetching {len(message_ids)} emails using batch method...")
+        logger.info("[MAIL] fetching %d emails using batch method", len(message_ids))
         result = await self.batch_and_fetch(user_email=user_email, message_ids=message_ids, select_params=select_params)
 
         # 2. 에러 체크
         if result.get("status") == "error":
-            print(f"[ERROR] Batch fetch failed: {result.get('error')}")
+            logger.warning("[MAIL] batch fetch failed")
             if return_on_error:
                 return result
 
         # 3. 결과 확인
         emails = result.get("value", [])
         if not emails:
-            print("[INFO]  No emails found")
+            logger.info("[MAIL] no emails found")
             return {
                 "status": "success",
                 "message": "No emails found",
@@ -679,7 +714,7 @@ class GraphMailClient:
                 "query_method": QueryMethod.BATCH_ID.value,
             }
 
-        print(f"[DONE] Found {len(emails)} email(s)")
+        logger.info("[MAIL] found %d email(s)", len(emails))
 
         # 4. 처리 모드에 따라 처리
         if processing_mode == ProcessingMode.FETCH_ONLY:
@@ -732,7 +767,7 @@ class GraphMailClient:
         self._ensure_initialized()
 
         try:
-            print(f"\n[SEND] Sending mail to {len(to_recipients)} recipient(s)...")
+            logger.info("[SEND] sending mail to %d recipient(s)", len(to_recipients or []))
             return await self.mail_query.send_mail(
                 user_email=user_email,
                 to_recipients=to_recipients,
@@ -744,8 +779,10 @@ class GraphMailClient:
                 attachments=attachments,
                 save_to_sent_items=save_to_sent_items,
             )
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": public_error(e)}
 
     async def save_draft(
         self,
@@ -777,7 +814,7 @@ class GraphMailClient:
         self._ensure_initialized()
 
         try:
-            print("\n[DRAFT] Saving draft mail...")
+            logger.info("[DRAFT] saving draft mail")
             return await self.mail_query.save_draft(
                 user_email=user_email,
                 subject=subject,
@@ -788,8 +825,10 @@ class GraphMailClient:
                 bcc_recipients=bcc_recipients,
                 attachments=attachments,
             )
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": public_error(e)}
 
     async def delete_messages(
         self,
@@ -817,7 +856,7 @@ class GraphMailClient:
             }
 
         try:
-            print(f"\n[DELETE] Deleting {len(message_ids)} email(s)...")
+            logger.info("[DELETE] deleting %d email(s)", len(message_ids))
             result = await self.mail_batch.batch_delete_by_ids(
                 user_email=user_email,
                 message_ids=message_ids,
@@ -843,8 +882,10 @@ class GraphMailClient:
                     "failed_items": result.get("failed_items"),
                 }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e), "deleted": 0}
+            return {"status": "error", "error": public_error(e), "deleted": 0}
 
     async def report_not_junk_messages(
         self,
@@ -875,7 +916,7 @@ class GraphMailClient:
             }
 
         try:
-            print(f"\n[REPORT] Reporting {len(message_ids)} email(s) as notJunk...")
+            logger.info("[REPORT] reporting %d email(s) as notJunk", len(message_ids))
             result = await self.mail_batch.batch_report_not_junk_by_ids(
                 user_email=user_email,
                 message_ids=message_ids,
@@ -901,8 +942,10 @@ class GraphMailClient:
                     "failed_items": result.get("failed_items"),
                 }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e), "reported": 0}
+            return {"status": "error", "error": public_error(e), "reported": 0}
 
     async def move_messages(
         self,
@@ -932,7 +975,7 @@ class GraphMailClient:
             }
 
         try:
-            print(f"\n[MOVE] Moving {len(message_ids)} email(s) to '{destination_id}'...")
+            logger.info("[MOVE] moving %d email(s)", len(message_ids))
             result = await self.mail_batch.batch_move_by_ids(
                 user_email=user_email,
                 message_ids=message_ids,
@@ -960,8 +1003,10 @@ class GraphMailClient:
                     "failed_items": result.get("failed_items"),
                 }
 
+        except ToolExecutionError:  # SecurityError·invalid_argument·quota_exceeded 전부 그대로 올린다
+            raise
         except Exception as e:
-            return {"status": "error", "error": str(e), "moved": 0}
+            return {"status": "error", "error": public_error(e), "moved": 0}
 
     def format_results(self, results: Dict[str, Any], verbose: bool = False) -> str:
         """
@@ -1016,8 +1061,13 @@ class GraphMailClient:
         return "\n".join(output)
 
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 이 클라이언트가 만든 하위 객체만 닫는다.
+
+        토큰 공급자는 빌린 것이다(mode 1: 서비스 풀이 차용 해제, mode 0: MailService 가 종료 시
+        1회 정리). 하위 쿼리·배치의 close() 도 공급자를 닫지 않는다(②-2.4).
+        """
         if self.mail_query:
             await self.mail_query.close()
         if self.mail_batch:
             await self.mail_batch.close()
+        self._initialized = False

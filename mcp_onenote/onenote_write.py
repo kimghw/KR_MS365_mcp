@@ -81,7 +81,7 @@ class OneNoteWriter:
                 result["title"] = page_info.get("item_name", "")
                 result["web_url"] = page_info.get("web_url", "")
             except Exception as e:
-                logger.warning(f"append 보강용 페이지 정보 조회 실패 (무시): {e}")
+                logger.warning("append 보강용 페이지 정보 조회 실패 (무시): %s", type(e).__name__)
 
         return result
 
@@ -173,7 +173,7 @@ class OneNoteWriter:
         previous_hash = None
         existing_summary = None
         if self._db_service:
-            existing_summary = self._db_service.get_summary(page_id)
+            existing_summary = self._db_service.get_summary(page_id, user_id=user_email)
             if existing_summary:
                 previous_hash = existing_summary.get("content_hash")
 
@@ -217,7 +217,7 @@ class OneNoteWriter:
                     change_summary = change_result.get("change_summary", "")
                     change_keywords = change_result.get("change_keywords", [])
                 except Exception as e:
-                    logger.warning(f"변경 요약 생성 실패 (무시): {e}")
+                    logger.warning("변경 요약 생성 실패 (무시): %s", type(e).__name__)
                     change_summary = f"{action.value} 작업 수행"
 
             self._db_service.save_page_change(
@@ -235,9 +235,9 @@ class OneNoteWriter:
             if existing_summary and self._agent:
                 try:
                     await self._agent.summarize_page(user_email, page_id, force_refresh=True)
-                    logger.info(f"페이지 편집 후 요약 자동 갱신: {page_id}")
+                    logger.info("페이지 편집 후 요약 자동 갱신")
                 except Exception as e:
-                    logger.warning(f"페이지 편집 후 요약 갱신 실패 (무시): {e}")
+                    logger.warning("페이지 편집 후 요약 갱신 실패 (무시): %s", type(e).__name__)
 
         return result
 
@@ -302,9 +302,9 @@ class OneNoteWriter:
             item_id = row.get("item_id")
             if item_id and item_id not in live_ids:
                 if self._db_service.delete_item(user_id=user_email, item_id=item_id):
-                    self._db_service.delete_summary(page_id=item_id)
+                    self._db_service.delete_summary(page_id=item_id, user_id=user_email)
                     pruned += 1
 
         if pruned:
-            logger.info(f"Graph 에 없는 페이지 행 {pruned}건 정리")
+            logger.info("Graph 에 없는 페이지 행 %d건 정리", pruned)
         return pruned

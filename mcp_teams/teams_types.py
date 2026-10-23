@@ -200,3 +200,44 @@ class ListChatsRequest:
     """채팅 목록 조회 요청"""
     limit: int = 50
     filter_type: Optional[ChatType] = None
+
+
+# ----------------------------------------------------------------------
+# 입력 상한 (spec/spec_멀티유저.md R02 — 스키마 maximum·maxItems 와 별개로 서비스 경계에서도 막는다)
+# ----------------------------------------------------------------------
+MAX_LIMIT = 1000
+MAX_NAMES = 500
+
+
+def _invalid_argument(name: str, message: str, **details: Any):
+    from mcp_common.errors import ToolExecutionError
+
+    payload: Dict[str, Any] = {
+        "status": "error", "error": "invalid_argument", "message": message, "argument": name,
+    }
+    payload.update(details)
+    return ToolExecutionError(payload)
+
+
+def check_limit(value: Any, *, cap: int = MAX_LIMIT, name: str = "limit") -> int:
+    """`limit` 정수 인자: 1 이상 `cap` 이하만. 위반은 `invalid_argument` — Graph 요청 전에 막는다."""
+    if isinstance(value, bool):
+        raise _invalid_argument(name, f"{name} 은 정수여야 합니다.")
+    if not isinstance(value, int):
+        try:
+            value = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise _invalid_argument(name, f"{name} 은 정수여야 합니다.") from None
+    if value < 1 or value > cap:
+        raise _invalid_argument(name, f"{name} 은 1 이상 {cap} 이하여야 합니다.", minimum=1, maximum=cap)
+    return value
+
+
+def check_list_size(items: Any, name: str, *, cap: int = MAX_NAMES) -> None:
+    """리스트 인자의 원소 수 상한. None 은 통과(호출 측이 처리)."""
+    if items is None:
+        return
+    if not isinstance(items, (list, tuple)):
+        raise _invalid_argument(name, f"{name} 은 목록이어야 합니다.")
+    if len(items) > cap:
+        raise _invalid_argument(name, f"{name} 은 최대 {cap}개까지 지정할 수 있습니다.", maximum=cap)

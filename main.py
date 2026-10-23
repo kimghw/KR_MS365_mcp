@@ -21,8 +21,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+_MULTI_USER_HINT = (
+    "멀티유저 모드(MS365_MULTI_USER=1)에서는 이 단일 운영자 인증 도구를 쓸 수 없습니다.\n"
+    "  - 사용자 등록·키 발급: python -m session.admin_cli\n"
+    "  - Graph 연결(브라우저 OAuth): python -m session.auth_gateway 를 띄우고 사용자가 연결 링크를 엽니다."
+)
+
+
 async def main():
-    """메인 함수 - 통합된 인증 플로우"""
+    """메인 함수 - 통합된 인증 플로우 (mode 0 전용)"""
+    from mcp_common.security_policy import multi_user_enabled
+
+    if multi_user_enabled():
+        print(_MULTI_USER_HINT)
+        return
 
     # Initialize auth manager
     auth_manager = AuthManager()
@@ -73,7 +85,7 @@ async def main():
             print(f"\n[ERROR] Authentication failed: {result.get('error', 'Unknown error')}")
 
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error("Error: %s", type(e).__name__)
         print(f"\n[ERROR] Error: {str(e)}")
 
     finally:

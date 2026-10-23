@@ -8,7 +8,7 @@
 # 출처: mcp_editor/mcp_todo/tool_definition_templates.yaml 의 계약을 그대로 이관했다.
 #       도구 이름·설명·파라미터 설명·enum·default 는 한 글자도 바꾸지 않았다.
 #
-# Graph API base: https://graph.microsoft.com/v1.0/users/{user_email}/todo
+# Graph API base: https://graph.microsoft.com/v1.0/users/{user_email}/todo (멀티유저: /me/todo)
 # Required Azure scope: Tasks.ReadWrite (또는 Tasks.ReadWrite.Shared)
 #
 # 주의 1) 이관 시 해소한 계약 위반
@@ -19,6 +19,9 @@
 #   서버가 주입하던 값이 없으므로 `expose: internal` 파라미터는 하나도 없다.
 # 주의 3) user_email 은 스키마상 선택이지만 서비스에는 항상 확정된 값이 가야 한다.
 #   선택 정책은 mcp_common.user_resolver(SSOT)가 handlers.py 에서 적용한다.
+#   멀티유저 모드(MS365_MULTI_USER=1)에서는 인증된 호출자의 연결 계정만 허용하고
+#   Graph 경로도 /me/todo 로 고정한다(spec/spec_멀티유저.md ②-5.3). 설명 문구는 이
+#   정책에 맞춰 바꿨다(이관 당시 원문: "생략 시 기본 사용자 자동 선택 — ...").
 # 주의 4) targetParam 은 기존 YAML 의 property 에 전부(35개) 붙어 있었고 값은 모두
 #   파라미터 이름과 같은 항등 매핑이다. 파생 스키마에 그대로 실리므로 여기에도 전부 적는다.
 # 주의 5) categories 의 `items: {type: string}` 은 복원 완료(:195, :263).
@@ -40,14 +43,16 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: top
         type: integer
         required: false
         expose: tool
         default: 50
-        description: "최대 결과 수"
+        minimum: 1
+        maximum: 1000
+        description: "최대 결과 수 (1~1000)"
         targetParam: top
 
   - name: todo_list_create
@@ -58,7 +63,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: display_name
         type: string
@@ -75,7 +80,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string
@@ -92,7 +97,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string
@@ -112,7 +117,9 @@ tools:
         required: false
         expose: tool
         default: 50
-        description: "최대 결과 수"
+        minimum: 1
+        maximum: 1000
+        description: "최대 결과 수 (1~1000)"
         targetParam: top
       - name: orderby
         type: string
@@ -129,7 +136,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string
@@ -152,7 +159,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string
@@ -195,9 +202,10 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "카테고리 목록"
+        description: "카테고리 목록 (최대 50개)"
         items:
           type: string
+        maxItems: 50
         targetParam: categories
 
   - name: todo_task_update
@@ -208,7 +216,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string
@@ -264,9 +272,10 @@ tools:
         type: array
         required: false
         expose: tool
-        description: "카테고리 목록"
+        description: "카테고리 목록 (최대 50개)"
         items:
           type: string
+        maxItems: 50
         targetParam: categories
 
   - name: todo_task_delete
@@ -277,7 +286,7 @@ tools:
         type: string
         required: false
         expose: tool
-        description: "사용자 이메일 (생략 시 기본 사용자 자동 선택 — MS365_DEFAULT_USER_EMAIL 또는 auth.db의 결정적 선택)"
+        description: "사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
         targetParam: user_email
       - name: list_id_or_name
         type: string

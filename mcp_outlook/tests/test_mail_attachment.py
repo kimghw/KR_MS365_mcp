@@ -316,9 +316,14 @@ class TestBatchAttachmentHandler:
 
     @pytest.mark.asyncio
     async def test_close(self, handler):
-        """리소스 정리"""
+        """리소스 정리 — 주입받은(빌린) 토큰 공급자는 닫지 않는다.
+
+        요청 범위 핸들러가 공유·사용자 고정 공급자를 닫으면 다른 요청·사용자의 인증 자원이
+        함께 닫힌다(spec/spec_멀티유저.md ②-2.4 종료 경로 소유권). 공급자 수명은 서비스 풀
+        (mode 1) 또는 MailService 종료 정리(mode 0)가 관리한다.
+        """
         await handler.close()
-        handler.token_provider.close.assert_awaited_once()
+        handler.token_provider.close.assert_not_awaited()
 
 
 class TestSingleAttachmentHandler:

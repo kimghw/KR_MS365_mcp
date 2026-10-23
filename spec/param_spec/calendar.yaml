@@ -12,7 +12,9 @@
 #    그대로 이관한 것이다. calendar 는 7개 도구 전부 도구 파라미터 이름과 서비스 인자
 #    이름이 같다(항등 매핑).
 #  - user_email 은 스키마상 선택이지만, 핸들러가 mcp_common.user_resolver 정책으로
-#    해석한다(명시값 → 환경변수 → auth.db, 끝내 없으면 ToolExecutionError).
+#    해석한다(명시값 → 환경변수 → auth.db, 끝내 없으면 ToolExecutionError). 멀티유저
+#    모드(MS365_MULTI_USER=1)에서는 인증된 호출자의 연결 계정만 허용한다
+#    (spec/spec_멀티유저.md ②-5.3 — expose 는 tool 그대로, 설명만 바꾼다).
 #    구 tool_definition_templates.yaml 에는 "재생성 시 다시 필수화되지 않도록
 #    is_required: false" 라는 방어 주석이 도구마다 붙어 있었다. 재생성이 사라졌으므로
 #    아래 `required: false` 가 그 의도를 그대로 담은 유일한 원본이다.
@@ -39,7 +41,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "조회할 사용자의 이메일 주소"
+        description: "조회할 사용자의 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: start_datetime
         type: string
         required: true
@@ -63,7 +65,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "사용자 이메일 주소"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: event_id
         type: string
         required: true
@@ -80,7 +82,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "이벤트를 생성할 사용자 이메일"
+        description: "이벤트를 생성할 사용자 이메일. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: subject
         type: string
         required: true
@@ -122,14 +124,16 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "조회할 사용자의 이메일 주소"
+        description: "조회할 사용자의 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: top
         type: integer
         required: false
         expose: tool
         default: 50
+        minimum: 1
+        maximum: 1000
         targetParam: top
-        description: "최대 결과 수"
+        description: "최대 결과 수 (1~1000)"
       - name: orderby
         type: string
         required: false
@@ -146,7 +150,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "사용자 이메일 주소"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: event_id
         type: string
         required: true
@@ -193,7 +197,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "요청하는 사용자의 이메일 주소"
+        description: "요청하는 사용자의 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       # 구 스키마에는 items({type: string}) 가 있었으나 param_spec 은 배열 원소 스키마를
       # 표현하지 않는다(teams/todo 도 동일). 원소 형식은 아래 description 이 설명한다.
       - name: schedules
@@ -201,9 +205,10 @@ tools:
         required: true
         expose: tool
         targetParam: schedules
-        description: "가용성을 조회할 사용자 이메일 목록"
+        description: "가용성을 조회할 사용자 이메일 목록 (최대 100명)"
         items:
           type: string
+        maxItems: 100
       - name: start_time
         type: string
         required: true
@@ -233,7 +238,7 @@ tools:
         required: false
         expose: tool
         targetParam: user_email
-        description: "사용자 이메일 주소"
+        description: "사용자 이메일 주소. 멀티유저 모드에서는 인증된 호출자의 연결 계정과 일치해야 하며 다른 계정은 선택할 수 없다. 생략 시 호출자 본인 계정을 쓴다(단일 운영자 모드에서는 기본 사용자)."
       - name: event_id
         type: string
         required: true

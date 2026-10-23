@@ -59,7 +59,7 @@ class ExcelConverter(BaseConverter):
                 logger.info("Install with: pip install pandas openpyxl")
                 raise
         except Exception as e:
-            logger.error(f"Error converting Excel {file_path}: {e}")
+            logger.error("Error converting Excel: %s", type(e).__name__)
             raise
 
     def _convert_with_openpyxl(self, file_path: str) -> str:

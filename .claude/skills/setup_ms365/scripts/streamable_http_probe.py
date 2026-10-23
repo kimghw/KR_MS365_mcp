@@ -8,11 +8,21 @@ Usage:
     python streamable_http_probe.py --base http://localhost:5001 --json
     python streamable_http_probe.py --base http://localhost:5001 --strict
 
+    # 멀티유저 모드 (MS365_MULTI_USER=1) — bearer key 는 **환경변수로만** 받는다
+    MS365_MCP_BEARER_KEY=... python streamable_http_probe.py --base http://localhost:5001 --multi-user
+    python streamable_http_probe.py --base ... --multi-user --key-env MY_KEY_VAR
+
+멀티유저 모드는 stateless 다(spec/spec_멀티유저.md ②-4.4): `Mcp-Session-Id` 를 발급하지 않고,
+보내면 400, GET/DELETE 는 405, 키 없는 요청은 401 + `WWW-Authenticate: Bearer` 가 **정상**이다.
+키 원문은 명령행 인자로 받지 않으며 출력·오류 메시지에도 싣지 않는다.
+
 Pure stdlib only (urllib + json + argparse). Works on Windows native Python.
 """
 import argparse
 import io
 import json
+import os
+import re
 import socket
 import sys
 import urllib.error
@@ -28,6 +38,9 @@ except (AttributeError, io.UnsupportedOperation):
     pass
 
 PROTO_VER = "2025-03-26"
+#: 멀티유저 bearer key 를 담은 환경변수의 기본 이름 (키 자체는 명령행에 넣지 않는다)
+DEFAULT_KEY_ENV = "MS365_MCP_BEARER_KEY"
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 class _NoRaiseHTTPProcessor(urllib.request.HTTPErrorProcessor):
@@ -302,6 +315,88 @@ def run_probes(base: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     return results, session_id
 
 
+def _post(url: str, body: bytes, *, key: Optional[str], extra: Optional[Dict[str, str]] = None,
+          accept: bool = True) -> Tuple[int, Dict[str, str], bytes]:
+    headers = {"Content-Type": "application/json", "MCP-Protocol-Version": PROTO_VER}
+    if accept:
+        headers["Accept"] = "application/json, text/event-stream"
+    if key is not None:
+        headers["Authorization"] = f"Bearer {key}"
+    headers.update(extra or {})
+    return _http("POST", url, headers=headers, body=body)
+
+
+def run_probes_multi_user(base: str, key: Optional[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """멀티유저(stateless + bearer) 9-probe. 키가 없으면 인증이 필요한 probe 는 건너뛴다."""
+    url = base.rstrip("/") + "/mcp"
+    results: List[Dict[str, Any]] = []
+    no_key = "bearer key 환경변수가 비어 있다 — 키가 필요한 probe 건너뜀"
+    list_body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}).encode("utf-8")
+
+    # 1 — 키 없는 initialize → 401 + WWW-Authenticate: Bearer (이것이 정상)
+    s1, h1, b1 = _post(url, _init_request_body(), key=None)
+    challenge = h1.get("www-authenticate", "")
+    ok1 = s1 == 401 and challenge.lower().startswith("bearer")
+    results.append(_make_probe(1, "initialize without key", "401+Bearer", str(s1), ok1,
+                               "" if ok1 else ("connection failed: " + b1.decode("utf-8", "replace")[:100] if s1 == 0
+                                               else "인증 없이 통과했거나 WWW-Authenticate 가 없다")))
+
+    # 2 — 형식은 맞지만 모르는 키 → 401
+    bogus = "m365v1." + "0" * 32 + "." + "A" * 43
+    s2, _, _ = _post(url, _init_request_body(), key=bogus)
+    results.append(_make_probe(2, "initialize with unknown key", "401", str(s2), s2 == 401,
+                               "" if s2 == 401 else "모르는 키를 받아들였다"))
+
+    if not key:
+        for n, desc, exp in ((3, "initialize with key", "200+stateless"), (4, "no Accept header", "406"),
+                             (5, "notifications/initialized", "202"), (6, "tools/list (no session)", "200+result"),
+                             (7, "Mcp-Session-Id sent", "400"), (8, "GET /mcp", "405"), (9, "DELETE /mcp", "405")):
+            results.append(_make_probe(n, desc, exp, "skipped", False, no_key))
+        return results, None
+
+    # 3 — 키 있는 initialize → 200, Mcp-Session-Id 없음 (stateless)
+    s3, h3, _ = _post(url, _init_request_body(), key=key)
+    session_id = h3.get("mcp-session-id")
+    ok3 = s3 == 200 and not session_id
+    results.append(_make_probe(3, "initialize with key", "200+stateless",
+                               f"{s3}" + ("+session" if session_id else "+no-session"), ok3,
+                               "" if ok3 else ("세션 ID 를 발급했다 — stateless 가 아니다" if session_id
+                                               else "키가 거부됐다(401/403: 만료·폐기·scope) 또는 서버 오류")))
+
+    # 4 — Accept 없음 → 406 (인증 뒤 SDK 가 판정)
+    s4, _, _ = _post(url, _init_request_body(), key=key, accept=False)
+    results.append(_make_probe(4, "no Accept header", "406", str(s4), s4 == 406,
+                               "" if s4 == 406 else "Accept 협상을 강제하지 않는다"))
+
+    # 5 — notification → 202
+    notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode("utf-8")
+    s5, _, _ = _post(url, notif, key=key)
+    results.append(_make_probe(5, "notifications/initialized", "202", str(s5), s5 == 202,
+                               "" if s5 == 202 else "notification 을 요청처럼 처리한다"))
+
+    # 6 — 세션 없이 tools/list → 200 + result.tools
+    s6, _, b6 = _post(url, list_body, key=key)
+    text6 = b6.decode("utf-8", "replace") if b6 else ""
+    has_result = '"result"' in text6 and '"tools"' in text6
+    ok6 = s6 == 200 and has_result
+    results.append(_make_probe(6, "tools/list (no session)", "200+result",
+                               f"{s6}" + ("+result" if has_result else "+no-result"), ok6,
+                               "" if ok6 else "stateless 요청에 도구 목록이 오지 않았다"))
+
+    # 7 — Mcp-Session-Id 를 보내면 400 (세션은 인증 근거도 상태 보관소도 아니다)
+    s7, _, _ = _post(url, list_body, key=key, extra={"Mcp-Session-Id": "not-a-real-session"})
+    results.append(_make_probe(7, "Mcp-Session-Id sent", "400", str(s7), s7 == 400,
+                               "" if s7 == 400 else "세션 헤더를 거부하지 않는다"))
+
+    # 8·9 — GET 스트림·DELETE 세션 종료는 지원하지 않는다 → 405
+    auth = {"Authorization": f"Bearer {key}", "MCP-Protocol-Version": PROTO_VER}
+    s8, _ = _http_open_only(url, headers={**auth, "Accept": "text/event-stream"})
+    results.append(_make_probe(8, "GET /mcp", "405", str(s8), s8 == 405, "" if s8 == 405 else "GET 스트림을 연다"))
+    s9, _, _ = _http("DELETE", url, headers=auth)
+    results.append(_make_probe(9, "DELETE /mcp", "405", str(s9), s9 == 405, "" if s9 == 405 else "DELETE 를 받아들인다"))
+    return results, None
+
+
 def _print_table(base: str, results: List[Dict[str, Any]]) -> None:
     print(f"=== Streamable HTTP Compliance — {base} ===")
     print(f"{'Probe':<6}{'Description':<38}{'Expected':<14}{'Got':<22}Result")
@@ -336,16 +431,34 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Exit with code 1 if any of the 8 probes fail (default exit 0).",
+        help="Exit with code 1 if any of the probes fail (default exit 0).",
+    )
+    parser.add_argument(
+        "--multi-user",
+        action="store_true",
+        help="멀티유저 모드(stateless + bearer) 9-probe. 키는 --key-env 가 가리키는 환경변수에서 읽는다.",
+    )
+    parser.add_argument(
+        "--key-env",
+        default=DEFAULT_KEY_ENV,
+        help="bearer key 를 담은 환경변수 **이름** (기본: %(default)s). 키 자체를 넣지 말 것.",
     )
     args = parser.parse_args(argv)
 
-    results, _ = run_probes(args.base)
+    if args.multi_user:
+        if not _ENV_NAME_RE.match(args.key_env or ""):
+            # 키를 명령행에 넣은 실수 — 셸 기록에 남았을 수 있으니 회전을 권한다(값은 출력하지 않는다)
+            parser.error("--key-env 에는 환경변수 이름만 넣는다. 키를 명령행에 넣었다면 그 키를 회전(key rotate)할 것.")
+        key = os.environ.get(args.key_env, "").strip() or None
+        results, _ = run_probes_multi_user(args.base, key)
+    else:
+        results, _ = run_probes(args.base)
 
     if args.json:
         passed = sum(1 for r in results if r["result"] == "PASS")
         print(json.dumps({
             "base": args.base,
+            "mode": "multi_user" if args.multi_user else "single_operator",
             "passed": passed,
             "total": len(results),
             "compliant": passed == len(results),

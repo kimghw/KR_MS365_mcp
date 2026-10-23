@@ -13,12 +13,23 @@
   3. 그래도 없으면 auth.db 에서 결정적(deterministic)으로 고른다:
      유효 토큰 보유자 우선 → 이메일 사전순. updated_at 순서에 의존하지 않는다.
   4. 사용자가 하나도 없으면 None.
+
+멀티유저 모드(MS365_MULTI_USER=1, spec/spec_멀티유저.md ②-5.3·②-5.5):
+  - 위 1~4 는 **실행하지 않는다.** 환경변수·auth.db 를 읽지 않는다.
+  - `resolve(explicit)` → `principal.assert_user_email()` — 생략(None)이면 현재 principal 의
+    연결 계정, 명시값은 그 계정과 일치해야 한다(불일치 `identity_mismatch`,
+    빈 문자열 `invalid_user_email`). principal 이 없으면 `missing_principal`.
+  - `default_email()` → 현재 principal 의 연결 계정 이메일.
+  - 반환값은 비교용 표기가 아니라 principal 에 저장된 표기다. 저장소·토큰 선택은
+    이메일이 아니라 `user_key` 로 한다.
 """
 
 import logging
 import os
 import threading
 from typing import Any, Dict, List, Optional
+
+from mcp_common.security_policy import multi_user_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +55,11 @@ class UserResolver:
 
     # ------------------------------------------------------------------
     def _get_db(self) -> Any:
+        if multi_user_enabled():
+            # 멀티유저에서 공용 auth.db 로 사용자를 고르는 경로는 없다 (②-5.5)
+            from mcp_common.security_contracts import ErrorCode, SecurityError
+
+            raise SecurityError(ErrorCode.MISSING_PRINCIPAL)
         if self._db is None:
             from session.auth_database import AuthDatabase
 
@@ -60,7 +76,12 @@ class UserResolver:
 
     # ------------------------------------------------------------------
     def default_email(self, *, refresh: bool = False) -> Optional[str]:
-        """인자 없이 호출됐을 때 쓸 기본 사용자."""
+        """인자 없이 호출됐을 때 쓸 기본 사용자. mode 1 은 현재 principal 의 연결 계정."""
+        if multi_user_enabled():
+            from mcp_common.principal import MISSING, assert_user_email
+
+            return assert_user_email(MISSING)
+
         env_default = os.environ.get(ENV_DEFAULT_USER)
         if env_default and env_default.strip():
             return env_default.strip()
@@ -94,7 +115,14 @@ class UserResolver:
             return chosen
 
     def resolve(self, explicit: Optional[str] = None, *, required: bool = False) -> Optional[str]:
-        """명시값 우선, 없으면 기본 사용자."""
+        """명시값 우선, 없으면 기본 사용자. mode 1 은 principal 일치 확인만 한다."""
+        if multi_user_enabled():
+            from mcp_common.principal import MISSING, assert_user_email
+
+            # 명시적 null 은 ToolRuntime 이 원본 인자 단계에서 이미 거부했다. 여기까지 온
+            # None 은 "인자 없음"(스키마 기본값 처리로 키가 빠진 경우)이다.
+            return assert_user_email(MISSING if explicit is None else explicit)
+
         if isinstance(explicit, str) and explicit.strip():
             return explicit.strip()
 

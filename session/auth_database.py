@@ -1,6 +1,11 @@
 """
 Authentication Database Module
-Azure AD 인증 관련 데이터(앱, 사용자, 토큰)의 CRUD 작업을 담당
+Azure AD 인증 관련 데이터(앱, 사용자, 토큰)의 CRUD 작업을 담당 — **단일 운영자(mode 0) 전용**.
+
+이 스키마는 토큰·client secret 을 평문으로 저장한다. 멀티유저 모드(`MS365_MULTI_USER=1`)에서는
+기본 경로(`database/auth.db`) 생성과 멀티유저 데이터 루트 안의 경로를 거부한다. 명시한 legacy
+경로는 이전(migration) 도구가 읽을 수 있도록 열어 둔다. 멀티유저 사용자 토큰은
+`session.user_auth_store` 가 사용자별 파일에 암호화해 저장한다.
 """
 
 import sqlite3
@@ -9,24 +14,53 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 import logging
 
+from .mode_guard import LegacyAuthDisabledError, multi_user_active
+
 logger = logging.getLogger(__name__)
+
+_DEFAULT_DB = "database/auth.db"
+
+
+def _guard_multi_user_path(resolved_path: str, *, is_default: bool) -> None:
+    """mode 1 에서 공용 기본 DB·멀티유저 데이터 루트 안의 경로를 거부한다."""
+    if not multi_user_active():
+        return
+    if is_default:
+        raise LegacyAuthDisabledError(
+            "AuthDatabase() 기본 생성(공용 database/auth.db)은 멀티유저 모드에서 사용할 수 없습니다."
+        )
+    from mcp_common.security_policy import data_root
+
+    root = os.path.realpath(str(data_root()))
+    target = os.path.realpath(resolved_path)
+    try:
+        inside = os.path.commonpath([os.path.normcase(root), os.path.normcase(target)]) == os.path.normcase(root)
+    except ValueError:  # 서로 다른 드라이브(Windows)
+        inside = False
+    if inside:
+        raise LegacyAuthDisabledError("legacy AuthDatabase 로 멀티유저 데이터 루트를 열 수 없습니다.")
 
 
 class AuthDatabase:
     """인증 데이터베이스 - Azure AD 앱, 사용자, 토큰 정보 저장"""
 
-    def __init__(self, db_path: str = "database/auth.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """
         데이터베이스 초기화
 
         Args:
-            db_path: 데이터베이스 파일 경로
+            db_path: 데이터베이스 파일 경로 (None 이면 저장소 기준 database/auth.db)
         """
         # Always resolve to an absolute path so callers can use relative or env paths
-        resolved_path = os.path.expanduser(db_path)
+        resolved_path = os.path.expanduser(db_path or _DEFAULT_DB)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if not os.path.isabs(resolved_path):
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             resolved_path = os.path.join(base_dir, resolved_path)
+        default_path = os.path.normcase(os.path.realpath(os.path.join(base_dir, _DEFAULT_DB)))
+        _guard_multi_user_path(
+            resolved_path,
+            is_default=os.path.normcase(os.path.realpath(resolved_path)) == default_path,
+        )
 
         # Ensure the directory exists (no-op if already present)
         db_dir = os.path.dirname(resolved_path)
@@ -34,6 +68,13 @@ class AuthDatabase:
             os.makedirs(db_dir, exist_ok=True)
 
         self.db_path = resolved_path
+        # 멀티유저 이전(tools/migrate_multi_user) 중에는 legacy 저장소를 열지 않는다 (R10)
+        try:
+            from mcp_common.security_policy import assert_legacy_store_not_frozen
+        except ImportError:  # mcp_common 없이 session 만 떼어 쓰는 경우
+            pass
+        else:
+            assert_legacy_store_not_frozen(resolved_path)
         # 기본 app_id (환경 변수에서 가져옴)
         self.default_client_id = os.getenv('AZURE_CLIENT_ID')
         self.ensure_tables()
@@ -200,7 +241,7 @@ class AuthDatabase:
             ))
 
             conn.commit()
-            logger.info(f"User saved to azure_user_info: {email}")
+            logger.info("User saved to azure_user_info")
             return True
 
         except Exception as e:
@@ -279,7 +320,7 @@ class AuthDatabase:
             ))
 
             conn.commit()
-            logger.info(f"Token saved to azure_token_info for: {email}")
+            logger.info("Token saved to azure_token_info")
             return True
 
         except Exception as e:
@@ -368,7 +409,7 @@ class AuthDatabase:
             conn.commit()
 
             if cursor.rowcount > 0:
-                logger.info(f"Token deleted for: {email}")
+                logger.info("Token deleted")
                 return True
 
             return False

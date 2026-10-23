@@ -16,12 +16,24 @@ stdio 트랜스포트 구동부 — 공식 MCP SDK 기반, 한 벌.
 
 **stream 과 같은 `Server` 객체를 그대로 받는다.** 도구 등록은 도메인의 `handlers.py`
 에서 한 번만 하고, 이 모듈은 구동만 담당한다(②-3).
+
+멀티유저 모드(`MS365_MULTI_USER=1`)는 stdio 를 지원하지 않는다 — 호출자 인증 수단이 없다.
+`serve_stdio`/`run_stdio` 는 lifecycle 을 시작하기 전에 기동을 거부한다
+(spec/spec_멀티유저.md ②-4.5, ②-8.1).
 """
 
 import logging
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_stdio_allowed(lifecycle: Any) -> None:
+    """mode 1 이면 `StartupConfigError`. mode 0 에서는 아무것도 하지 않는다."""
+    from mcp_common.security_policy import assert_transport_allowed, validate_startup
+
+    assert_transport_allowed("stdio")
+    validate_startup(getattr(lifecycle, "server_name", "mcp"), "stdio")
 
 
 async def serve_stdio(mcp_server: Any, lifecycle: Any, boot: Any) -> None:
@@ -37,6 +49,9 @@ async def serve_stdio(mcp_server: Any, lifecycle: Any, boot: Any) -> None:
     두면 JSON-RPC 응답이 통째로 stderr 로 나가 클라이언트가 아무 응답도 받지 못한다
     (spec ④-1-1).
     """
+    # 서비스·stdout 을 건드리기 전에 모드를 확인한다
+    _assert_stdio_allowed(lifecycle)
+
     from io import TextIOWrapper
 
     import anyio
@@ -71,6 +86,14 @@ def run_stdio(mcp_server: Any, lifecycle: Any, boot: Any) -> None:
     고정한다(spec ④-1-4).
     """
     import anyio
+
+    from mcp_common.security_contracts import StartupConfigError
+
+    try:
+        _assert_stdio_allowed(lifecycle)
+    except StartupConfigError as exc:
+        logger.error("[%s] stdio 기동 거부: %s", getattr(lifecycle, "server_name", "mcp"), exc)
+        raise
 
     try:
         anyio.run(serve_stdio, mcp_server, lifecycle, boot, backend="asyncio")

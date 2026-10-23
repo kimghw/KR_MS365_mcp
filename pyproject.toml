@@ -23,6 +23,11 @@ dependencies = [
     "uvicorn",
     # zoneinfo 는 OS 시간대 DB 를 쓴다 — Windows 에는 없어서 mcp_time 이 ZoneInfoNotFoundError 로 죽는다.
     "tzdata; sys_platform == 'win32'",
+    # 멀티유저 인증 계층(session/)이 직접 import 한다 — 토큰 AES-256-GCM 암호화(user_crypto·key_provider),
+    # ID token JWKS 서명 검증(entra_client). 지금까지는 mcp 의 전이 의존으로만 들어와 있었다.
+    # PyJWKClient(timeout=) 는 PyJWT 2.6+ 이다.
+    "cryptography>=42",
+    "PyJWT[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +50,12 @@ converters = [
 # mcp_onenote/onenote_agent.py 의 요약 기능. try/except ImportError 로 감싸져 있어 선택 사항이다.
 agent = [
     "claude-code-sdk",
+]
+# 멀티유저 KEK provider `azure_keyvault`(MS365_KEK_PROVIDER, 운영 권고). managed identity 로
+# Key Vault RSA 키에 DEK 를 wrap 한다 — session/key_provider.py 가 지연 import 한다.
+keyvault = [
+    "azure-identity",
+    "azure-keyvault-keys",
 ]
 
 # 개발 도구는 extra 가 아니라 dependency-group 이다 (PEP 735).
@@ -84,6 +95,9 @@ include = [
     "mcp_todo*",
     "mcp_time*",
     "mcp_file_handler*",
+    # 관리자 전용 도구 — 멀티유저 이전(python -m tools.migrate_multi_user). 서버와 같은 설치본에서
+    # 돌려야 하므로 함께 싣는다. tools.tests 는 아래 "*.tests" 규칙으로 빠진다.
+    "tools*",
     # mcp_editor 는 2026-08-12 자로 삭제됐다(코드 생성 폐지). 도구 계약은
     # spec/param_spec/<도메인>.yaml 이 갖고, @mcp_service 와 schema_normalize 는
     # mcp_common 으로 이관했다. 자세한 건 spec/spec_도구정의.md 참조.
@@ -129,7 +143,11 @@ testpaths = [
     "mcp_calendar/tests",
     "mcp_time/tests",
     "mcp_file_handler/tests",
+    "mcp_todo/tests",
     "session/tests",
+    "tools/tests",
+    # 멀티유저 통합 격리 테스트 (spec/spec_멀티유저.md ②-10). 디렉터리가 없으면 pytest 가 건너뛴다.
+    "tests/multi_user",
 ]
 addopts = "-ra --strict-markers"
 # @pytest.mark.asyncio 를 매 테스트에 붙이지 않아도 코루틴 테스트가 실행되도록.

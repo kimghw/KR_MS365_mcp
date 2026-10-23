@@ -33,7 +33,7 @@ class HWPConverter(BaseConverter):
             try:
                 return self._convert_with_olefile(file_path)
             except Exception as e:
-                logger.error(f"Error converting HWP {file_path}: {e}")
+                logger.error("Error converting HWP: %s", type(e).__name__)
                 raise
 
     def _convert_with_pyhwp(self, file_path: str) -> str:

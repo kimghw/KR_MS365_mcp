@@ -104,3 +104,26 @@ mcp_editor/debug_info.md
 
 # Export/output artifacts
 output/
+
+# 멀티유저 모드(MS365_MULTI_USER=1) 데이터 — spec/spec_멀티유저.md ②-7.2
+# MS365_DATA_ROOT 를 저장소 안(예: <repo>/data)에 둘 때를 막는다. 사용자별 암호화 토큰 DB·
+# wrapped DEK·registry·감사 로그·이전 산출물(snapshot·staging·quarantine·manifest)이 들어 있다.
+/data/
+wrapped_dek.json
+# 멀티유저 이전 잠금 (tools/migrate_multi_user plan 이 legacy DB 디렉터리에 둔다)
+.migration_lock
+**/system/deployment.json
+**/system/audit/
+**/system/migration/
+audit-*.jsonl
+# KEK·client secret 파일 (MS365_KEK_B64 는 .env 에만, AZURE_CLIENT_SECRET_FILE 은 저장소 밖 권장)
+*.kek
+*.key
+*.pem
+*.pfx
+*.p12
+/secrets/
+# 이전 도구 입력·legacy 메타데이터 (legacy 이메일·파일 경로가 들어 있다)
+migration_mapping*.json
+mail_metadata.json
+/metadata.json

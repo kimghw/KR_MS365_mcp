@@ -3,14 +3,21 @@
 ## OneNote DB 관리 (onenote_items 테이블)
 
 ### 테이블 위치
-- `database/onenote.db` > `onenote_items`, `onenote_page_summaries`, `onenote_page_changes` 테이블
+| 모드 | DB 파일 |
+|------|---------|
+| 0 (단일 운영자, 기본) | `database/onenote.db` |
+| 1 (멀티유저) | `<MS365_DATA_ROOT>/users/<user_key>/db/onenote.db` (사용자별) |
+
+- 테이블: `onenote_items`, `onenote_page_summaries`, `onenote_page_changes`. 스키마 원본은
+  `mcp_onenote/storage_schema.py`(생성·구버전 이전·`ensure_storage`)
 
 ### 컬럼 구조
 | 컬럼 | 설명 |
 |------|------|
-| user_id | 사용자 이메일 |
+| owner_key | 소유자 키 — mode 0: 그 행의 `user_id`(이메일)와 같은 값, mode 1: principal 의 `user_key`. **모든 SQL 에 owner 조건** |
+| user_id | 사용자 이메일 (표시용 — mode 1 에서 소유권 판단에 쓰지 않음) |
 | item_type | `'section'` 또는 `'page'` |
-| item_id | 페이지/섹션 고유 ID (**UNIQUE** — upsert 기준) |
+| item_id | 페이지/섹션 고유 ID — 유일성은 **`(owner_key, item_id)`** (upsert 기준) |
 | item_name | 페이지 제목 또는 섹션 이름 (빈 문자열로 upsert 시 기존 값 유지) |
 | notebook_id | 소속 노트북 ID |
 | notebook_name | 소속 노트북 이름 |
@@ -20,7 +27,12 @@
 | last_accessed | 최근 접근 시각 |
 | created_at / updated_at | 생성/수정 시각 |
 
-- 이름 기반 UNIQUE 제약은 없음 (다른 섹션의 동명 페이지 허용 — 구버전 DB는 초기화 시 자동 마이그레이션)
+- 요약(`onenote_page_summaries`)은 **`(owner_key, page_id)`** 유일, 변경 이력은 유일성 없이 owner 조건으로만
+  조회한다. 같은 Graph 페이지라도 사용자별 요약·이력은 별개다(공유 요약 없음).
+- 이름 기반 UNIQUE 제약은 없음 (다른 섹션의 동명 페이지 허용)
+- 구버전 DB: **mode 0 은 초기화 시 자동 이전** — `owner_key ← user_id`, 전역 `UNIQUE(item_id)`·`UNIQUE(page_id)`
+  를 owner 복합 유일성으로(한 트랜잭션). **mode 1 사용자 DB 는 소유자를 추정하지 않는다** — owner_key 없는
+  구형 테이블이면 `LegacySchemaError`. 기존 데이터 이전은 `python -m tools.migrate_multi_user`(요약은 격리 후 재생성)
 
 ### DB 저장 시점
 - **페이지 생성 시**: `create_page()` 호출 후 자동으로 DB에 저장
@@ -33,10 +45,28 @@
 - 한 번의 API 호출로 페이지 + 섹션 + 노트북 정보를 모두 가져옴
 
 ### 주요 파일
-- `mcp_onenote/onenote_db_service.py` — DB 저장/조회/동기화
+- `mcp_onenote/onenote_db_service.py` — DB 저장/조회/동기화 (owner 조건)
+- `mcp_onenote/storage_schema.py` — 스키마·구버전 이전·`ensure_storage(principal, paths)`
 - `mcp_onenote/onenote_service.py` — Facade (create_page, sync_db)
 - `mcp_onenote/graph_onenote_client.py` — Graph API 호출
 - `mcp_onenote/onenote_types.py` — PageInfo 데이터 모델
+
+# 멀티유저 모드 (`MS365_MULTI_USER=1`) — 원본 [spec/spec_멀티유저.md](spec/spec_멀티유저.md)
+
+- 사용자 데이터·토큰 선택의 **유일한 근거는 요청에 묶인 `Principal`**(`mcp_common/principal.py`)이다.
+  이메일·도구 인자·`Mcp-Session-Id`·헤더는 근거가 아니다. `user_email` 은 일치 확인만 한다.
+- **mode 1 에서 기본 사용자로 되돌아가지 않는다** — `MS365_DEFAULT_USER_EMAIL`·auth.db 첫 사용자·인자 없는
+  `AuthManager()`/`AuthDatabase()`·다른 계정 재시도 금지. principal 이 없으면 `missing_principal` 로 실패시킨다.
+- 도메인 배선은 [mcp_common/service_context.py](mcp_common/service_context.py) docstring 의 패턴 하나로 한다 —
+  `create_service(principal, paths, tokens)` 는 생성만, 수명관리는 서비스 풀, 전역 서비스는 mode 0 에서만
+  (`None if multi_user_enabled() else Service()`), 핸들러는 `service_for(SERVER_NAME, legacy=...)`.
+- 사용자 경로는 `mcp_common/user_paths.paths_for()` 로만 계산한다(도구 허용 루트는 `files/`, DB 는 `db/`).
+  DB 를 쓰는 도메인은 `storage_schema.ensure_storage(principal, paths)` 를 두고 **모든 SQL 에 `owner_key` 조건**.
+- 새로 만드는 보안 민감 파일 쓰기(사용자 파일·원격 파일명·관리 산출물)는
+  [mcp_common/secure_files.py](mcp_common/secure_files.py)(`write_new_file`·`atomic_write_bytes`·`safe_join`·
+  `open_for_read`)를 거친다. 원격 이름을 경로에 직접 결합하지 않는다.
+- 로그·오류·감사에 토큰·키·state·이메일·사용자 절대경로·외부 오류 본문을 싣지 않는다. 감사는
+  `mcp_common/audit.audit()` 허용 필드만. 멀티유저와 충돌하는 설정 검사는 `security_policy.validate_startup()` 한 곳에 더한다.
 
 # API·툴 파라미터 — "파라미터 리스트(param_spec)" 하나로 관리
 
@@ -108,6 +138,9 @@ tools:
 - `order` (선택, 정수): 스키마에서의 표시 순서.
 - `items` (선택): `type: array` 일 때 원소 스키마. JSON Schema 조각을 그대로 싣는다.
   **적지 않으면 원소 계약이 사라진다** — 실제로 4개 도메인에서 유실된 적이 있다.
+- `minimum`/`maximum`(integer·number), `minItems`/`maxItems`(array), `minLength`/`maxLength`(string)
+  (선택): 상한. 스키마에 실리고 검증이 강제한다. **작업량을 정하는 파라미터(`top`·ID 목록 등)는
+  반드시 상한을 둔다** — 무제한 `top` 이 공유 프로세스를 고갈시킨 사례(2026-10-23 astra 검토 R02).
 - `fields` (선택): `type: object` 일 때 하위 필드. `expose: tool` 이면 중첩
   `inputSchema.properties` 가 되고, `expose: internal` 이면 각 필드의 `default` 를 모아
   주입할 dict 가 된다(핸들러가 그것으로 Pydantic 모델을 만든다). 어느 쪽이든 **필드별

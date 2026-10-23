@@ -2,8 +2,10 @@
 Graph Todo Client - To Do API 통합 클라이언트
 
 GraphTodoQuery 위에 얇은 facade 레이어를 둬서 service에서 일관된 인터페이스로 사용.
+토큰 공급자는 주입받아 쿼리로 넘길 뿐 소유하지 않는다(닫지 않는다).
 """
 
+import logging
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +17,8 @@ from .todo_types import (
     TaskCreateParams,
     TaskUpdateParams,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GraphTodoClient:
@@ -31,7 +35,7 @@ class GraphTodoClient:
 
         self.todo_query = GraphTodoQuery(token_provider=self.token_provider)
         if not await self.todo_query.initialize():
-            print("Failed to initialize GraphTodoQuery")
+            logger.error("GraphTodoQuery 초기화 실패")
             return False
         self._initialized = True
         return True

@@ -2,9 +2,24 @@
 OneDrive Graph API Client
 Microsoft Graph API를 사용한 OneDrive 작업 처리
 session 모듈을 통한 인증 관리
+
+- 모든 경로는 `/me/drive/...` — 토큰 주인의 드라이브만 다룬다. `user_email` 은 토큰
+  공급자에 넘겨 일치 확인(멀티유저) 또는 계정 선택(mode 0)에만 쓴다.
+- 로그에는 상태 코드·Graph 오류 코드·예외 타입만 남긴다. 이메일·파일 경로·Graph 오류
+  본문 원문은 남기지 않는다(spec/spec_멀티유저.md ②-2.7, ②-9).
+- 드라이브 경로는 `mcp_common.graph_paths.graph_drive_path()` 로 성분마다 인코딩한다.
+  `.`·`..` 성분과 백슬래시는 `SecurityError(not_found)` 로 거부한다 — 경로가 `/me/drive`
+  밖(`/users/B/...`)으로 빠져나가지 못한다(②-7.5 G01). 두 모드 공통.
+- 실패 응답에는 고정 메시지 + `graph_error_summary()`(상태 코드·검증된 `error.code`)만
+  싣는다. Graph 오류 본문 원문·예외 문자열은 돌려주지 않는다(②-9). 두 모드 공통.
+- bearer 를 단 요청은 redirect 를 따라가지 않는다(`BEARER_KW`, ②-7.5 R08). `/content` 의 302
+  는 사전 서명 URL 로 **bearer 없이** 한 번만 간다 — https·공개 호스트만, 후속 redirect 금지
+  (`graph_url_policy.check_presigned_url`). 두 모드 공통.
+- `@odata.nextLink` 이어 조회는 `fetch_next_link()` 로만 한다(본인 `/me/drive/...` 범위).
 """
 
 import base64
+import json
 import logging
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from urllib.parse import quote
@@ -13,6 +28,12 @@ import aiohttp
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mcp_common.graph_paths import graph_drive_path, graph_error_summary
+from mcp_common.security_contracts import SecurityError
+from mcp_common.security_policy import multi_user_enabled
+
+from mcp_common.graph_url_policy import BEARER_KW, check_next_link, check_presigned_url, is_redirect
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -29,8 +50,54 @@ logger = logging.getLogger(__name__)
 
 
 def _enc(path: str) -> str:
-    """드라이브 경로를 URL 경로 조각으로 인코딩한다 (`#` `%` `?` 공백 등). `/` 는 구분자로 유지."""
-    return quote(path.strip("/"), safe="/")
+    """드라이브 경로를 URL 경로 조각으로 인코딩한다 (`#` `%` `?` 공백 등). `/` 는 구분자로 유지.
+
+    성분마다 단일 세그먼트로 인코딩하고 `.`·`..`·백슬래시는 거부한다
+    (`SecurityError(not_found)`) — aiohttp/yarl 이 dot-segment 를 정규화해 경로가
+    `/me/drive` 밖으로 나가는 것을 막는다(G01).
+    """
+    return graph_drive_path(path)
+
+
+#: 전송 단계 예외(연결 실패·타임아웃 등)의 공개 메시지 — 예외 원문은 응답에 싣지 않는다
+_TRANSPORT_ERROR_MESSAGE = "OneDrive 요청 중 오류가 발생했습니다."
+
+
+def _failure_fields(status: int, body_text: str) -> Dict[str, Any]:
+    """Graph 비정상 응답 → 공개용 요약(상태 코드·`error.code`). 본문 원문은 싣지도 남기지도 않는다."""
+    try:
+        parsed = json.loads(body_text) if body_text else None
+    except ValueError:
+        parsed = None
+    summary = graph_error_summary(status, parsed)
+    logger.error(
+        "OneDrive API 요청 실패: status=%s code=%s", status, summary.get("graph_error_code", "-")
+    )
+    return summary
+
+
+def _content_result(content_bytes: bytes, file_path: str, as_text: bool) -> Dict[str, Any]:
+    """받은 바이트를 응답 형태로. 텍스트 요청인데 UTF-8 이 아니면 base64 로 돌려준다."""
+    if as_text:
+        try:
+            return {
+                "success": True,
+                "file_path": file_path,
+                "content": content_bytes.decode("utf-8"),
+                "content_type": "text",
+            }
+        except UnicodeDecodeError:
+            pass
+    return {
+        "success": True,
+        "file_path": file_path,
+        "content": base64.b64encode(content_bytes).decode("ascii"),
+        "content_type": "base64",
+    }
+
+
+#: `fetch_next_link()` 가 이어서 조회해도 되는 리소스(소문자) — 드라이브 밖은 거부
+_NEXT_LINK_RESOURCES = frozenset({"drive", "drives"})
 
 
 class GraphOneDriveClient:
@@ -43,13 +110,19 @@ class GraphOneDriveClient:
         클라이언트 초기화
 
         Args:
-            token_provider: 토큰 제공자 (없으면 프로세스 공유 AuthManager 사용)
+            token_provider: 토큰 제공자. 멀티유저에서는 사용자 고정 공급자가 **필수**다.
+                None 이면 mode 0 의 프로세스 공유 AuthManager 를 쓴다.
 
         Note:
-            per-email refresh lock 이 인스턴스마다 분리되지 않도록 반드시
+            mode 0 에서 per-email refresh lock 이 인스턴스마다 분리되지 않도록 반드시
             mcp_common.auth.get_shared_auth_manager() 의 단일 인스턴스를 쓴다.
+            공급자는 이 클라이언트의 소유가 아니므로 `close()` 에서 닫지 않는다.
         """
         if token_provider is None:
+            if multi_user_enabled():
+                raise RuntimeError(
+                    "GraphOneDriveClient: 멀티유저 모드에서는 사용자 고정 token_provider 가 필요합니다"
+                )
             from mcp_common.auth import get_shared_auth_manager
             token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
@@ -67,7 +140,7 @@ class GraphOneDriveClient:
         return True
 
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 자신이 만든 HTTP 세션만 닫는다(토큰 공급자는 소유하지 않는다)."""
         if self._session:
             await self._session.close()
             self._session = None
@@ -86,9 +159,23 @@ class GraphOneDriveClient:
         try:
             token = await self.token_provider.validate_and_refresh_token(user_email)
             return token
+        except SecurityError:
+            # 연결 없음·재인증 필요·계정 불일치는 고정 오류 코드로 그대로 올린다
+            # (런타임이 연결 안내를 붙인다). 다른 계정으로 재시도하지 않는다.
+            raise
         except Exception as e:
-            logger.error(f"토큰 조회 실패: {str(e)}")
+            logger.error("토큰 조회 실패: %s", type(e).__name__)
             return None
+
+    async def _assert_active(self, user_email: str) -> None:
+        """bearer 없는 사전 서명 GET **직전**의 identity·폐기 재검사 (N01 읽기 경로).
+
+        bound provider 에서 토큰을 다시 받되 값은 쓰지 않는다 — mode 1 의 `get_graph_token()` 이
+        현재 요청 identity·계정 상태·auth_epoch 를 다시 확인하고, 폐기됐으면 `SecurityError`
+        (`account_inactive`/`graph_not_connected`)를 올린다. Outlook `_assert_active()` 와 같다.
+        """
+        if not await self._get_access_token(user_email):
+            raise RuntimeError("Failed to get access token")
 
     async def _make_request(
         self,
@@ -99,6 +186,7 @@ class GraphOneDriveClient:
         data: Optional[bytes] = None,
         content_type: str = "application/json",
         timeout: int = 60,
+        absolute_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Graph API 요청 수행
@@ -127,7 +215,8 @@ class GraphOneDriveClient:
             "Content-Type": content_type,
         }
 
-        url = f"{self.GRAPH_BASE_URL}{endpoint}"
+        # absolute_url 은 정책 검사를 통과한 nextLink 만 온다 (`fetch_next_link`)
+        url = absolute_url or f"{self.GRAPH_BASE_URL}{endpoint}"
 
         try:
             async with self._session.request(
@@ -137,6 +226,7 @@ class GraphOneDriveClient:
                 json=json_data if json_data else None,
                 data=data if data else None,
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                **BEARER_KW,
             ) as response:
                 if response.status in (200, 201, 204):
                     if response.status == 204:
@@ -145,15 +235,70 @@ class GraphOneDriveClient:
                     return {"success": True, "data": result}
                 else:
                     error_text = await response.text()
-                    logger.error(f"API 요청 실패: {response.status} - {error_text}")
                     return {
                         "success": False,
                         "error": f"API 요청 실패: {response.status}",
-                        "details": error_text,
+                        **_failure_fields(response.status, error_text),
                     }
         except Exception as e:
-            logger.error(f"API 요청 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("API 요청 오류: %s", type(e).__name__)
+            return {"success": False, "error": _TRANSPORT_ERROR_MESSAGE}
+
+    async def fetch_next_link(self, user_email: str, next_link: str) -> Dict[str, Any]:
+        """Graph 가 돌려준 `@odata.nextLink` 를 **본인 드라이브 범위에서만** GET 한다.
+
+        정책(`check_next_link`)은 토큰 획득·HTTP 요청보다 먼저 판정한다. 다른 사용자·다른
+        리소스·dot-segment·Graph 밖 호스트는 `path_not_allowed`. 이어 조회는 이 메서드로만 한다.
+        """
+        url = check_next_link(next_link, user_email, resources=_NEXT_LINK_RESOURCES)
+        result = await self._make_request("GET", "", user_email, absolute_url=url)
+        if result.get("success"):
+            data = result.get("data", {})
+            items = [DriveItem.from_dict(item) for item in data.get("value", [])]
+            return {
+                "success": True,
+                "files": [item.__dict__ for item in items],
+                "count": len(items),
+                "next_link": data.get("@odata.nextLink"),
+            }
+        return result
+
+    async def _download_presigned(
+        self, user_email: str, location: Optional[str], status: int, file_path: str, as_text: bool
+    ) -> Dict[str, Any]:
+        """`/content` 의 3xx Location(사전 서명 URL)을 **bearer 없이** 한 번만 받는다.
+
+        bearer 응답(302) 과 이 GET 사이에 await 경계가 있으므로 먼저 호출자의 활성 상태를 다시
+        확인한다(`_assert_active`, N01). 그다음 https·공개 호스트만 허용하고(`check_presigned_url`),
+        그 URL 이 다시 redirect 하면 따라가지 않는다. 응답에는 URL 을 싣지 않는다.
+        """
+        await self._assert_active(user_email)
+        try:
+            target = check_presigned_url(location)
+        except SecurityError:
+            logger.warning("OneDrive 사전 서명 다운로드 URL 거부: status=%s", status)
+            return {
+                "success": False,
+                "error": "다운로드 URL 이 정책에 맞지 않습니다.",
+                "status_code": status,
+            }
+        # headers 를 넘기지 않는다 — 세션 기본 헤더에도 bearer 가 없다(②-7.6)
+        async with self._session.get(
+            target, timeout=aiohttp.ClientTimeout(total=60), **BEARER_KW
+        ) as response:
+            if response.status == 200:
+                return _content_result(await response.read(), file_path, as_text)
+            if is_redirect(response.status):
+                return {
+                    "success": False,
+                    "error": "다운로드 URL 이 다시 redirect 를 요구했습니다 (따라가지 않음).",
+                    "status_code": response.status,
+                }
+            return {
+                "success": False,
+                "error": f"파일 다운로드 실패: {response.status}",
+                **graph_error_summary(response.status),
+            }
 
     def _build_path(self, folder_path: Optional[str]) -> str:
         """
@@ -300,46 +445,27 @@ class GraphOneDriveClient:
                 url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60),
+                **BEARER_KW,
             ) as response:
                 if response.status == 200:
-                    content_bytes = await response.read()
-
-                    if as_text:
-                        try:
-                            content = content_bytes.decode("utf-8")
-                            return {
-                                "success": True,
-                                "file_path": file_path,
-                                "content": content,
-                                "content_type": "text",
-                            }
-                        except UnicodeDecodeError:
-                            # UTF-8 디코딩 실패 시 base64로 반환
-                            content = base64.b64encode(content_bytes).decode("ascii")
-                            return {
-                                "success": True,
-                                "file_path": file_path,
-                                "content": content,
-                                "content_type": "base64",
-                            }
-                    else:
-                        content = base64.b64encode(content_bytes).decode("ascii")
-                        return {
-                            "success": True,
-                            "file_path": file_path,
-                            "content": content,
-                            "content_type": "base64",
-                        }
-                else:
+                    return _content_result(await response.read(), file_path, as_text)
+                if not is_redirect(response.status):
                     error_text = await response.text()
                     return {
                         "success": False,
                         "error": f"파일 읽기 실패: {response.status}",
-                        "details": error_text,
+                        **_failure_fields(response.status, error_text),
                     }
+                # Graph 는 /content 를 사전 서명 URL 로 302 돌린다 — 첫 응답을 닫고 bearer 없이 간다
+                location = response.headers.get("Location")
+                status = response.status
+            return await self._download_presigned(user_email, location, status, file_path, as_text)
+        except SecurityError:
+            # 사전 서명 GET 직전 재검사에서 폐기·연결 해제가 드러난 경우 — 고정 코드로 그대로 올린다
+            raise
         except Exception as e:
-            logger.error(f"파일 읽기 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("파일 읽기 오류: %s", type(e).__name__)
+            return {"success": False, "error": _TRANSPORT_ERROR_MESSAGE}
 
     async def write_file(
         self,
@@ -386,6 +512,7 @@ class GraphOneDriveClient:
                 headers=headers,
                 data=data,
                 timeout=aiohttp.ClientTimeout(total=60),
+                **BEARER_KW,
             ) as response:
                 if response.status in (200, 201):
                     result = await response.json()
@@ -399,11 +526,11 @@ class GraphOneDriveClient:
                     return {
                         "success": False,
                         "error": f"파일 쓰기 실패: {response.status}",
-                        "details": error_text,
+                        **_failure_fields(response.status, error_text),
                     }
         except Exception as e:
-            logger.error(f"파일 쓰기 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("파일 쓰기 오류: %s", type(e).__name__)
+            return {"success": False, "error": _TRANSPORT_ERROR_MESSAGE}
 
     async def delete_file(
         self,
@@ -524,6 +651,7 @@ class GraphOneDriveClient:
                 headers=headers,
                 json=json_data,
                 timeout=aiohttp.ClientTimeout(total=60),
+                **BEARER_KW,
             ) as response:
                 if response.status == 202:
                     # 비동기 작업 시작됨
@@ -538,11 +666,11 @@ class GraphOneDriveClient:
                     return {
                         "success": False,
                         "error": f"파일 복사 실패: {response.status}",
-                        "details": error_text,
+                        **_failure_fields(response.status, error_text),
                     }
         except Exception as e:
-            logger.error(f"파일 복사 오류: {str(e)}")
-            return {"success": False, "error": str(e)}
+            logger.error("파일 복사 오류: %s", type(e).__name__)
+            return {"success": False, "error": _TRANSPORT_ERROR_MESSAGE}
 
     async def move_file(
         self,

@@ -50,7 +50,7 @@ class DOCXConverter(BaseConverter):
             logger.error("python-docx not installed. Install with: pip install python-docx")
             raise
         except Exception as e:
-            logger.error(f"Error converting DOCX {file_path}: {e}")
+            logger.error("Error converting DOCX: %s", type(e).__name__)
             raise
 
     def supports(self, file_path: str) -> bool:

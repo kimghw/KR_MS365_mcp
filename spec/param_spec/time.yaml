@@ -9,11 +9,11 @@ server:
   name: time
   version: "1.0.0"
   port: 5007
-  description: 현재 시각 조회. 인증 불필요.
+  description: 현재 시각 조회. 사용자 데이터·Graph 토큰 없음(멀티유저 모드에서도 HTTP bearer 인증은 동일하게 필요).
 
 tools:
   - name: get_current_time
-    description: "현재 시간/날짜를 반환합니다. 어떤 입력이든 무시하고 현재 시간만 반환. 기본 timezone은 Asia/Seoul."
+    description: "현재 시간/날짜를 반환합니다. 입력은 timezone 하나뿐입니다(멀티유저 모드에서는 정의되지 않은 인자를 거부합니다). 기본 timezone은 Asia/Seoul."
     service: TimeService.get_current_time
     params:
       - name: timezone

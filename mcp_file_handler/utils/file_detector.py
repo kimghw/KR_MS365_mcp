@@ -42,7 +42,7 @@ class FileDetector:
         path = Path(file_path)
 
         if not path.exists():
-            logger.error(f"File does not exist: {file_path}")
+            logger.error("File does not exist")
             return None
 
         # First try by extension
@@ -70,7 +70,7 @@ class FileDetector:
             elif mime_type.startswith('image/'):
                 return 'image'
 
-        logger.warning(f"Unknown file type for: {file_path}")
+        logger.warning("Unknown file type (extension %s)", path.suffix.lower() or "-")
         return None
 
     def get_converter(self, file_path: str) -> Optional[BaseConverter]:
@@ -84,10 +84,10 @@ class FileDetector:
         """
         for converter in self.converters:
             if converter.supports(file_path):
-                logger.info(f"Using {converter.__class__.__name__} for {file_path}")
+                logger.info("Using %s", converter.__class__.__name__)
                 return converter
 
-        logger.warning(f"No converter found for: {file_path}")
+        logger.warning("No converter found (extension %s)", Path(file_path).suffix.lower() or "-")
         return None
 
     def is_url(self, path_or_url: str) -> bool:

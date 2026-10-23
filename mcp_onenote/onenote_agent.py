@@ -135,7 +135,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """YAML 설정 파일 로드"""
     path = config_path or _DEFAULT_CONFIG_PATH
     if not os.path.exists(path):
-        logger.warning(f"Config file not found: {path}, using defaults")
+        logger.warning("summarize config file not found, using defaults")
         return _default_config()
 
     with open(path, "r", encoding="utf-8") as f:
@@ -205,7 +205,7 @@ async def _call_claude_sdk(prompt: str, config: Dict[str, Any]) -> str:
                         response_texts.append(block.text)
         return "\n".join(response_texts).strip()
     except Exception as e:
-        logger.warning(f"Claude SDK 호출 실패: {e}")
+        logger.warning("Claude SDK 호출 실패: %s", type(e).__name__)
         return ""
 
 
@@ -275,6 +275,10 @@ class OneNoteAgent:
     - 페이지 요약 생성 (Claude Code SDK)
     - 키워드 추출
     - 관련 페이지 검색
+
+    사용자별이다 (spec/spec_멀티유저.md ②-7.3): 서비스 인스턴스마다 하나씩 만들어지고,
+    요약 캐시는 DB 의 (owner_key, page_id) 행뿐이다. 같은 Graph 페이지라도 다른 사용자의
+    요약을 재사용하지 않는다. 모듈 수준 상태는 불변 설정 경로뿐이다.
     """
 
     def __init__(
@@ -324,7 +328,7 @@ class OneNoteAgent:
         content_hash = compute_content_hash(html_content)
 
         if not force_refresh:
-            existing = self._db_service.get_summary(page_id)
+            existing = self._db_service.get_summary(page_id, user_id=user_email)
             if existing and existing.get("content_hash") == content_hash:
                 return {
                     "success": True,
@@ -367,8 +371,8 @@ class OneNoteAgent:
         user_email: str,
         page_id: str,
     ) -> Dict[str, Any]:
-        """저장된 페이지 요약 조회"""
-        summary = self._db_service.get_summary(page_id)
+        """저장된 페이지 요약 조회 — 호출자 소유의 요약만 (다른 사용자의 page_id 는 '없음')"""
+        summary = self._db_service.get_summary(page_id, user_id=user_email)
         if summary:
             return {"success": True, "has_summary": True, **summary}
         # 이 경로는 summarize 를 호출하지 않으므로 한 번도 요약되지 않은 페이지는
@@ -398,6 +402,7 @@ class OneNoteAgent:
         query: str,
         section_id: Optional[str] = None,
         concurrency: int = 5,
+        max_pages: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         섹션 내 페이지를 병렬로 순회하며 질의와 관련된 페이지를 찾아 요약 반환
@@ -407,6 +412,8 @@ class OneNoteAgent:
             query: 검색 질의 (예: "디지털트윈 관련 내용")
             section_id: 섹션 ID (없으면 전체 페이지 대상)
             concurrency: 동시 처리 수 (기본 5)
+            max_pages: Graph 에서 가져와 분석하는 페이지 수의 상한 (R02). 넘는 페이지는
+                가져오지 않으며 결과에 `capped: True` 를 표시한다.
 
         Returns:
             관련 페이지 목록과 요약
@@ -421,9 +428,9 @@ class OneNoteAgent:
                 "message": "Claude Code SDK가 설치되지 않았습니다.",
             }
 
-        # 1. 페이지 목록 조회
+        # 1. 페이지 목록 조회 (max_pages 만큼만 페이징)
         pages_result = await self._client.list_pages(
-            user_email, section_id=section_id
+            user_email, section_id=section_id, max_pages=max_pages
         )
         if not pages_result.get("success"):
             return {
@@ -432,6 +439,8 @@ class OneNoteAgent:
             }
 
         pages = pages_result.get("pages", [])
+        if max_pages is not None:
+            pages = pages[:max_pages]
         if not pages:
             return {
                 "success": True,
@@ -528,11 +537,11 @@ class OneNoteAgent:
         for r in results:
             if isinstance(r, Exception):
                 errors += 1
-                logger.warning(f"페이지 분석 오류: {r}")
+                logger.warning("페이지 분석 오류: %s", type(r).__name__)
             elif r is not None:
                 relevant_pages.append(r)
 
-        return {
+        response = {
             "success": True,
             "query": query,
             "results": relevant_pages,
@@ -540,6 +549,9 @@ class OneNoteAgent:
             "total_pages_scanned": len(pages),
             "errors": errors,
         }
+        if pages_result.get("capped"):
+            response["capped"] = True  # max_pages 를 넘는 페이지는 보지 않았다
+        return response
 
     async def summarize_change(
         self,

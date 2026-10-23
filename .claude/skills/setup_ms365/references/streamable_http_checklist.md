@@ -291,3 +291,32 @@ Probe 2, 3, 7, 8은 엄격성(strict) 검증이라 실패해도 기본 동작은
 `.claude/skills/setup_ms365/scripts/`에 `streamable_http_probe.sh`(또는 `.py`) 추가를 권장. 인자로 `SERVER_BASE`(예: `http://localhost:5001`)를 받고 8개 probe를 차례로 돌려 표 형태로 합/불 출력. 본 체크리스트의 curl 블록을 그대로 옮기면 됨.
 
 (현재는 수동 — 위 명령들을 복붙해서 사용)
+
+> 위 안내는 오래됐다 — 지금은 `scripts/streamable_http_probe.py` 가 8-probe 를 자동으로 돈다.
+
+---
+
+## 9. 멀티유저 모드 (`MS365_MULTI_USER=1`) — stateless + bearer 9-probe
+
+멀티유저 서버는 의도적으로 **stateless** 다(spec/spec_멀티유저.md ②-4.4). 위 1~8 의 "세션 발급·
+GET 스트림·DELETE 종료"는 이 모드에서 **실패하는 것이 정상**이다. 대신 아래를 본다.
+
+```bash
+# 키는 환경변수로만 — 명령행·셸 기록에 원문을 남기지 않는다
+MS365_MCP_BEARER_KEY=... python streamable_http_probe.py --base http://localhost:5001 --multi-user
+```
+
+| # | 요청 | 기대 |
+|---|---|---|
+| 1 | initialize, Authorization 없음 | 401 + `WWW-Authenticate: Bearer` |
+| 2 | initialize, 형식만 맞는 모르는 키 | 401 |
+| 3 | initialize, 유효 키 | 200, **`Mcp-Session-Id` 없음** |
+| 4 | Accept 헤더 없음 (유효 키) | 406 |
+| 5 | `notifications/initialized` | 202 |
+| 6 | 세션 없이 `tools/list` | 200 + `result.tools` |
+| 7 | `Mcp-Session-Id` 를 보냄 | 400 (`session_not_supported`) |
+| 8 | GET `/mcp` | 405 |
+| 9 | DELETE `/mcp` | 405 |
+
+403 은 키는 맞지만 그 도메인 scope 가 없거나(`key issue --domains`) 계정이 비활성이라는 뜻이다.
+2026-10-22 mcp_time(mode 1, env KEK) 대상 9/9 통과.

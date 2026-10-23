@@ -7,10 +7,31 @@ Graph Calendar Query - Calendar API 호출 레이어
     - URL로 Graph API 호출
     - 이벤트 CRUD 작업
     - Free/Busy 조회
+
+멀티유저(spec/spec_멀티유저.md ②-7.6):
+    - 토큰 공급자는 사용자 고정 객체를 주입받는다. 쿼리는 공급자를 소유하지 않으므로
+      `close()` 에서 닫지 않는다(mode 0 의 공용 AuthManager 도 마찬가지).
+    - URL builder 는 이메일에 따라 바뀌는 공유 상태를 두지 않는다. mode 1 은 인스턴스
+      고정 `/me` builder, mode 0 은 호출마다 새 builder(`/users/{email}`).
+    - 로그에는 이메일·오류 본문을 남기지 않는다.
+
+호출자 ID·오류 노출(spec/spec_멀티유저.md ②-7.5 G01, ②-9) — 두 모드 공통:
+    - `event_id` 등 호출자가 준 ID 는 `mcp_common.graph_paths.graph_segment()` 로 경로 성분
+      **하나**로 인코딩한다. `..`·`/` 로 다른 사용자 경로(`/users/B/...`)로 빠져나갈 수 없고,
+      잘못된 ID 는 `SecurityError(not_found)` 로 그대로 올라간다.
+    - 실패 응답에는 고정 메시지 + `graph_error_summary()`(상태 코드·검증된 `error.code`)만
+      싣는다. Graph 오류 본문 원문·예외 문자열은 돌려주지 않는다.
+
+redirect·nextLink (②-7.5, R08) — 두 모드 공통:
+    - bearer 를 단 요청은 redirect 를 따라가지 않는다(`BEARER_KW`). 3xx 는 오류 요약으로 돌려준다.
+    - `@odata.nextLink` 이어 조회는 `fetch_next_link()` 로만 한다 — 본인 `/v1.0/me/...` 또는
+      본인 `/users/{id}/...` 의 캘린더 리소스, dot-segment 없음. 그 밖은 `path_not_allowed`.
 """
 
 import asyncio
 import aiohttp
+import json
+import logging
 import sys
 import os
 from typing import Dict, Any, List, Optional, Union, TYPE_CHECKING
@@ -19,6 +40,12 @@ import re
 from urllib.parse import quote
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mcp_common.graph_paths import graph_error_summary, graph_segment
+from mcp_common.security_contracts import SecurityError
+from mcp_common.security_policy import multi_user_enabled
+
+from mcp_common.graph_url_policy import BEARER_KW, check_next_link, is_redirect
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -31,6 +58,45 @@ from .calendar_types import (
     build_event_filter_query,
     build_event_select_query,
 )
+
+logger = logging.getLogger(__name__)
+
+#: 전송 단계 예외(연결 실패·타임아웃 등)의 공개 메시지 — 예외 원문은 응답에 싣지 않는다
+_TRANSPORT_ERROR_MESSAGE = "Graph 요청 중 오류가 발생했습니다."
+_REDIRECT_REFUSED_MESSAGE = "Graph redirect 응답은 따라가지 않습니다."
+
+#: `fetch_next_link()` 가 이어서 조회해도 되는 리소스(소문자) — 캘린더 범위 밖(messages 등)은 거부
+_NEXT_LINK_RESOURCES = frozenset({"events", "calendar", "calendars", "calendarview"})
+
+
+def _graph_failure(status: int, body_text: str, request_url: str) -> Dict[str, Any]:
+    """Graph 비정상 응답 → 공개용 최소 정보(상태 코드·`error.code`). 본문 원문은 싣지 않는다."""
+    try:
+        parsed = json.loads(body_text) if body_text else None
+    except ValueError:
+        parsed = None
+    summary = graph_error_summary(status, parsed)
+    logger.warning(
+        "Graph 요청 실패: status=%s code=%s", status, summary.get("graph_error_code", "-")
+    )
+    return {
+        "status": "error",
+        "error": _REDIRECT_REFUSED_MESSAGE if is_redirect(status) else f"Request failed with status {status}",
+        **summary,
+        "request_url": request_url,
+    }
+
+
+def _transport_failure(exc: BaseException, request_url: str) -> Dict[str, Any]:
+    """전송 예외 → 고정 메시지. 예외 타입만 로그에 남긴다."""
+    logger.warning("Graph 요청 오류: %s", type(exc).__name__)
+    return {"status": "error", "error": _TRANSPORT_ERROR_MESSAGE, "request_url": request_url}
+
+
+def _user_segment(user_email: str) -> str:
+    """mode 0 의 `/users/{email}` 성분. 단일 성분 검증 후 `@` 만 그대로 둔다."""
+    graph_segment(user_email)  # 빈 값·`.`·`..`·제어문자 거부
+    return quote(str(user_email), safe="@")
 
 
 # calendarView 의 startDateTime/endDateTime 은 오프셋이 없으면 Graph 가 UTC 로 해석한다
@@ -58,19 +124,26 @@ class GraphCalendarUrlBuilder:
         Initialize URL builder
 
         Args:
-            user_email: User email or "me" for current user
+            user_email: User email or "me" for current user (토큰 주인 — `/me/...`)
         """
         self.user_email = user_email
 
     @property
+    def user_root(self) -> str:
+        """사용자 루트. "me" 는 Graph 정식 별칭 `/me` 로 쓴다(`/users/me` 가 아니다)."""
+        if self.user_email == "me":
+            return f"{self.BASE_URL}/me"
+        return f"{self.BASE_URL}/users/{_user_segment(self.user_email)}"
+
+    @property
     def events_url(self) -> str:
         """이벤트 기본 URL"""
-        return f"{self.BASE_URL}/users/{self.user_email}/events"
+        return f"{self.user_root}/events"
 
     @property
     def calendar_url(self) -> str:
         """캘린더 기본 URL"""
-        return f"{self.BASE_URL}/users/{self.user_email}/calendar"
+        return f"{self.user_root}/calendar"
 
     @property
     def calendar_view_url(self) -> str:
@@ -171,6 +244,10 @@ class GraphCalendarUrlBuilder:
         url += "?" + "&".join(params)
         return url
 
+    def event_url(self, event_id: str) -> str:
+        """단일 이벤트 URL. `event_id` 는 경로 성분 하나로 인코딩한다(경로 탈출 불가, G01)."""
+        return f"{self.events_url}/{graph_segment(event_id)}"
+
     def build_event_url(
         self,
         event_id: str,
@@ -186,7 +263,7 @@ class GraphCalendarUrlBuilder:
         Returns:
             완전한 URL
         """
-        url = f"{self.events_url}/{event_id}"
+        url = self.event_url(event_id)
         params = []
 
         if select_fields:
@@ -214,15 +291,24 @@ class GraphCalendarQuery:
         Initialize Graph Calendar Query
 
         Args:
-            token_provider: 토큰 제공자 (None이면 기본 AuthManager 사용)
+            token_provider: 토큰 제공자. 멀티유저에서는 사용자 고정 공급자가 **필수**다.
+                None 이면 mode 0 의 프로세스 공유 AuthManager 를 쓴다.
         """
+        multi_user = multi_user_enabled()
         if token_provider is None:
+            if multi_user:
+                raise RuntimeError(
+                    "GraphCalendarQuery: 멀티유저 모드에서는 사용자 고정 token_provider 가 필요합니다"
+                )
             # 하위 호환성: 프로세스 공유 AuthManager 사용
             # (인스턴스를 새로 만들면 per-email refresh lock 이 분리돼 무의미해진다)
             from mcp_common.auth import get_shared_auth_manager
             token_provider = get_shared_auth_manager()
         self.token_provider = token_provider
-        self._url_builder: Optional[GraphCalendarUrlBuilder] = None
+        # mode 1: 토큰 주인(`/me`)에 고정된 불변 builder. mode 0: 호출마다 새로 만든다.
+        self._fixed_url_builder: Optional[GraphCalendarUrlBuilder] = (
+            GraphCalendarUrlBuilder("me") if multi_user else None
+        )
 
     async def initialize(self) -> bool:
         """
@@ -250,27 +336,37 @@ class GraphCalendarQuery:
             access_token = await self.token_provider.validate_and_refresh_token(user_email)
 
             if not access_token:
-                print(f"Failed to get access token for {user_email}")
+                logger.warning("Graph access token 을 얻지 못했습니다")
 
             return access_token
 
+        except SecurityError:
+            # 연결 없음·재인증 필요·계정 불일치는 고정 코드로 그대로 올린다.
+            raise
         except Exception as e:
-            print(f"Token retrieval error for {user_email}: {str(e)}")
+            logger.warning("Graph access token 조회 오류: %s", type(e).__name__)
             return None
 
     def _get_url_builder(self, user_email: str) -> GraphCalendarUrlBuilder:
         """
-        URL 빌더 인스턴스 반환 (캐싱)
+        URL 빌더 반환 — 요청 간에 공유되는 가변 상태가 없다.
+
+        mode 1 은 인스턴스 고정 `/me` builder, mode 0 은 호출마다 `user_email` builder 를
+        새로 만든다(전에는 마지막 이메일로 바뀌는 캐시 하나를 공유했다).
 
         Args:
-            user_email: 사용자 이메일
+            user_email: 사용자 이메일 (mode 0 경로 조각)
 
         Returns:
             GraphCalendarUrlBuilder 인스턴스
         """
-        if self._url_builder is None or self._url_builder.user_email != user_email:
-            self._url_builder = GraphCalendarUrlBuilder(user_email)
-        return self._url_builder
+        if self._fixed_url_builder is not None:
+            return self._fixed_url_builder
+        return GraphCalendarUrlBuilder(user_email)
+
+    def _http_session(self) -> aiohttp.ClientSession:
+        """요청마다 만드는 HTTP 세션(이 객체 소유, `async with` 로 닫힌다). 테스트 대체 지점."""
+        return aiohttp.ClientSession()
 
     # ============================================================
     # HTTP 헬퍼 메서드
@@ -288,12 +384,12 @@ class GraphCalendarQuery:
             응답 데이터
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._http_session() as session:
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 }
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers, **BEARER_KW) as response:
                     if response.status == 200:
                         data = await response.json()
                         return {
@@ -303,18 +399,9 @@ class GraphCalendarQuery:
                         }
                     else:
                         error_text = await response.text()
-                        return {
-                            "status": "error",
-                            "error": f"Request failed with status {response.status}",
-                            "error_detail": error_text[:500],
-                            "request_url": url,
-                        }
+                        return _graph_failure(response.status, error_text, url)
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "request_url": url,
-            }
+            return _transport_failure(e, url)
 
     async def _post_data(
         self, access_token: str, url: str, data: Dict[str, Any]
@@ -331,12 +418,12 @@ class GraphCalendarQuery:
             응답 데이터
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._http_session() as session:
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 }
-                async with session.post(url, headers=headers, json=data) as response:
+                async with session.post(url, headers=headers, json=data, **BEARER_KW) as response:
                     response_text = await response.text()
 
                     if response.status in [200, 201, 202]:
@@ -351,18 +438,9 @@ class GraphCalendarQuery:
                             "request_url": url,
                         }
                     else:
-                        return {
-                            "status": "error",
-                            "error": f"Request failed with status {response.status}",
-                            "error_detail": response_text[:500],
-                            "request_url": url,
-                        }
+                        return _graph_failure(response.status, response_text, url)
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "request_url": url,
-            }
+            return _transport_failure(e, url)
 
     async def _patch_data(
         self, access_token: str, url: str, data: Dict[str, Any]
@@ -379,12 +457,12 @@ class GraphCalendarQuery:
             응답 데이터
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._http_session() as session:
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 }
-                async with session.patch(url, headers=headers, json=data) as response:
+                async with session.patch(url, headers=headers, json=data, **BEARER_KW) as response:
                     response_text = await response.text()
 
                     if response.status in [200, 204]:
@@ -401,18 +479,9 @@ class GraphCalendarQuery:
                             "request_url": url,
                         }
                     else:
-                        return {
-                            "status": "error",
-                            "error": f"Request failed with status {response.status}",
-                            "error_detail": response_text[:500],
-                            "request_url": url,
-                        }
+                        return _graph_failure(response.status, response_text, url)
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "request_url": url,
-            }
+            return _transport_failure(e, url)
 
     async def _delete_data(self, access_token: str, url: str) -> Dict[str, Any]:
         """
@@ -426,12 +495,12 @@ class GraphCalendarQuery:
             응답 데이터
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._http_session() as session:
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 }
-                async with session.delete(url, headers=headers) as response:
+                async with session.delete(url, headers=headers, **BEARER_KW) as response:
                     if response.status == 204:
                         return {
                             "status": "success",
@@ -440,18 +509,9 @@ class GraphCalendarQuery:
                         }
                     else:
                         error_text = await response.text()
-                        return {
-                            "status": "error",
-                            "error": f"Request failed with status {response.status}",
-                            "error_detail": error_text[:500],
-                            "request_url": url,
-                        }
+                        return _graph_failure(response.status, error_text, url)
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "request_url": url,
-            }
+            return _transport_failure(e, url)
 
     # ============================================================
     # Calendar API 메서드
@@ -729,7 +789,7 @@ class GraphCalendarQuery:
 
         # Build URL
         url_builder = self._get_url_builder(user_email)
-        url = f"{url_builder.events_url}/{event_id}"
+        url = url_builder.event_url(event_id)
 
         # Patch data
         result = await self._patch_data(access_token, url, request_body)
@@ -769,7 +829,7 @@ class GraphCalendarQuery:
 
         # Build URL
         url_builder = self._get_url_builder(user_email)
-        url = f"{url_builder.events_url}/{event_id}"
+        url = url_builder.event_url(event_id)
 
         # Delete data
         result = await self._delete_data(access_token, url)
@@ -832,6 +892,33 @@ class GraphCalendarQuery:
         return result
 
     # ============================================================
+    # 페이지 이어 조회 (@odata.nextLink)
+    # ============================================================
+
+    async def fetch_next_link(self, user_email: str, next_link: str) -> Dict[str, Any]:
+        """Graph 가 돌려준 `@odata.nextLink` 를 **같은 사용자·캘린더 범위에서만** GET 한다.
+
+        정책(`check_next_link`)은 토큰 획득·HTTP 요청보다 먼저 판정한다. 다른 사용자
+        (`/users/B/...`)·다른 리소스·dot-segment·Graph 밖 호스트는 `path_not_allowed`.
+        이어 조회가 필요한 코드는 반드시 이 메서드를 쓴다 — `_fetch_data(next_link)` 직접 호출 금지.
+        """
+        url = check_next_link(next_link, user_email, resources=_NEXT_LINK_RESOURCES)
+        access_token = await self._get_access_token(user_email)
+        if not access_token:
+            return {"status": "error", "error": "Failed to get access token"}
+
+        result = await self._fetch_data(access_token, url)
+        if result["status"] == "success":
+            data = result["data"]
+            return {
+                "status": "success",
+                "value": data.get("value", []),
+                "next_link": data.get("@odata.nextLink"),
+                "request_url": url,
+            }
+        return result
+
+    # ============================================================
     # 헬퍼 메서드 - Request Body 빌드
     # ============================================================
 
@@ -871,9 +958,13 @@ class GraphCalendarQuery:
     # ============================================================
 
     async def close(self):
-        """Clean up resources"""
-        if self.token_provider and hasattr(self.token_provider, 'close'):
-            await self.token_provider.close()
+        """Clean up resources.
+
+        토큰 공급자는 이 객체의 소유가 아니다 — 주입된 사용자 공급자든 mode 0 의 공용
+        AuthManager 든 닫지 않는다(사용자 서비스 퇴거가 인증 자원을 닫던 경로 제거,
+        spec/spec_멀티유저.md ②-2.4). HTTP 세션은 요청마다 열고 닫으므로 남는 자원이 없다.
+        """
+        return None
 
 
 # ============================================================
@@ -886,6 +977,7 @@ async def get_calendar_events(
     start_datetime: Optional[str] = None,
     end_datetime: Optional[str] = None,
     top: int = 50,
+    token_provider: Optional["TokenProviderProtocol"] = None,
 ) -> Dict[str, Any]:
     """
     캘린더 이벤트 조회 편의 함수
@@ -895,11 +987,12 @@ async def get_calendar_events(
         start_datetime: 시작 날짜/시간 (ISO 8601)
         end_datetime: 종료 날짜/시간 (ISO 8601)
         top: 최대 결과 수
+        token_provider: 토큰 공급자 (멀티유저에서는 필수)
 
     Returns:
         이벤트 목록
     """
-    query = GraphCalendarQuery()
+    query = GraphCalendarQuery(token_provider=token_provider)
 
     try:
         if start_datetime and end_datetime:
@@ -925,6 +1018,7 @@ async def create_calendar_event(
     body: Optional[str] = None,
     attendees: Optional[List[str]] = None,
     is_online_meeting: bool = False,
+    token_provider: Optional["TokenProviderProtocol"] = None,
 ) -> Dict[str, Any]:
     """
     캘린더 이벤트 생성 편의 함수
@@ -939,13 +1033,14 @@ async def create_calendar_event(
         body: 본문
         attendees: 참석자 이메일 목록
         is_online_meeting: Teams 회의 생성 여부
+        token_provider: 토큰 공급자 (멀티유저에서는 필수)
 
     Returns:
         생성된 이벤트 정보
     """
     from .calendar_types import DateTimeTimeZone, Attendee, EmailAddress, Location
 
-    query = GraphCalendarQuery()
+    query = GraphCalendarQuery(token_provider=token_provider)
 
     try:
         event_params = EventCreateParams(

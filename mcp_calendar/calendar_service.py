@@ -1,12 +1,24 @@
 """
 Calendar Service - GraphCalendarClient Facade
 인자를 그대로 위임하고, 필요시 일부 값만 조정하는 서비스 레이어
+
+멀티유저(MS365_MULTI_USER=1, spec/spec_멀티유저.md ②-7.3·②-7.6):
+  - 서비스·GraphClient·URL builder 는 사용자별로 고정한다. 풀이 만든 서비스는 생성 시 받은
+    사용자 고정 `token_provider` 를 GraphClient 로 넘기며, 공용 AuthManager 를 끌어오지 않는다.
+  - `user_email` 은 요청 principal 의 연결 계정만 허용한다(생략 → 본인). 기본 사용자
+    선택(환경변수·auth.db)은 mode 0 에서만 쓴다.
 """
 
+import importlib
 import logging
 from typing import Dict, Any, Optional, List, Union
 
+from mcp_common.principal import MISSING, assert_user_email, require_principal
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
+
 from .graph_calendar_client import GraphCalendarClient
+from mcp_common.input_bounds import check_list_size, check_top
 from .calendar_types import (
     EventFilterParams,
     EventSelectParams,
@@ -23,6 +35,12 @@ from .calendar_types import (
 
 logger = logging.getLogger(__name__)
 
+#: 서비스 경계 상한 (R02). `top` 은 input_bounds.MAX_TOP(=YAML maximum). MCP 에 노출되지 않는
+#: 직접 Python 호출 인자(calendar_view.top, attendees, categories)도 같은 곳에서 막는다.
+MAX_ATTENDEES = 500
+MAX_CATEGORIES = 50
+MAX_SCHEDULES = 100  # = calendar.yaml get_schedule.schedules maxItems
+
 # mcp_service 는 메타데이터 표식일 뿐 런타임 동작에는 영향이 없다.
 # 도구의 실제 계약은 spec/param_spec/calendar.yaml 이며 이 데코레이터의 인자가 아니다.
 from mcp_common.service_meta import mcp_service
@@ -30,10 +48,11 @@ from mcp_common.service_meta import mcp_service
 
 def _resolve_user_email(user_email: Optional[str]) -> str:
     """
-    사용자 이메일 결정 (mcp_common.user_resolver 단일 정책).
+    사용자 이메일 결정 (mcp_common.user_resolver 단일 정책). **mode 0 전용.**
 
     명시값 > MS365_DEFAULT_USER_EMAIL > auth.db 결정적 선택 순서이며,
     인증된 사용자가 하나도 없으면 ToolExecutionError 를 던진다.
+    멀티유저 경로는 `CalendarService._resolve_email()` 이 principal 만 본다.
     """
     from mcp_common.user_resolver import resolve_user_email
 
@@ -49,7 +68,17 @@ class CalendarService:
     - MCP 도구를 위한 단순화된 인터페이스 제공
     """
 
-    def __init__(self):
+    def __init__(self, token_provider: Optional[Any] = None, paths: Optional[Any] = None):
+        """
+        Args:
+            token_provider: 사용자 고정 토큰 공급자(멀티유저 factory 가 주입). None 이면
+                mode 0 의 공용 AuthManager 를 쓴다 — mode 1 에서는 GraphClient 생성이 실패한다.
+            paths: 사용자 저장 경로. Calendar 는 개인 DB·파일을 쓰지 않는다.
+        """
+        self._token_provider = token_provider
+        self._paths = paths
+        # 이 서비스가 묶인 사용자. 요청 principal 과 다르면 거부한다(방어 심층).
+        self._owner_key: Optional[str] = getattr(token_provider, "user_key", None)
         self._client: Optional[GraphCalendarClient] = None
         self._initialized: bool = False
 
@@ -58,7 +87,7 @@ class CalendarService:
         if self._initialized:
             return True
 
-        self._client = GraphCalendarClient()
+        self._client = GraphCalendarClient(token_provider=self._token_provider)
 
         if await self._client.initialize():
             self._initialized = True
@@ -69,6 +98,20 @@ class CalendarService:
         """초기화 확인"""
         if not self._initialized or not self._client:
             raise RuntimeError("CalendarService not initialized. Call initialize() first.")
+
+    def _resolve_email(self, user_email: Optional[str]) -> str:
+        """호출 대상 계정.
+
+        - mode 1: 요청 principal 의 연결 계정만 (생략 → 본인, 다른 값 → `identity_mismatch`).
+          다른 사용자에게 묶인 서비스로 들어온 요청도 거부한다.
+        - mode 0: `_resolve_user_email()` (명시값 → 환경변수 → auth.db).
+        """
+        if multi_user_enabled():
+            email = assert_user_email(MISSING if user_email is None else user_email)
+            if self._owner_key is not None and require_principal().user_key != self._owner_key:
+                raise SecurityError(ErrorCode.IDENTITY_MISMATCH)
+            return email
+        return _resolve_user_email(user_email)
 
     # ===== MCP 도구 메서드들 (Facade 메서드) =====
 
@@ -103,9 +146,10 @@ class CalendarService:
             이벤트 목록
         """
         self._ensure_initialized()
+        top = check_top(top)
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         # 기본 정렬 순서
         if orderby is None:
@@ -162,9 +206,10 @@ class CalendarService:
             이벤트 목록 (반복 일정 인스턴스 포함)
         """
         self._ensure_initialized()
+        top = check_top(top)
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         # 기본 정렬 순서
         if orderby is None:
@@ -220,7 +265,7 @@ class CalendarService:
         self._ensure_initialized()
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         result = await self._client.get_event(
             user_email=user_email,
@@ -293,9 +338,11 @@ class CalendarService:
             생성된 이벤트 정보
         """
         self._ensure_initialized()
+        check_list_size(attendees, "attendees", MAX_ATTENDEES)
+        check_list_size(categories, "categories", MAX_CATEGORIES)
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         # start/end 타입 변환
         start_dt = self._convert_to_datetime_timezone(start)
@@ -455,9 +502,11 @@ class CalendarService:
             수정된 이벤트 정보
         """
         self._ensure_initialized()
+        check_list_size(attendees, "attendees", MAX_ATTENDEES)
+        check_list_size(categories, "categories", MAX_CATEGORIES)
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         # start/end 타입 변환 (None 허용)
         start_dt = self._convert_to_datetime_timezone(start) if start else None
@@ -533,7 +582,7 @@ class CalendarService:
         self._ensure_initialized()
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         result = await self._client.delete_event(
             user_email=user_email,
@@ -584,9 +633,10 @@ class CalendarService:
             사용자별 일정 가용성 정보
         """
         self._ensure_initialized()
+        check_list_size(schedules, "schedules", MAX_SCHEDULES)
 
         # 사용자 이메일 결정 (mcp_common 단일 정책, 미인증이면 예외)
-        user_email = _resolve_user_email(user_email)
+        user_email = self._resolve_email(user_email)
 
         # schedules가 None이면 빈 리스트로 초기화
         if schedules is None:
@@ -623,11 +673,51 @@ class CalendarService:
         return result
 
     async def close(self):
-        """리소스 정리"""
+        """리소스 정리 — 자신이 만든 GraphClient 만 닫는다. 토큰 공급자는 닫지 않는다."""
         if self._client:
             await self._client.close()
+            self._client = None
         self._initialized = False
 
 
-# 서비스 인스턴스 생성 (싱글톤)
-calendar_service = CalendarService()
+# ----------------------------------------------------------------------
+# 호환 export — `from mcp_calendar.calendar_service import calendar_service` (R15)
+# ----------------------------------------------------------------------
+# 모듈 수준 싱글톤(`calendar_service = CalendarService()`)은 import 시점에 만들지 않는다 —
+# 전역 개인 서비스 인스턴스는 mode 0 의 handlers.py 한 곳에서만 만든다(②-2.4). 기존 Python
+# 연동 코드를 위해 같은 이름을 **지연 속성**(PEP 562)으로 남긴다: mode 0 에서는 handlers 의
+# legacy 인스턴스 바로 그 객체, mode 1 에서는 `LegacyAuthDisabledError`(StartupConfigError 하위).
+# 패키지를 import 하는 것만으로는 아무것도 만들지 않는다.
+_LEGACY_ATTR = "calendar_service"
+
+
+def _legacy_singleton() -> "CalendarService":
+    if multi_user_enabled():
+        try:
+            from session.mode_guard import LegacyAuthDisabledError as _Disabled
+        except ImportError:  # session 패키지가 없는 번들
+            from mcp_common.security_contracts import StartupConfigError as _Disabled
+        raise _Disabled(
+            "calendar_service 모듈 싱글톤은 단일 운영자(mode 0) 전용입니다. 멀티유저 모드에서는 "
+            "서비스 풀의 사용자별 인스턴스(mcp_common.service_context.service_for)를 쓰세요."
+        )
+    handlers = importlib.import_module("mcp_calendar.mcp_server.handlers")
+    return getattr(handlers, _LEGACY_ATTR)
+
+
+def __getattr__(name: str):
+    if name == _LEGACY_ATTR:
+        return _legacy_singleton()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | {_LEGACY_ATTR})
+
+
+# `import *` 계약 — 공개 이름 전부 + mode 0 에서는 legacy 싱글톤(R15 2차). 지연 속성은
+# `__all__` 에 적혀 있어야 `import *` 가 `__getattr__` 로 꺼내 간다. mode 1 은 넣지 않아
+# `from mcp_calendar.calendar_service import *` 가 아무것도 만들지 않는다(모드는 기동 시 고정).
+__all__ = [_name for _name in list(globals()) if not _name.startswith("_")]
+if not multi_user_enabled():
+    __all__.append(_LEGACY_ATTR)

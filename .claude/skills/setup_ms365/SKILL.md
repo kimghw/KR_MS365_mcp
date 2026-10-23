@@ -37,6 +37,38 @@ OAuth 브라우저 플로우, refresh_token 갱신, 콜백 서버, `auth.db` 저
 | `todo` | 5006 | `mcp_todo/mcp_server/server_stdio.py` | `mcp_todo/mcp_server/server_stream.py` |
 
 콜백은 5000 고정. 모든 서버는 `.env`와 `database/auth.db`를 공유 — 1회 인증으로 6개 다 사용.
+(단일 운영자 모드 기준. 멀티유저 모드는 아래 [멀티유저 모드 운영](#멀티유저-모드-운영-ms365_multi_user1) 절.)
+
+## 멀티유저 모드 운영 (`MS365_MULTI_USER=1`)
+
+여러 사용자가 한 서버를 함께 쓰는 배포. 설계 원본은 [spec/spec_멀티유저.md](../../../spec/spec_멀티유저.md),
+명령 상세는 [session/README.md](../../../session/README.md) "멀티유저 모드". 이 모드에서는 **공용
+`auth.db` 가 없고**, `verify_setup.py`·`check_token.py` 는 그것을 읽지 않고 registry 상태(개수만)를 본다.
+
+| 단계 | 누가 | 명령·설정 |
+|---|---|---|
+| 1. 환경 | 운영자 | `.env` 에 `MS365_MULTI_USER=1`, `MS365_DATA_ROOT`(절대경로), `MS365_KEK_PROVIDER`, `MS365_ALLOWED_TENANTS`, `AZURE_REDIRECT_URI=https://<host>/auth/callback` (`.env.example` 의 "멀티유저 모드" 블록) |
+| 2. 초기화 | 운영자 | `uv run python -m session.admin_cli init` |
+| 3. 사용자 등록 | 운영자 | `uv run python -m session.admin_cli user add --tenant <tid> --oid <oid>` → `user_key` |
+| 4. 키 발급 | 운영자 | `uv run python -m session.admin_cli key issue <user_key> --domains outlook calendar ...` — 키 원문은 **한 번만** 출력된다. 안전한 경로로 사용자에게 전달 |
+| 5. 서버 기동 | 운영자 | `uv run python -m session.auth_gateway` (중앙 OAuth 콜백) + 도메인 `server_stream.py` (HTTP 전용 — stdio 는 기동 거부) |
+| 6. 클라이언트 설정 | 사용자 | MCP 서버 항목에 `headers.Authorization = "Bearer <key>"`. 키를 파일에 직접 쓰지 않으려면 `register_claude_code.py --servers ... --auth-header-env MS365_MCP_KEY` 로 `Bearer ${MS365_MCP_KEY}` 를 쓰고 그 환경변수를 클라이언트 실행 환경에 둔다(Claude Code 는 `.mcp.json` 의 `${VAR}` 확장을 지원한다) |
+| 7. 첫 도구 호출 | 사용자 | Graph 미연결이면 도구가 `graph_not_connected` 오류와 함께 **1회용 `connect_url`(300초)** 을 돌려준다 |
+| 8. 브라우저 연결 | 사용자 | 그 링크를 **같은 브라우저**에서 열어 Entra 로그인 → gateway 가 PKCE·nonce·`(tid, oid)` 를 확인하고 사용자별 암호화 DB 에 저장. 등록된 계정과 다른 계정으로 로그인하면 거부된다 |
+
+점검:
+
+```bash
+"$VENV_PY" "$SCRIPTS\verify_setup.py"            # 모드 자동 감지 — 데이터 루트·registry·KEK·gateway 포트
+"$VENV_PY" "$SCRIPTS\check_token.py"             # {"status":"multi_user","users":N,"graph_connected":M,...}
+MS365_MCP_BEARER_KEY=... "$VENV_PY" "$SCRIPTS\streamable_http_probe.py" --base http://localhost:5001 --multi-user
+```
+
+멀티유저 probe 는 **stateless** 가 정상이다 — 키 없는 요청 401(+`WWW-Authenticate: Bearer`), 키 있는
+initialize 200 이지만 `Mcp-Session-Id` 없음, `Mcp-Session-Id` 를 보내면 400, GET/DELETE 405. 키는
+`--key-env` 가 가리키는 **환경변수에서만** 읽는다(명령행 인자로 받지 않는다). Claude Desktop(STDIO)
+등록은 이 모드에서 쓸 수 없다. 기존 단일 운영자 데이터 이전은 `python -m tools.migrate_multi_user`
+(plan → apply → verify → activate, 루트 `README.md` "멀티유저 모드").
 
 ## 등록 타겟
 
@@ -93,11 +125,11 @@ setup_ms365/
 │   ├── examples.md                   ← 시나리오 예시 5개
 │   └── caveats.md                    ← 운영 함정·보안 주의
 └── scripts/
-    ├── verify_setup.py            ← 통합 검증 (venv/.env/토큰/등록/포트)
-    ├── streamable_http_probe.py   ← 등록된 HTTP MCP 서버 8-probe
-    ├── register_claude_code.py    ← Claude Code (~/.claude.json) HTTP 등록
-    ├── register_claude_desktop.py ← Claude Desktop STDIO 등록
-    ├── check_token.py             ← AuthManager 토큰 유효성 확인
+    ├── verify_setup.py            ← 통합 검증 (venv/.env/토큰/등록/포트, 멀티유저면 registry·KEK·gateway)
+    ├── streamable_http_probe.py   ← 등록된 HTTP MCP 서버 8-probe (--multi-user: stateless+bearer 9-probe)
+    ├── register_claude_code.py    ← Claude Code (~/.claude.json) HTTP 등록 (--auth-header-env, 기존 headers 보존)
+    ├── register_claude_desktop.py ← Claude Desktop STDIO 등록 (단일 운영자 모드 전용)
+    ├── check_token.py             ← AuthManager 토큰 유효성 확인 (멀티유저면 registry 연결 상태 개수)
     ├── health_check.py            ← /health 일괄 probe
     └── stop_server.py             ← 포트 점유 프로세스 종료
 ```
@@ -262,6 +294,7 @@ fi
 ```bash
 "$VENV_PY" "$SCRIPTS\check_token.py"
 # {"status":"valid","email":"..."} | invalid_or_expired | no_user | error
+# 멀티유저: {"status":"multi_user","users":N,"graph_connected":M,"pending_link":K,"inactive":0}
 ```
 
 **3-C-2. Streamable HTTP 컴플라이언스** — LISTEN 중인 각 서버에 대해 probe 실행:
@@ -279,6 +312,9 @@ done
 ```
 
 합격선: 8/8 → `compliant`, 4~7 → `partial`, 0~3 → `non-compliant`. 비호환 진단은 [references/streamable_http_checklist.md](references/streamable_http_checklist.md).
+
+1단계 JSON 의 `mode` 가 `multi_user` 면 위 루프에 `--multi-user` 를 붙이고(9-probe, 9/9 이 합격), 키는
+`MS365_MCP_BEARER_KEY` 환경변수로 넘긴다. 키가 없으면 401 확인 2개만 돌고 나머지는 skipped 로 표시된다.
 
 ### 3-D. 서버 운영
 

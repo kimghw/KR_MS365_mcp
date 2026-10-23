@@ -2,13 +2,23 @@
 Todo Service - GraphTodoClient Facade
 
 MCP 도구가 호출하는 진입점.
-- user_email 기본값 처리 (mcp_common 의 결정적 사용자 선택 정책)
+- user_email 기본값 처리 (mode 0: mcp_common 의 결정적 사용자 선택 정책,
+  mode 1: 요청 principal 의 연결 계정만 — spec/spec_멀티유저.md ②-5.3)
 - list_id_or_name 해석 (wellknownListName / displayName)
+
+멀티유저에서는 서비스 풀이 사용자별로 만들고, 생성 시 받은 사용자 고정 `token_provider`
+를 GraphClient 로 넘긴다. 공용 AuthManager 를 끌어오지 않는다.
 """
 
+import importlib
 from typing import Dict, Any, List, Optional
 
+from mcp_common.principal import MISSING, assert_user_email, require_principal
+from mcp_common.security_contracts import ErrorCode, SecurityError
+from mcp_common.security_policy import multi_user_enabled
+
 from .graph_todo_client import GraphTodoClient
+from mcp_common.input_bounds import check_list_size, check_top
 from .todo_types import (
     DateTimeTimeZone,
     ItemBody,
@@ -19,8 +29,12 @@ from .todo_types import (
 from mcp_common.user_resolver import resolve_user_email
 
 
+#: 서비스 경계 상한 (R02) — = todo.yaml categories maxItems. `top` 은 input_bounds.MAX_TOP.
+MAX_CATEGORIES = 50
+
+
 def get_default_user_email() -> Optional[str]:
-    """기본 사용자 이메일 조회 (mcp_common 정책에 위임)."""
+    """기본 사용자 이메일 조회 (mcp_common 정책에 위임). **mode 0 전용.**"""
     return resolve_user_email()
 
 
@@ -86,14 +100,24 @@ def _list_not_found_soft(
 class TodoService:
     """Microsoft To Do Facade for MCP tools."""
 
-    def __init__(self):
+    def __init__(self, token_provider: Optional[Any] = None, paths: Optional[Any] = None):
+        """
+        Args:
+            token_provider: 사용자 고정 토큰 공급자(멀티유저 factory 가 주입). None 이면
+                mode 0 의 공용 AuthManager 를 쓴다 — mode 1 에서는 GraphClient 생성이 실패한다.
+            paths: 사용자 저장 경로. Todo 는 개인 DB·파일을 쓰지 않는다.
+        """
+        self._token_provider = token_provider
+        self._paths = paths
+        # 이 서비스가 묶인 사용자. 요청 principal 과 다르면 거부한다(방어 심층).
+        self._owner_key: Optional[str] = getattr(token_provider, "user_key", None)
         self._client: Optional[GraphTodoClient] = None
         self._initialized: bool = False
 
     async def initialize(self) -> bool:
         if self._initialized:
             return True
-        self._client = GraphTodoClient()
+        self._client = GraphTodoClient(token_provider=self._token_provider)
         if await self._client.initialize():
             self._initialized = True
             return True
@@ -104,6 +128,17 @@ class TodoService:
             raise RuntimeError("TodoService not initialized. Call initialize() first.")
 
     def _resolve_user_email(self, user_email: Optional[str]) -> Optional[str]:
+        """호출 대상 계정.
+
+        - mode 1: 요청 principal 의 연결 계정만 (생략 → 본인, 다른 값 → `identity_mismatch`).
+          다른 사용자에게 묶인 서비스로 들어온 요청도 거부한다.
+        - mode 0: 명시값 → `get_default_user_email()`.
+        """
+        if multi_user_enabled():
+            email = assert_user_email(MISSING if user_email is None else user_email)
+            if self._owner_key is not None and require_principal().user_key != self._owner_key:
+                raise SecurityError(ErrorCode.IDENTITY_MISMATCH)
+            return email
         if user_email:
             return user_email
         return get_default_user_email()
@@ -117,6 +152,7 @@ class TodoService:
     ) -> Dict[str, Any]:
         """모든 task list 조회."""
         self._ensure_initialized()
+        top = check_top(top)
         user_email = self._resolve_user_email(user_email)
         if not user_email:
             return {"status": "error", "error": "user_email not provided and no default user found"}
@@ -180,6 +216,7 @@ class TodoService:
     ) -> Dict[str, Any]:
         """list 내 task 조회. list_id_or_name이 비어있으면 기본 리스트 사용."""
         self._ensure_initialized()
+        top = check_top(top)
         user_email = self._resolve_user_email(user_email)
         if not user_email:
             return {"status": "error", "error": "user_email not provided and no default user found"}
@@ -251,6 +288,7 @@ class TodoService:
     ) -> Dict[str, Any]:
         """새 task 생성."""
         self._ensure_initialized()
+        check_list_size(categories, "categories", MAX_CATEGORIES)
         user_email = self._resolve_user_email(user_email)
         if not user_email:
             return {"status": "error", "error": "user_email not provided and no default user found"}
@@ -297,6 +335,7 @@ class TodoService:
     ) -> Dict[str, Any]:
         """task 수정 (None인 필드는 무시)."""
         self._ensure_initialized()
+        check_list_size(categories, "categories", MAX_CATEGORIES)
         user_email = self._resolve_user_email(user_email)
         if not user_email:
             return {"status": "error", "error": "user_email not provided and no default user found"}
@@ -361,9 +400,50 @@ class TodoService:
         return result
 
     async def close(self):
+        """자신이 만든 GraphClient 만 닫는다. 토큰 공급자는 닫지 않는다."""
         if self._client:
             await self._client.close()
+            self._client = None
         self._initialized = False
 
 
-todo_service = TodoService()
+# ----------------------------------------------------------------------
+# 호환 export — `from mcp_todo.todo_service import todo_service` (R15)
+# ----------------------------------------------------------------------
+# 모듈 수준 싱글톤(`todo_service = TodoService()`)은 import 시점에 만들지 않는다 — 전역 개인
+# 서비스 인스턴스는 mode 0 의 handlers.py 한 곳에서만 만든다(②-2.4). 기존 Python 연동 코드를
+# 위해 같은 이름을 **지연 속성**(PEP 562)으로 남긴다: mode 0 에서는 handlers 의 legacy 인스턴스
+# 바로 그 객체, mode 1 에서는 `LegacyAuthDisabledError`(StartupConfigError 하위).
+_LEGACY_ATTR = "todo_service"
+
+
+def _legacy_singleton() -> "TodoService":
+    if multi_user_enabled():
+        try:
+            from session.mode_guard import LegacyAuthDisabledError as _Disabled
+        except ImportError:  # session 패키지가 없는 번들
+            from mcp_common.security_contracts import StartupConfigError as _Disabled
+        raise _Disabled(
+            "todo_service 모듈 싱글톤은 단일 운영자(mode 0) 전용입니다. 멀티유저 모드에서는 "
+            "서비스 풀의 사용자별 인스턴스(mcp_common.service_context.service_for)를 쓰세요."
+        )
+    handlers = importlib.import_module("mcp_todo.mcp_server.handlers")
+    return getattr(handlers, _LEGACY_ATTR)
+
+
+def __getattr__(name: str):
+    if name == _LEGACY_ATTR:
+        return _legacy_singleton()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | {_LEGACY_ATTR})
+
+
+# `import *` 계약 — 공개 이름 전부 + mode 0 에서는 legacy 싱글톤(R15 2차). 지연 속성은
+# `__all__` 에 적혀 있어야 `import *` 가 `__getattr__` 로 꺼내 간다. mode 1 은 넣지 않아
+# `from mcp_todo.todo_service import *` 가 아무것도 만들지 않는다(모드는 기동 시 고정).
+__all__ = [_name for _name in list(globals()) if not _name.startswith("_")]
+if not multi_user_enabled():
+    __all__.append(_LEGACY_ATTR)

@@ -1,13 +1,19 @@
 """
 Session Manager for MCP Server
-Manages user authentication sessions (인증 상태만 관리)
+Manages user authentication sessions (인증 상태만 관리) — **legacy, 단일 운영자(mode 0) 전용**.
 
 Note: 메일/캘린더 등 서비스 인스턴스는 각 MCP 서버에서 관리
+
+이메일 키 전역 세션·기본 사용자 선택이 있으므로 멀티유저 모드(`MS365_MULTI_USER=1`)에서는
+세션 생성·조회를 거부한다(spec/spec_멀티유저.md ②-2.3, ②-5.5). 현재 HTTP 세션 구현은 이 모듈이
+아니라 MCP SDK 의 `StreamableHTTPSessionManager` 다.
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Any, TYPE_CHECKING
 import logging
+
+from session.mode_guard import refuse_in_multi_user
 
 if TYPE_CHECKING:
     from core.protocols import TokenProviderProtocol
@@ -24,6 +30,7 @@ def get_default_user_email() -> Optional[str]:
     Returns:
         첫 번째 사용자의 이메일 또는 None
     """
+    refuse_in_multi_user("session.session_manager.get_default_user_email()")
     from session.auth_database import AuthDatabase
     db = AuthDatabase()
     users = db.list_users()
@@ -46,6 +53,7 @@ class Session:
             user_email: User's email address (session identifier).
                        None이면 auth.db에서 첫 번째 사용자를 자동으로 가져옴
         """
+        refuse_in_multi_user("session.session_manager.Session")
         if not user_email:
             user_email = get_default_user_email()
             if not user_email:
@@ -61,7 +69,7 @@ class Session:
         self.is_active = True
         self.initialized = False
 
-        logger.info(f"Session created for user: {user_email}")
+        logger.info("Session created")
 
     async def initialize(self, access_token: Optional[str] = None) -> bool:
         """
@@ -85,20 +93,20 @@ class Session:
                 access_token = await auth_manager.validate_and_refresh_token(self.user_email)
 
                 if not access_token:
-                    logger.warning(f"No valid token found in DB for user: {self.user_email}")
+                    logger.warning("No valid token found in DB")
 
             # Store the access token if we got one
             if access_token:
                 self.access_token = access_token
                 self.token_expires_at = self._load_token_expiry_from_db()
                 self.initialized = True
-                logger.info(f"Session initialized for user: {self.user_email}")
+                logger.info("Session initialized")
                 return True
 
             return False
 
         except Exception as e:
-            logger.error(f"Session initialization error for {self.user_email}: {str(e)}")
+            logger.error("Session initialization error: %s", type(e).__name__)
             return False
 
     async def refresh_token(self) -> bool:
@@ -118,14 +126,14 @@ class Session:
             if new_token:
                 self.access_token = new_token
                 self.token_expires_at = self._load_token_expiry_from_db()
-                logger.info(f"Token refreshed for session: {self.user_email}")
+                logger.info("Token refreshed")
                 return True
             else:
-                logger.error(f"Failed to refresh token for session: {self.user_email}")
+                logger.error("Failed to refresh token")
                 return False
 
         except Exception as e:
-            logger.error(f"Error refreshing token for {self.user_email}: {str(e)}")
+            logger.error("Error refreshing token: %s", type(e).__name__)
             return False
 
     def _load_token_expiry_from_db(self) -> Optional[datetime]:
@@ -142,7 +150,7 @@ class Session:
                     expires_at = expires_at.replace(tzinfo=timezone.utc)
                 return expires_at
         except Exception as e:
-            logger.warning(f"Could not load token expiry for {self.user_email}: {e}")
+            logger.warning("Could not load token expiry: %s", type(e).__name__)
         return None
 
     def _is_cached_token_expired(self, buffer_minutes: int = 5) -> bool:
@@ -176,10 +184,7 @@ class Session:
 
         # 만료 시각을 알 수 없는 외부 주입 토큰 등: 갱신 경로가 없으면 기존 동작 유지
         if self.access_token and self.token_expires_at is None:
-            logger.warning(
-                f"Returning access token with unknown expiry for {self.user_email} "
-                "(refresh path unavailable)"
-            )
+            logger.warning("Returning access token with unknown expiry (refresh path unavailable)")
             return self.access_token
 
         return None
@@ -209,14 +214,14 @@ class Session:
         self.access_token = None
         self.token_expires_at = None
         self.is_active = False
-        logger.info(f"Token invalidated for session: {self.user_email}")
+        logger.info("Token invalidated")
 
     async def cleanup(self):
         """Clean up session resources"""
         self.is_active = False
         self.access_token = None
         self.token_expires_at = None
-        logger.info(f"Session cleaned up for user: {self.user_email}")
+        logger.info("Session cleaned up")
 
 
 class SessionManager:
@@ -274,6 +279,7 @@ class SessionManager:
         Returns:
             User session
         """
+        refuse_in_multi_user("SessionManager.get_or_create_session()")
         if not user_email:
             user_email = get_default_user_email()
             if not user_email:
@@ -287,13 +293,13 @@ class SessionManager:
                 # Check if session is still valid
                 if not session.is_expired(self.session_timeout):
                     session.update_access_time()
-                    logger.debug(f"Returning existing session for: {user_email}")
+                    logger.debug("Returning existing session")
                     return session
                 else:
                     # Session expired, clean it up
                     await session.cleanup()
                     del self.sessions[user_email]
-                    logger.info(f"Expired session removed for: {user_email}")
+                    logger.info("Expired session removed")
 
             # Create new session
             session = Session(user_email)
@@ -303,7 +309,7 @@ class SessionManager:
                 await session.initialize(access_token)
 
             self.sessions[user_email] = session
-            logger.info(f"New session created for: {user_email}")
+            logger.info("New session created")
 
             return session
 
@@ -317,6 +323,7 @@ class SessionManager:
         Returns:
             Session if exists and valid, None otherwise
         """
+        refuse_in_multi_user("SessionManager.get_session()")
         if not user_email:
             user_email = get_default_user_email()
             if not user_email:
@@ -332,7 +339,7 @@ class SessionManager:
                     # Session expired
                     await session.cleanup()
                     del self.sessions[user_email]
-                    logger.info(f"Expired session removed for: {user_email}")
+                    logger.info("Expired session removed")
 
             return None
 
@@ -343,6 +350,7 @@ class SessionManager:
         Args:
             user_email: User's email address. None이면 auth.db에서 첫 번째 사용자를 자동으로 가져옴
         """
+        refuse_in_multi_user("SessionManager.invalidate_session()")
         if not user_email:
             user_email = get_default_user_email()
             if not user_email:
@@ -354,7 +362,7 @@ class SessionManager:
                 session.invalidate_token()
                 await session.cleanup()
                 del self.sessions[user_email]
-                logger.info(f"Session invalidated and removed for: {user_email}")
+                logger.info("Session invalidated and removed")
 
     async def _cleanup_expired_sessions(self):
         """
@@ -376,7 +384,7 @@ class SessionManager:
                         session = self.sessions[user_email]
                         await session.cleanup()
                         del self.sessions[user_email]
-                        logger.info(f"Cleaned up expired session for: {user_email}")
+                        logger.info("Cleaned up expired session")
 
                     if expired_users:
                         logger.info(f"Cleaned up {len(expired_users)} expired sessions")
@@ -387,7 +395,7 @@ class SessionManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in cleanup task: {str(e)}")
+                logger.error("Error in cleanup task: %s", type(e).__name__)
 
     def get_session_info(self) -> Dict[str, Any]:
         """

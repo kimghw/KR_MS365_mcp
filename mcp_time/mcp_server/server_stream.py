@@ -1,4 +1,4 @@
-"""Streamable HTTP MCP Server for mcp_time (port 5007). 인증 불필요.
+"""Streamable HTTP MCP Server for mcp_time (port 5007). Graph 인증 불필요(멀티유저 모드에서는 공용 HTTP bearer 인증을 거친다).
 
 도구 정의·핸들러·`Server` 구성은 `handlers.py` 한 벌을 쓰고, ASGI 배선은
 `mcp_common.http_transport` 를 쓴다. 이 파일에는 **HTTP 고유의 것만** 남는다

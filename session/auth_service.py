@@ -1,6 +1,11 @@
 """
 Authentication Service
-인증 플로우와 토큰 관리의 핵심 기능
+인증 플로우와 토큰 관리의 핵심 기능 — **단일 운영자(mode 0) 전용**.
+
+멀티유저 모드(`MS365_MULTI_USER=1`)에서는 생성 자체를 거부한다. 멀티유저의 OAuth 연결은
+`session.graph_connect`/`session.auth_gateway`, 토큰 갱신은 `session.token_store` 가 담당한다.
+
+로그에는 state·토큰·이메일·OAuth 오류 본문을 남기지 않는다(spec/spec_멀티유저.md ②-2.7).
 """
 
 import asyncio
@@ -13,17 +18,35 @@ import aiohttp
 
 from .azure_config import AzureConfig
 from .auth_database import AuthDatabase
+from .mode_guard import refuse_in_multi_user
 
 logger = logging.getLogger(__name__)
 
 
+class InvalidOAuthStateError(Exception):
+    """콜백 state 가 진행 중인 인증과 맞지 않는다(없음·만료·재사용). 어느 대기자도 깨우지 않는다."""
+
+
+def _oauth_error_code(error_text: str) -> str:
+    """토큰 endpoint 오류 본문에서 OAuth `error` 식별자만 꺼낸다(본문 원문은 쓰지 않는다)."""
+    import json
+    import re
+
+    try:
+        code = json.loads(error_text).get("error")
+    except (ValueError, AttributeError):
+        code = None
+    return code if isinstance(code, str) and re.match(r"^[a-z_]{1,64}$", code) else "unknown_error"
+
+
 def get_default_user_email() -> Optional[str]:
     """
-    auth.db의 azure_user_info 테이블에서 첫 번째 사용자 이메일을 가져옴
+    auth.db의 azure_user_info 테이블에서 첫 번째 사용자 이메일을 가져옴 (mode 0 전용)
 
     Returns:
         첫 번째 사용자의 이메일 또는 None
     """
+    refuse_in_multi_user("session.auth_service.get_default_user_email()")
     db = AuthDatabase()
     users = db.list_users()
     if users:
@@ -42,6 +65,7 @@ class AuthService:
             auth_db: AuthDatabase 인스턴스 (선택적)
             config: AzureConfig 인스턴스 (선택적)
         """
+        refuse_in_multi_user("AuthService()")
         # DB 인스턴스 (전달받거나 새로 생성)
         if auth_db:
             self.auth_db = auth_db
@@ -116,12 +140,20 @@ class AuthService:
         # OAuth URL 생성
         auth_url = self._generate_auth_url(state, self.config.default_scopes)
 
-        logger.info(f"Auth flow started with state: {state[:10]}...")
+        logger.info("Auth flow started")
 
         return {
             'auth_url': auth_url,
             'state': state
         }
+
+    def consume_state(self, state: Optional[str]) -> bool:
+        """진행 중(TTL 이내) state 이면 1회 소비하고 True. 오류 콜백도 성공 경로와 같은 규칙을 쓴다."""
+        self._cleanup_expired_states()
+        if not state or state not in self.auth_states:
+            return False
+        del self.auth_states[state]
+        return True
 
     async def complete_auth_flow(self, authorization_code: str, state: str) -> Dict[str, Any]:
         """
@@ -132,24 +164,19 @@ class AuthService:
             state: 보안 검증용 state
 
         Returns:
-            Dict: 인증 결과
+            Dict: 인증 결과 (토큰은 포함하지 않는다 — 토큰은 DB 에만 저장)
                 - user_email: 사용자 이메일
-                - access_token: 액세스 토큰
+                - display_name, object_id
                 - expires_at: 만료 시간
-        """
-        try:
-            # State 검증 (일회용, TTL 초과 시 만료)
-            self._cleanup_expired_states()
-            if not state or state not in self.auth_states:
-                state_preview = f"{state[:10]}..." if state else "None"
-                logger.error(f"OAuth state validation failed: {state_preview}")
-                raise Exception(
-                    f"Invalid or expired OAuth state: {state_preview}. "
-                    "Please restart the authentication flow."
-                )
-            # 사용된 state는 즉시 제거 (재사용 방지)
-            del self.auth_states[state]
 
+        Raises:
+            InvalidOAuthStateError: state 가 없거나 만료·재사용됨 (이 경우 어떤 상태도 바꾸지 않음)
+        """
+        # State 검증 (일회용, TTL 초과 시 만료) — 사용된 state 는 즉시 제거 (재사용 방지)
+        if not self.consume_state(state):
+            logger.error("OAuth state validation failed")
+            raise InvalidOAuthStateError("Invalid or expired OAuth state. Please restart the authentication flow.")
+        try:
             # Authorization code로 토큰 교환
             token_result = await self._exchange_code_for_tokens(authorization_code)
 
@@ -165,19 +192,17 @@ class AuthService:
             self.auth_db.save_user(email, user_info)
             self.auth_db.save_token(email, token_result)
 
-            logger.info(f"Authentication successful for {email}")
+            logger.info("Authentication successful")
 
             return {
                 'user_email': email,
                 'display_name': user_info.get('displayName'),
                 'object_id': user_info.get('id'),
-                'access_token': token_result['access_token'],
-                'refresh_token': token_result.get('refresh_token'),
                 'expires_at': token_result['expires_at']
             }
 
         except Exception as e:
-            logger.error(f"Failed to complete auth flow: {str(e)}")
+            logger.error("Failed to complete auth flow: %s", type(e).__name__)
             raise
 
     def _generate_auth_url(self, state: str, scopes: list) -> str:
@@ -210,7 +235,7 @@ class AuthService:
         async with session.post(token_url, data=data) as response:
             if response.status != 200:
                 error_text = await response.text()
-                raise Exception(f"Token exchange failed: {error_text}")
+                raise Exception(f"Token exchange failed (HTTP {response.status}, {_oauth_error_code(error_text)})")
 
             token_data = await response.json()
 
@@ -239,8 +264,7 @@ class AuthService:
 
         async with session.get(user_info_url, headers=headers) as response:
             if response.status != 200:
-                error_text = await response.text()
-                raise Exception(f"Failed to get user info: {error_text}")
+                raise Exception(f"Failed to get user info (HTTP {response.status})")
 
             return await response.json()
 
@@ -267,10 +291,10 @@ class AuthService:
             session = await self._get_session()
             async with session.post(token_url, data=data) as response:
                 if response.status != 200:
-                    error_text = await response.text()
-                    if 'invalid_grant' in error_text:
-                        raise Exception("Refresh token expired or revoked")
-                    raise Exception(f"Token refresh failed: {error_text}")
+                    error_code = _oauth_error_code(await response.text())
+                    if error_code == 'invalid_grant':
+                        raise Exception("Refresh token expired or revoked (invalid_grant)")
+                    raise Exception(f"Token refresh failed (HTTP {response.status}, {error_code})")
 
                 token_data = await response.json()
 
@@ -296,7 +320,7 @@ class AuthService:
                 return result
 
         except Exception as e:
-            logger.error(f"Token refresh error: {str(e)}")
+            logger.error("Token refresh error: %s", type(e).__name__)
             raise
 
     def is_token_expired(self, expires_at: Any, buffer_seconds: int = 300) -> bool:
@@ -380,7 +404,7 @@ class AuthService:
             # 토큰 만료 확인 (버퍼 시간 포함)
             if not self.is_token_expired(token_info['expires_at'], buffer_seconds):
                 # 토큰이 아직 유효함
-                logger.info(f"Token for {email} is still valid")
+                logger.info("Token is still valid")
                 return {
                     'status': 'valid',
                     'access_token': token_info['access_token'],
@@ -393,7 +417,7 @@ class AuthService:
             # 토큰이 만료되었거나 버퍼 시간 이내 - 리프레시 토큰 확인
             refresh_token = token_info.get('refresh_token')
             if not refresh_token:
-                logger.error(f"No refresh token available for {email}")
+                logger.error("No refresh token available")
                 auth_info = self.start_auth_flow()
                 return {
                     'status': 'auth_required',
@@ -405,7 +429,7 @@ class AuthService:
 
             # 리프레시 토큰 만료 확인 (refresh_token_expires_at 컬럼 직접 비교)
             if self.is_refresh_expiry_passed(token_info.get('refresh_token_expires_at')):
-                logger.error(f"Refresh token expired for {email}")
+                logger.error("Refresh token expired")
                 auth_info = self.start_auth_flow()
                 return {
                     'status': 'auth_required',
@@ -416,12 +440,12 @@ class AuthService:
                 }
 
             # 토큰 갱신 시도
-            logger.info(f"Token for {email} is expired or within buffer time. Refreshing...")
+            logger.info("Token is expired or within buffer time. Refreshing...")
             new_tokens = await self.refresh_tokens(refresh_token)
 
             # 갱신된 토큰 저장
             self.auth_db.update_token(email, new_tokens)
-            logger.info(f"Token refreshed successfully for {email}")
+            logger.info("Token refreshed successfully")
 
             return {
                 'status': 'refreshed',
@@ -433,7 +457,7 @@ class AuthService:
             }
 
         except Exception as e:
-            logger.error(f"Error checking/refreshing token for {email}: {str(e)}")
+            logger.error("Error checking/refreshing token: %s", type(e).__name__)
             return {
                 'status': 'error',
                 'message': f'Failed to refresh token: {str(e)}',

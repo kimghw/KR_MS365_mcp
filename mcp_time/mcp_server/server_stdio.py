@@ -1,4 +1,4 @@
-"""STDIO MCP Server for mcp_time. 인증 불필요.
+"""STDIO MCP Server for mcp_time. Graph 인증 불필요(stdio 는 단일 운영자 모드 전용).
 
 도구 정의·핸들러·`Server` 구성은 `handlers.py` 한 벌을 쓰고, 구동은 공식 SDK 기반
 `mcp_common.stdio_transport` 를 쓴다. 이 파일에는 **stdio 고유의 것만** 남는다

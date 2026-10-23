@@ -13,7 +13,12 @@
 3. **전체 env 값의 BOM 제거** — `AZURE_*` 몇 개만 훑는 방식은 금지(②-5)
 4. `sys.path` 삽입 (패키지 디렉터리 → 프로젝트 루트)
 5. 로깅 설정 — **stderr 로만**
-6. 그 다음에야 서비스 모듈을 import 한다
+6. 로그 마스킹 필터 설치(`mcp_common.log_redaction.install_redaction`) — root 핸들러가
+   생긴 **뒤**여야 붙는다. 이후 첫 로그부터 bearer key·JWT·OAuth code/state·Authorization
+   헤더가 가려지고, mode 1 에서는 이메일·access log query string 도 가려진다(②-9).
+   uvicorn 은 기동 때 자기 핸들러를 새로 만들지만 필터는 로거 자체에도 붙어 있어 남는다.
+7. 모드 기록 `multi_user=True|False` — 값·비밀·경로 없이 bool 만
+8. 그 다음에야 서비스 모듈을 import 한다
 
 ## 사용 패턴
 
@@ -37,6 +42,9 @@
 `.env` 로드 결과를 로그로 남기되 **값은 남기지 않는다.** 기존 서버들이
 `repr(os.getenv('AZURE_CLIENT_ID'))` 를 stderr 로 찍던 디버그 print 는 여기서
 존재 여부(bool)로 대체한다(②-5).
+
+마스킹 필터는 심층 방어일 뿐이다 — `print()`·필터 설치 전 핸들러·형식이 다른 비밀은
+걸러지지 않으므로 비밀을 로그 호출에 넣지 않는 것이 1차 방어다(spec/spec_멀티유저.md ②-9).
 """
 
 import logging
@@ -133,6 +141,23 @@ def _configure_logging(level: int) -> None:
     )
 
 
+def _install_log_redaction() -> None:
+    """민감정보 마스킹 필터 (②-9). 로깅 설정 직후 — 핸들러가 있어야 붙는다."""
+    from mcp_common.log_redaction import install_redaction
+
+    install_redaction()
+
+
+def _log_mode() -> None:
+    """배포 모드를 bool 로만 남긴다. 설정 오류는 여기서 막지 않는다(기동 검사가 막는다)."""
+    try:
+        from mcp_common.security_policy import multi_user_enabled
+
+        logger.info("multi_user=%s", multi_user_enabled())
+    except Exception as exc:
+        logger.warning("multi_user=invalid (%s)", type(exc).__name__)
+
+
 def _log_env_summary(env_path: str, env_loaded: bool, bom_keys: List[str]) -> None:
     present = [key for key in _CREDENTIAL_KEYS if os.environ.get(key)]
     missing = [key for key in _CREDENTIAL_KEYS if not os.environ.get(key)]
@@ -169,7 +194,9 @@ def _common(
     bom_keys = _strip_env_bom()
     _insert_paths(project_root, package_dir)
     _configure_logging(log_level)
+    _install_log_redaction()
     _log_env_summary(env_path, env_loaded, bom_keys)
+    _log_mode()
 
     return Bootstrap(
         project_root=project_root,

@@ -9,6 +9,7 @@
 | 2026-10-22 | (구현 후) "approvalinprocedure 웹서버에서 최초 로그인 시 로그인하고, 사용자는 이 정보로 MCP 서버를 사용하고, 그 서버에서도 로그인 정보로 특정 프로젝트에 접근한다. AIP 접수 시 담당자가 되고 중간에 넘길 수도 있다. 그쪽 세션과 대화해서 처리" → AIP 세션(`E:\dev\ApprovalInPrinciple`)에 연동 계약 초안·확인 질문 5개 송부(④ AIP 연동). AIP 는 현재 `currentuser.py` 원천 1 로 이 저장소 `auth.db` 기본 사용자를 읽으므로 mode 1 에서 대체 경로가 필요. |
 | 2026-10-23 | (AIP 세션 검토 결과, 사용자 "MS365 mcp 서버 수정이 필요하면 별도 서브세션으로 처리") **책임 분리 합의**: Microsoft 로그인·동의, 토큰 교환·저장·갱신·재인증·연결 해제는 **이 저장소**가, AIP 는 신원과 '어느 계정으로'만 든다(AIP 쪽 요구 원본 `spec_웹로그인.md` ② 'MS365 인증 책임 분리'). 요구 계약 5항 — ⑴ 로그인 위임(인가 코드 제출 → 등록·토큰 보관 → 신원+연결 상태) ⑵ 연결 상태 조회(4상태 + 기능별 권한) ⑶ 재연결/해제 ⑷ 업무 호출은 사용자 신원으로 ⑸ 인증 오류 분류(재인증 vs 일시 장애). 이 PC 의 AIP 는 당분간 mode 0(auth.db, 이메일 키)로 이 라이브러리를 subprocess 로 쓰므로 **1차 = mode 0 라이브러리 계약**(② 13 — `AuthManager.complete_external_login`·`connection_state`·`reason` 코드, 같은 날 구현 ③), mode 1 gateway `POST /auth/token` 은 후속(④). |
 | 2026-10-23 | (AIP 세션의 codex 교차 검토 2건, 별도 서브세션 반영) ⑴ AIP [MS365 연결] 재연결에서 다른 계정 B 를 고르면 라이브러리가 B 의 토큰을 **먼저 저장한 뒤** AIP 가 400 mismatch — B 의 등록·갱신이 되돌릴 수 없이 남고 사후 삭제는 B 의 기존 정상 연결까지 지운다 → `complete_external_login(expect_email=)` 선택 인자: 저장 **전** `/me` 메일 대조, 다르면 저장 없이 `ACCOUNT_MISMATCH`. ⑵ AIP 확정 사양 "저장이 안 돼도 로그인은 유지(미연결 표시)"인데 `SAVE_FAILED` 가 예외라 신원까지 잃어 503 → 저장 실패는 정상 반환 + `error="SAVE_FAILED"` 키(신원·`state` 는 DB 기준). 둘 다 추가(additive), ② 13 갱신. |
+| 2026-10-24 | (사용자) "mcp365 에서 서버가 브랜치로 들어가 있는데 이걸 싱글모드 서버모드로 병합해서 사용할 수 있을까?" → "지금 승인보류가 된게 뭐지?" → "진행해줘": astra 5차 검토(N03·N04·Q01 한정) + mode 0 병합 전 검증(③) 뒤 `main` fast-forward 병합 — 기본은 mode 0 유지, mode 1 은 비활성(④ 'mode 1 활성화 전 코드' 잔여·운영 입력 확정 전까지 켜지 않음). |
 
 ## ② 확정 사양
 
@@ -1285,6 +1286,52 @@ mode 1 코드 변경(`token_store`·`auth_gateway`·principal 규칙 불변).
 
 **codex 교차 검토 2건 반영(② 13, 2026-10-23, 별도 서브세션)** — `session/external_login.py`(`expect_email` 저장 전 대조 → `ACCOUNT_MISMATCH`(`expected_email`·`actual_email` 속성) · 저장 실패는 예외 대신 반환 `error="SAVE_FAILED"`, `SAVE_FAILED` 상수는 예외 미사용으로 명시) · 관문 `auth_service.py`·`auth_manager.py` 에 `expect_email=None` 인자(기본 = 종전) · `session/README.md`·`CLAUDE.md` 갱신 · `session/tests/test_external_login.py` 3건(저장 실패 반환 꼴 4경우 — save_token False·save_user 예외·기존 행 있는 계정·정상/save=False 에 error 키 없음 / 불일치 때 save_user·save_token 미호출·코드·속성·대소문자 무시·save=False 도 대조·빈 값 무검증 / 다른 계정 B 의 기존 행 불변). 기존 인자·반환 키·동작·mode 1 코드 불변(추가만). 실행: `venv\Scripts\python.exe -m pytest session/tests -q` → **121 passed in 39.28s**(종전 119 + 신규 2, 저장 실패 테스트 1건은 새 반환 꼴로 교체). AIP 쪽 후속: 워커 `vendor/ms365/auth.py` `LOGIN_CODES` 에 `ACCOUNT_MISMATCH` 등재 + `graph_connect` 가 `expect_email` 을 넘기면 사후 비교가 사전 차단으로 바뀐다(AIP 저장소 — 이 서브세션 범위 밖).
 
+**astra 5차 검토([reviews/멀티유저_astra_5차_2026-10-24.md](reviews/멀티유저_astra_5차_2026-10-24.md)) 반영 (2026-10-24)**
+
+범위는 4차 반영 5건(N03·N04-a·N04-b·N04-c·Q01)과 그 파급, 검토 기준 HEAD `d348c06`. 판정 — **(A) main 병합: 병합 가능**(병합 후 mode 0 유지·mode 1 비활성 전제. mode 0 은 서비스 풀을 쓰지 않고 전역 서비스를 직접 쓴다 — `mcp_common/runtime.py:218`, `mcp_common/service_context.py:65`) · **(B) mode 1 출시: 승인 보류**(신규 High 없음, N03·N04-c 잔여 + 신규 Q02). 이번에는 코드를 고치지 않았다 — 잔여는 ④ 'mode 1 활성화 전 코드' 행.
+
+| ID | 판정 | 요지 |
+|---|---|---|
+| N03 | 부분 해소 | 순차 drain 재시도·선행 invalidate 실패는 해소. **같은 사용자의 동시 drain** 에서 한쪽이 close 재시도 중인데 다른 쪽이 True — 실패 목록을 꺼낸 뒤 재등록하는 사이 다른 drain 이 빈 목록을 보고, 마지막 판정은 실패 목록만 검사하며, 한 호출의 finally 가 공용 `_draining` 표식을 지운다 |
+| N04-a | 해소 | 전 항목 선등록·항목별 독립 close task. TTL 일괄 제거의 뒤 항목도 추적됨 |
+| N04-b | 해소(테스트는 가짜 보호) | 무효 항목은 수집 전 거부, 수집 후 예외에도 close 예약. 단 추가된 테스트는 수정을 제거해도 PASS(`doomed=[]` 인 경로만 검사) |
+| N04-c | 부분 해소 | 기존 close 추적·lease 수 반환은 해소. **서비스 생성 전에 취소된 entry 의 `ready` 가 미완료로 캐시에 남아** 같은 키 재요청은 무기한 대기·다른 키는 overloaded(미완료 entry 는 TTL·LRU 에서 제외) |
+| Q01 | 해소 | mode 0·1 모두 대기 취소 후 슬롯 누수 없음(future 생성·worker 등록·`Thread.start()` 실패 주입 포함). **mode 0 슬롯 키** = 첨부 경로가 명시 전달하는 `LEGACY_KEY`(`None` 도 같은 키) — 같은 보장. 폴링: 여유 슬롯이면 sleep 없음(변환 15회 중앙값 약 0.28ms), 경합 시 10ms sleep + OS 스케줄링(슬롯 해제→결과 약 16ms), busy wait 아님, 4슬롯·64요청 합성 검사에서 교착·처리량 저하 없음 |
+
+신규 **Q02 (Medium) — 동일 키의 TTL 만료 후 닫힌 서비스 재사용(N04-b 수정의 회귀)**: entry 조회가 TTL 수집보다 앞서, 바로 다음 수집에서 제거된 entry 를 지역변수로 그대로 반환한다(기존 객체 반환, 서비스·토큰 closed, factory 1회, 실제 lease 중 inflight 0·drain True). 수집 후 조회 순서로 되돌리면 새 서비스 생성·inflight 1 로 바뀌어 회귀임을 확인. 기존 TTL 테스트(`mcp_common/tests/test_security_contracts.py:381`)는 다른 사용자로 재요청해 놓친다. 권고 = 무효 항목 사전 거부는 유지하고 **수집 후 실제 캐시에서 entry 재조회**.
+
+회귀 테스트 검출력(과거 코드 checkout 이 아니라 현재 테스트 본문에 해당 결함만 재주입·수정 제거해 비교):
+
+| 테스트 | 판정 |
+|---|---|
+| N03 재시도 (`mcp_common/tests/test_multiuser_runtime_recheck.py:275`) | 유효 — 실패 기록 삭제 재주입 시 FAIL. 동시 drain 은 미검증 |
+| N04-a 일괄 TTL (`:299`) | 유효 — 항목별 순차 등록·close 재주입 시 TimeoutError |
+| N04-b 예외 (`:343`) | **가짜 보호** — 수정 제거 후에도 PASS(A 를 C 요청에서 이미 닫은 뒤 `doomed=[]` 인 B 의 overloaded 만 검사) |
+| N04-c 취소 (`:387`) | 유효하나 B 재lease 를 검사하지 않아 미완료 entry 잔류를 놓침 |
+| Q01 취소 (`mcp_outlook/tests/test_multiuser_review4_fixes.py:55`, `:90`) | 유효 — 구 `to_thread(acquire)` 재주입 시 슬롯 누수 FAIL |
+| Q01 start 실패 (`:146`) | 현행 보호 제거 시 FAIL 이나 **구 구현에서는 가짜 PASS 가능** — 전역 `Thread.start` 패치가 converter 보다 먼저 executor 생성을 막는다(converter thread 로 한정 필요) |
+
+4차 반영 시점의 `1538 passed, 4 skipped` 는 오케스트레이터 확인값이며 아래 병합 전 검증값과 혼용하지 않는다.
+
+**병합 전 mode 0 검증 (2026-10-24, 읽기 전용 서브세션)**
+
+- 저장소: `multi-user` = `d348c06`(origin 일치), `origin/main` = `f6c7121`(직계 조상 — fast-forward 가능), 작업 트리 clean. `MS365_MULTI_USER` 는 `.env`·프로세스·Windows User/Machine 환경 어디에도 없음(= mode 0).
+- 전체 pytest(`venv\Scripts\python.exe -m pytest -q -p no:cacheprovider`, mode 0): **1558 passed, 3 failed, 0 skipped (230.98s)**. 실패 3건은 종전과 같은 환경 문제 — `mcp_file_handler/tests/test_converters.py::TestDOCXConverter::test_convert_simple_docx`·`::TestExcelConverter::test_convert_simple_excel`(PermissionError WinError 32)·`::TestOCRConverter::test_convert_simple_image`(TesseractNotFoundError). 1556 → 1558 은 codex 교차 검토 반영의 session/tests 신규 2건(위 119 → 121).
+- Teams chat_id 실 Graph 실측(소유자 계정, GET 만): 실제 코드 경로 `mcp_teams/graph_teams_client.py` `GraphTeamsClient`(mode 0 공유 AuthManager)의 `list_chats`·`get_chat_messages`·`get_chat`·`_chat_member_emails` — chat 단위 호출은 모두 `graph_segment` 경유. `list_chats` 는 200·40건(has_more). 꼴별 1개 채팅의 HTTP 상태(ID·이름·본문은 기록하지 않음):
+
+| chat_id 꼴 | get_chat_messages | get_chat | `/chats/{id}/members` | 문자 그대로 직접 GET | `%3A`·`%40` 강제 직접 GET |
+|---|---|---|---|---|---|
+| 1:1 `19:…@unq.gbl.spaces` | 200 | 200 | 200 | 200 | 200 |
+| 그룹 `19:…@thread.v2` | 200 | 200 | 200 | 200 | 200 |
+| 회의 `19:meeting_…@thread.v2` | 200 | 200 | 200 | 200 | 200 |
+| Notes `48:notes`(chat_id 생략 기본) | 200 | — | — | — | — |
+
+- 실제 전송 형태: `graph_segment` 가 만든 `19%3A…%40…` 를 aiohttp 3.14.3 / yarl 1.24.5 가 경로 재인용하며 `:`·`@`(경로 허용 문자)로 되돌려 **실제로는 `/v1.0/me/chats/19:****@thread.v2/messages` 꼴로 나간다**. `%2F` 는 유지되므로 G01 의 경로 탈출 방지는 그대로다. yarl `encoded=True` 로 `/v1.0/me/chats/19%3A****%40thread.v2/messages` 를 강제해도 세 꼴 모두 200 — Graph 는 두 표기를 다 받는다 → `graph_segment` safe 집합 조정 불요.
+- Outlook `$batch`(`GraphMailIdBatch.batch_fetch_by_ids`, `$select=id`): 안쪽 요청 URL 은 JSON 본문이라 yarl 을 거치지 않아 `seg(mail_id)` 의 `=`→`%3D` 가 그대로 Graph 에 도달한다 — **3/3 성공·오류 0**.
+- 부수 효과: 소유자 액세스 토큰이 만료 상태여서 첫 호출이 정상 경로(`validate_and_refresh_token`, auto_reauth 없음)로 갱신해 auth.db 토큰 행이 바뀌었다(정상 갱신, 스키마 변경 없음 — `scope`·`refresh_state` 기존).
+
+**병합 기록 (2026-10-24)**: `main` = 이 커밋(fast-forward, `f6c7121` → 이 문서 커밋). 기본은 mode 0 그대로, mode 1 은 ④ 'mode 1 활성화 전 코드' 잔여 해소·운영 입력 확정 전까지 켜지 않는다. `multi-user` 브랜치는 로컬·원격 모두 보존.
+
 ## ④ 미결/후속
 
 아래는 구현 방식을 각 에이전트가 임의로 결정할 항목이 아니라, 운영자가 제공하거나 승인해야 하는 배포 입력이다. 결정 전에는 테스트와 독립 구현을 진행할 수 있지만 운영 활성화는 하지 않는다.
@@ -1304,12 +1351,16 @@ mode 1 코드 변경(`token_store`·`auth_gateway`·principal 규칙 불변).
 | 공유 사서함·공유 자원 | A의 delegated 권한으로 허용된 공유만 사용 | 별도 공유 사서함 기능 확대 여부 |
 | 다중 호스트 운영 | 최초 버전 범위에서 제외 | 필요 시 중앙 DB·분산 lock·공유 없는 worker 구조의 별도 설계 |
 | 교차 프로세스 drain (R04 잔여) | 삭제·연결 해제 시 다른 도메인 프로세스의 진행 중 작업은 토큰 획득·응답 전 `assert_active` 로 차단되지만 이미 시작된 로컬 저장은 끝까지 간다 | 사용자별 공유/배타 OS lock(Windows `msvcrt` 는 배타만 지원) 또는 admission 서비스 — 필요 시 별도 설계 |
-| 변환 worker 종료 (R09·N03·P01 잔여) | Python thread 는 강제 종료 불가. 시간 초과 시 결과 폐기, 실제 thread 를 추적해 **temp 디렉터리와 사용자별 슬롯은 thread 종료까지 유지**(정상 시작된 converter 기준). 요청 lease 는 Outlook 변환 timeout 후·FileHandler 30초 hard cap 후 반환될 수 있다 — 그 보완이 "생존 thread 있으면 서비스 `close()` 실패 → 풀 `drain()` **False**(재시도해도 실패 기록 유지, 삭제 절차 중단)" 이다 | 프로세스 격리 worker(피클 가능한 변환기 필요) |
+| 변환 worker 종료 (R09·N03·P01 잔여) | Python thread 는 강제 종료 불가. 시간 초과 시 결과 폐기, 실제 thread 를 추적해 **temp 디렉터리와 사용자별 슬롯은 thread 종료까지 유지**(정상 시작된 converter 기준). 요청 lease 는 Outlook 변환 timeout 후·FileHandler 30초 hard cap 후 반환될 수 있다 — 그 보완이 "생존 thread 있으면 서비스 `close()` 실패 → 풀 `drain()` **False**(재시도해도 실패 기록 유지, 삭제 절차 중단)" 이다 — 순차 재시도 기준이며 동시 drain 은 미보장(5차, 아래 'mode 1 활성화 전 코드 — N03 동시 drain') | 프로세스 격리 worker(피클 가능한 변환기 필요) |
 | 마이그레이션 동결과 writer 의 상호배제 (N06 잔여) | `.migration_lock` 표식 검사는 생성 시 + 쓰기 직전(FileHandler·OneNote·Outlook)이지만 **검사와 쓰기 사이 상호배제는 없다** — 표식 생성 전에 검사를 통과한 진행 중 쓰기들은 막지 못한다(건수 상한 없음). 운영 절차(모든 legacy writer 정지 확인 후 plan)가 1차 방어 | 완전 해소는 writer 가 쓰기 트랜잭션 동안 잡는 legacy 디렉터리별 OS 배타 lock(`session/file_lock.py` 를 `mcp_common` 으로 올려 공용화)을 이전 도구가 plan~unlock 동안 선점하는 설계 — 필요 시 별도 착수 |
 | Outlook 첨부 응답 본문 메모리 상한 (N08 잔여) | `Content-Length` 가 있으면 `.json()` 전에 거부하지만, chunked(헤더 없음) 응답은 전체를 읽은 뒤 디코드 예산을 적용. 사용자 quota 는 동시 요청 간 원자적 총량 제한이 아님(약간의 초과 가능) | 스트리밍 JSON 파서 또는 `$batch` 대신 개별 첨부 스트림 조회로 전환 시 해소 |
 | DNS rebinding (R08 잔여) | 사전 서명 URL 호스트 검사는 리터럴 IP·이름·해석 시점 주소 기준 | 해석 IP 고정(pinning) 연결이 필요하면 커스텀 connector |
 | `conversion_workers.py` 사본 2벌 | `mcp_outlook/`·`mcp_file_handler/` 가 실행 로직·자료구조가 동일(주석·로그 문구만 다름)한 worker 추적 모듈을 각자 보유 — 도메인 간 import 금지 규칙 때문 | `mcp_common/conversion_workers.py` 로 올리고 도메인은 재수출 shim 으로. 테스트가 도메인 모듈 속성(`HARD_JOIN_CAP_SECONDS`)을 monkeypatch 하므로 상수 읽기 경로를 정리한 뒤 착수 |
-| Graph ID 퍼센트 인코딩 실측 | Teams chat_id(`19:...@thread.v2`)를 인코딩해 보내도 Graph 가 받는지 실계정 미확인 | 실 Graph 호출로 확인 후 필요 시 `graph_segment` safe 집합 조정 |
+| ~~Graph ID 퍼센트 인코딩 실측~~ | **해소(2026-10-24, ③ '병합 전 mode 0 검증')** — Teams 1:1·그룹·회의·Notes chat_id 모두 200(실제 전송은 yarl 재인용으로 `:`·`@` 문자 그대로, `%3A`·`%40` 강제도 200), Outlook `$batch` 의 `%3D` 도 3/3 성공 | 조정 불요 |
+| mode 1 활성화 전 코드 — Q02 동일 키 TTL 재생성 (astra 5차) | N04-b 수정으로 entry 조회가 TTL 수집보다 앞서, 수집에서 제거된 같은 키의 닫힌 서비스를 다시 반환한다(실제 lease 중 inflight 0·drain True) | 무효 항목 사전 거부는 유지하고 **수집 후 실제 캐시에서 entry 재조회**. mode 1 활성화 전 필수 |
+| mode 1 활성화 전 코드 — N03 동시 drain (astra 5차) | 같은 사용자 drain 이 동시에 돌면 한쪽 close 재시도 중에 다른 쪽이 True — 실패 목록을 꺼낸 뒤 재등록 사이에 빈 목록을 보고, 판정은 실패 목록만 검사하며, 한 호출의 finally 가 공용 `_draining` 표식을 지운다(삭제 경로는 False 일 때만 중단하므로 의미 있는 잔여) | 사용자별 drain 직렬화 또는 진행 중 close 까지 포함하는 동등한 추적 보장(공용 `_draining` 표식 해제 포함). mode 1 활성화 전 필수 |
+| mode 1 활성화 전 코드 — N04-c 생성 전 취소 entry (astra 5차) | 서비스 생성 전에 취소된 entry 가 `ready` 미완료로 캐시에 남아 같은 키 재요청은 무기한 대기, 다른 키는 overloaded(미완료 entry 는 TTL·LRU 제외) | 취소 시 미생성 entry 제거 + `ready` 대기자 해소. mode 1 활성화 전 필수 |
+| mode 1 활성화 전 코드 — 회귀 테스트 보강 (astra 5차) | N04-b 예외 테스트는 가짜 보호, Q01 start 실패 테스트는 구 구현에서 가짜 PASS 가능, 동일 키 TTL·같은 사용자 동시 drain·취소 후 같은 키 재lease·mode 0 슬롯 취소는 미검증 | N04-b 는 실제 doomed 가 생긴 뒤 예외 발생 · Q01 start 실패 주입을 converter thread 로 한정 · 동일 키 TTL 재요청 · 같은 사용자 동시 drain · 취소 후 같은 키 재lease 성공 · mode 0(`LEGACY_KEY`) 슬롯 취소 테스트 추가 |
 | OS 수준 사용자 격리 | API 사용자 간 격리를 최초 보장 범위로 채택 | 관리자·프로세스 침해까지 분리해야 하면 사용자별 실행 환경 추가 |
 | AIP 웹 로그인 연동 (2026-10-22 요청) | 공통 신원 = Entra (tid, oid). AIP 웹 최초 로그인(OIDC) 후 AIP 서버가 이 저장소의 **프로비저닝 API**(서버 간·전용 자격증명·loopback)로 사용자 등록·bearer key 발급·MS365 연결 링크를 받는다. 프로젝트 접근(담당자·인계)은 AIP 가 요청마다 판정(이 저장소는 캐시하지 않음 → epoch 불필요) | **AIP 세션 확인(사용자 확정, 2026-10-22)**: 웹 로그인 = MS365 / 접근 = AIP 프로젝트 단위·담당자(대표 `project.manager_member_id` + 공동 `project_participant` role '담당')만, 인계 시 새 담당자 즉시·구 담당자는 '공동으로 남김' 선택 시만 유지 / 접수 전 자료 = 로그인 사용자 전원 공유 / 관리자 = kimghw, 루프백 무로그인 = 관리자 / AIP = 이 PC `127.0.0.1:8035`, 이 저장소를 subprocess 워커로 호출 / **AIP 적응 전까지 이 PC 는 mode 0 유지**. **사용자 답(2026-10-23)**: "AIP 웹서버 로그인 기능을 MCP 로 하고, AIP 웹이 쓰는 MCP 서버를 로그인된 사용자만 접속" / 서버측 자격은 "동작 중인 에이전트와 협의". **AIP 세션에 보낸 설계안 v1 (합의 대기)**: A' AIP 가 자체 Entra 로그인(이미 구현, 같은 Entra 앱)으로 받은 **ID token 을 gateway `POST /auth/token`(grant_type=id_token, loopback, client secret)에 제출 → gateway 가 JWKS 서명·iss·aud·tid 검증 후 사용자 등록(허용 tenant 첫 로그인 = 자동 등록) + `session_token`(m365s1, 8h) + `graph_connected`/`connect_url` 반환** / B 대화형 MCP 호출은 session_token 으로 / C 배경 작업은 **서비스 자격증명 `m365svc.*` + `X-MS365-Act-As: <user_key>`**, 사용자가 로그인 시 'aip' 에 위임 부여한 경우만, 감사 actor=aip / D 과도기: mode 1 은 HTTP 서버·gateway 프로세스 env 로만 켜고 AIP 워커(mode 0, auth.db)와 별도 저장소로 공존. **합의(2026-10-23, AIP 세션 검토)**: 책임 분리(인증은 이 저장소, AIP 는 신원·계정) 확정 → **mode 0 라이브러리 계약 먼저(② 13 — 구현 완료 ③)**: `AuthManager.complete_external_login(code, redirect_uri, scopes, save)`·`connection_state(email)`·`reason` 코드. AIP 쪽 후속 = `webauth._exchange`·`_import_token`·vendor `auth_import` 를 이 API 호출로 교체(그쪽 ④ 12 ⑶). **이 저장소 후속** = mode 1 gateway `POST /auth/token`(grant_type=id_token 또는 인가 코드, loopback·client secret)·`session_token`·서비스 자격 act-as(설계안 A'·B·C) — AIP 의 mode 1 전환(그쪽 순서 ⑸, 토큰 이관 없음·사용자별 재연결 1회) 때 착수 |
 
